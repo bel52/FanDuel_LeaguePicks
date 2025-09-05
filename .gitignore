@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+data/fantasypros/
+logs/
+data/weekly/*/late_suggestions.json
+data/weekly/*/late_swap_plan.json
+!data/**/.gitkeep
