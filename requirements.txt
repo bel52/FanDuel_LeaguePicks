@@ -9,3 +9,5 @@ ortools
 fastapi
 uvicorn[standard]
 redis
+requests
+pytz
