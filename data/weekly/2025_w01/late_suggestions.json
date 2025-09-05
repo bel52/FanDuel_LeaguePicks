@@ -1,0 +1,11 @@
+{
+  "moves": [
+    "2025-09-05 01:15:21,672 [INFO] [RB2] OUT Ashton Jeanty ($6400) -> IN RJ Harvey ($5700) [best_upside] proj~10.1",
+    "2025-09-05 01:15:21,672 [INFO] [DST] OUT Denver Broncos ($4800) -> IN Arizona Cardinals ($4200) [best_upside] proj~8.1",
+    "2025-09-05 01:15:21,672 [INFO] [TE] OUT Brock Bowers ($7000) -> IN Trey McBride ($6300) [best_upside] proj~11.7",
+    "2025-09-05 01:21:11,294 [INFO] [RB1] OUT Christian McCaffrey ($8100) -> IN Josh Jacobs ($7800) [best_upside] proj~14.8  kick=Sun 4:25PM",
+    "2025-09-05 01:21:11,294 [INFO] [DST] OUT Denver Broncos ($4800) -> IN San Francisco 49ers ($4400) [best_upside] proj~7.6  kick=Sun 4:05PM",
+    "2025-09-05 01:24:51,798 [INFO] [RB1] OUT Christian McCaffrey ($8100) -> IN Josh Jacobs ($7800) [best_upside] proj~14.8  kick=Sun 4:25PM",
+    "2025-09-05 01:24:51,799 [INFO] [DST] OUT Denver Broncos ($4800) -> IN San Francisco 49ers ($4400) [best_upside] proj~7.6  kick=Sun 4:05PM"
+  ]
+}
