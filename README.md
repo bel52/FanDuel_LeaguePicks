@@ -32,7 +32,7 @@ All times are **Eastern (Washington, DC)**.
 ├─ Makefile
 ├─ requirements.txt
 ├─ .env.example        # copy to .env and put your ODDS_API_KEY there
-├─ README_DEV.md       # THIS FILE
+├─ README.md       # THIS FILE
 ├─ src/
 │  ├─ __init__.py
 │  ├─ util.py          # logging, csv helpers, current_week, ValuePer1k
