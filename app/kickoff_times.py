@@ -9,7 +9,7 @@ try:
 except Exception:
     pytz = None
 
-from .schedule_providers import fetch_kickoffs_from_oddsapi
+from .schedule_providers import fetch_kickoffs
 
 DEFAULT_TZ = os.getenv("TIMEZONE", "America/Chicago")
 LAST_LINEUP_PATH = "data/output/last_lineup.json"
@@ -38,12 +38,16 @@ def _load_cache() -> dict:
         return {}
 
 def _save_cache(ko_map: Dict[str, datetime]):
-    os.makedirs(os.path.dirname(KICKOFF_CACHE_PATH), exist_ok=True)
-    payload = {"saved_at": _now_local().isoformat(), "kickoffs": {}}
-    for k, v in ko_map.items():
-        payload["kickoffs"][k] = v.isoformat()
-    with open(KICKOFF_CACHE_PATH, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+    try:
+        os.makedirs(os.path.dirname(KICKOFF_CACHE_PATH), exist_ok=True)
+        payload = {"saved_at": _now_local().isoformat(), "kickoffs": {}}
+        for k, v in ko_map.items():
+            payload["kickoffs"][k] = v.isoformat()
+        with open(KICKOFF_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+    except Exception as e:
+        # Don't break endpoints if cache cannot be written
+        logging.warning(f"Kickoff cache write skipped: {e}")
 
 def build_kickoff_map(players_df) -> Dict[str, datetime]:
     cache = _load_cache()
@@ -67,7 +71,8 @@ def build_kickoff_map(players_df) -> Dict[str, datetime]:
         except Exception:
             pass
 
-    ko_map = fetch_kickoffs_from_oddsapi()
+    # fresh fetch (Odds API /events first, ESPN fallback)
+    ko_map = fetch_kickoffs(days_ahead=10) or {}
     if ko_map:
         _save_cache(ko_map)
         return ko_map
@@ -87,10 +92,13 @@ def load_last_lineup() -> List[str]:
         return []
 
 def save_last_lineup(lineup_players: List[dict], meta: dict = None):
-    os.makedirs(os.path.dirname(LAST_LINEUP_PATH), exist_ok=True)
-    payload = {"saved_at": _now_local().isoformat(), "lineup": lineup_players, "meta": meta or {}}
-    with open(LAST_LINEUP_PATH, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+    try:
+        os.makedirs(os.path.dirname(LAST_LINEUP_PATH), exist_ok=True)
+        payload = {"saved_at": _now_local().isoformat(), "lineup": lineup_players, "meta": meta or {}}
+        with open(LAST_LINEUP_PATH, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+    except Exception as e:
+        logging.warning(f"Failed to save last lineup: {e}")
 
 def auto_lock_started_players(players_df, kickoff_map: Dict[str, datetime]) -> Tuple[List[int], List[str], List[str]]:
     if not kickoff_map:
@@ -117,14 +125,15 @@ def auto_lock_started_players(players_df, kickoff_map: Dict[str, datetime]) -> T
         ko = kickoff_map.get(team)
         if ko is None:
             continue
-        ko_cmp = ko
         try:
             if (getattr(ko, "tzinfo", None) is None) != (getattr(now, "tzinfo", None) is None):
                 ko_cmp = ko.replace(tzinfo=None)
                 now_cmp = now.replace(tzinfo=None)
             else:
+                ko_cmp = ko
                 now_cmp = now
         except Exception:
+            ko_cmp = ko
             now_cmp = now
         if ko_cmp <= now_cmp:
             lock_idx.append(i0)
