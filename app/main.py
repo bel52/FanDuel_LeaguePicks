@@ -1,5 +1,6 @@
 import os
 import logging
+import json
 import pandas as pd
 from dotenv import load_dotenv
 load_dotenv()
@@ -12,6 +13,7 @@ from fastapi.responses import PlainTextResponse
 from . import data_ingestion, optimization, analysis, openai_utils
 from .formatting import build_text_report
 from .player_match import match_names_to_indices
+from .kickoff_times import build_kickoff_map, auto_lock_started_players, save_last_lineup
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -41,25 +43,40 @@ def health_check():
     return {"status": "ok"}
 
 def _run_optimization(salary_cap: int, enforce_stack: bool, min_stack_receivers: int,
-                      lock_names: list[str]|None, ban_names: list[str]|None):
+                      lock_names: list[str]|None, ban_names: list[str]|None, auto_late_swap: bool):
     players_df = data_ingestion.load_weekly_data()
     if players_df is None or players_df.empty:
         return {"error": "No data available for optimization"}
 
-    lock_idx, lock_nf = match_names_to_indices(lock_names or [], players_df)
-    ban_idx,  ban_nf  = match_names_to_indices(ban_names or [],  players_df)
+    # Manual lock/ban (optional)
+    lock_idx_manual, lock_nf_manual = match_names_to_indices(lock_names or [], players_df)
+    ban_idx_manual,  ban_nf_manual  = match_names_to_indices(ban_names or [],  players_df)
+
+    # Auto-lock based on kickoff times from last saved lineup
+    kickoff_map = build_kickoff_map(players_df) if auto_late_swap else {}
+    lock_idx_auto, auto_locked_names, nf_auto = auto_lock_started_players(players_df, kickoff_map) if kickoff_map else ([], [], [])
+
+    combined_lock_idx = list(set(lock_idx_manual + lock_idx_auto))
+    combined_ban_idx  = list(set(ban_idx_manual))
 
     lineup = optimization.optimize_lineup(
         players_df,
         salary_cap=salary_cap,
         enforce_stack=enforce_stack,
         min_stack_receivers=min_stack_receivers,
-        lock_indices=lock_idx,
-        ban_indices=ban_idx
+        lock_indices=combined_lock_idx,
+        ban_indices=combined_ban_idx
     )
     if not lineup:
-        return {"error": "No feasible lineup found with given constraints",
-                "constraints": {"locks": lock_names or [], "bans": ban_names or [], "not_found": list(set(lock_nf+ban_nf))}}
+        return {
+            "error": "No feasible lineup found with given constraints",
+            "constraints": {
+                "locks": lock_names or [],
+                "bans": ban_names or [],
+                "auto_locked": auto_locked_names,
+                "not_found": list(set(lock_nf_manual + ban_nf_manual + nf_auto))
+            }
+        }
 
     # Monte Carlo
     sim = analysis.MonteCarloSimulator(num_simulations=10000)
@@ -78,7 +95,6 @@ def _run_optimization(salary_cap: int, enforce_stack: bool, min_stack_receivers:
         except Exception as e:
             logging.error(f"GPT analysis failed: {e}")
 
-    # Build response
     lineup_players = []
     total_proj = 0.0
     total_salary = 0
@@ -97,16 +113,28 @@ def _run_optimization(salary_cap: int, enforce_stack: bool, min_stack_receivers:
             'own_pct': (None if 'OWN_PCT' not in row else (None if pd.isna(row['OWN_PCT']) else float(row['OWN_PCT'])))
         })
 
+    # Persist last lineup for future auto-locks
+    try:
+        save_last_lineup(lineup_players, meta={
+            "salary_cap": salary_cap,
+            "enforce_stack": enforce_stack,
+            "min_stack_receivers": min_stack_receivers
+        })
+    except Exception as e:
+        logging.warning(f"Failed to save last lineup: {e}")
+
     result = {
         "params": {
             "salary_cap": salary_cap,
             "enforce_stack": enforce_stack,
-            "min_stack_receivers": min_stack_receivers
+            "min_stack_receivers": min_stack_receivers,
+            "auto_late_swap": auto_late_swap
         },
         "constraints": {
-            "locks": [players_df.loc[i,'PLAYER NAME'] for i in lock_idx],
-            "bans":  [players_df.loc[i,'PLAYER NAME'] for i in ban_idx],
-            "not_found": list(set(lock_nf + ban_nf))
+            "locks": [players_df.loc[i,'PLAYER NAME'] for i in lock_idx_manual],
+            "bans":  [players_df.loc[i,'PLAYER NAME'] for i in ban_idx_manual],
+            "auto_locked": auto_locked_names,
+            "not_found": list(set(lock_nf_manual + ban_nf_manual + nf_auto))
         },
         "cap_usage": {
             "total_salary": total_salary,
@@ -124,11 +152,11 @@ def optimize_endpoint(
     salary_cap: int = Query(60000, ge=1000, le=100000),
     enforce_stack: bool = Query(False),
     min_stack_receivers: int = Query(1, ge=1, le=3),
-    lock: list[str] = Query(default=[]),  # ?lock=Ja%27Marr%20Chase&lock=Drake%20London
-    ban:  list[str] = Query(default=[]),  # ?ban=Trey%20McBride
+    lock: list[str] = Query(default=[]),
+    ban:  list[str] = Query(default=[]),
+    auto_late_swap: bool = Query(True),
 ):
-    result = _run_optimization(salary_cap, enforce_stack, min_stack_receivers, lock, ban)
-    return result
+    return _run_optimization(salary_cap, enforce_stack, min_stack_receivers, lock, ban, auto_late_swap)
 
 @app.get("/optimize_text", response_class=PlainTextResponse)
 def optimize_text_endpoint(
@@ -138,14 +166,18 @@ def optimize_text_endpoint(
     width: int = Query(100, ge=70, le=160),
     lock: list[str] = Query(default=[]),
     ban:  list[str] = Query(default=[]),
+    auto_late_swap: bool = Query(True),
 ):
-    result = _run_optimization(salary_cap, enforce_stack, min_stack_receivers, lock, ban)
+    result = _run_optimization(salary_cap, enforce_stack, min_stack_receivers, lock, ban, auto_late_swap)
     if "error" in result:
         msg = f"ERROR: {result['error']}\n"
         cons = result.get("constraints", {})
         if cons:
             msg += f"Locks: {', '.join(cons.get('locks',[]))}\n"
             msg += f"Bans: {', '.join(cons.get('bans',[]))}\n"
+            auto_l = cons.get("auto_locked", [])
+            if auto_l:
+                msg += f"Auto-locked: {', '.join(auto_l)}\n"
             nf = cons.get('not_found', [])
             if nf:
                 msg += f"Not found: {', '.join(nf)}\n"

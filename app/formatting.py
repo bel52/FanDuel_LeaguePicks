@@ -2,7 +2,6 @@ import re
 import textwrap
 
 def _clean_player_name(full_name: str) -> str:
-    """Strip '(TEAM - POS)' and trailing injury tags like 'Q', 'O', 'GTD', etc."""
     if not full_name:
         return ""
     base = re.sub(r'\s*\([^)]+\)\s*', '', str(full_name)).strip()
@@ -26,14 +25,13 @@ def _pad(s: str, width: int) -> str:
     return (s[:width]).ljust(width)
 
 def format_lineup_table(lineup_players, width=100) -> str:
-    # Column widths (tuned for readability)
     pos_w = 4
     team_w = 4
     opp_w = 4
     sal_w = 9
     proj_w = 6
     own_w = 6
-    fixed = pos_w + team_w + opp_w + sal_w + proj_w + own_w + 6*3  # pipes + spaces
+    fixed = pos_w + team_w + opp_w + sal_w + proj_w + own_w + 6*3
     player_w = max(18, min(44, width - fixed))
 
     header = (
@@ -55,7 +53,6 @@ def format_lineup_table(lineup_players, width=100) -> str:
         opp = _pad(p.get("opponent",""), opp_w)
         sal = _fmt_money(p.get("salary"))
         proj = f"{float(p.get('proj_points',0.0)):.1f}"
-        # own% numeric if provided; else parse "20-30%-" mid-point
         own = p.get("own_pct")
         if own is None:
             raw = str(p.get("proj_roster_pct_raw","")).replace("%","")
@@ -80,7 +77,6 @@ def format_lineup_table(lineup_players, width=100) -> str:
     return "\n".join(lines)
 
 def _wrap_markdown_console(text: str, width: int) -> str:
-    """Wrap paragraphs, but preserve headings and bullets with hanging indents."""
     out = []
     paragraphs = text.split("\n\n")
     for para in paragraphs:
@@ -96,17 +92,14 @@ def _wrap_markdown_console(text: str, width: int) -> str:
                 if not s:
                     out.append("")
                     continue
-                # headings → as-is
                 if s.lstrip().startswith(("#","##","###")):
                     out.append(s.strip())
                     continue
-                # bullets / numbered with hanging indent
                 stripped = s.lstrip()
                 indent = " " * (len(s) - len(stripped))
                 if stripped.startswith(("-", "*")):
                     content = stripped[1:].strip()
-                    wrapped = textwrap.fill(content, width=width,
-                                            initial_indent=indent + "- ",
+                    wrapped = textwrap.fill(content, width=width, initial_indent=indent + "- ",
                                             subsequent_indent=indent + "  ")
                     out.append(wrapped)
                 else:
@@ -144,17 +137,19 @@ def build_text_report(result: dict, width=100) -> str:
         ""
     ]
 
-    # Optional CONSTRAINTS section (only if locks/bans/not_found present)
+    # Constraints section
     cons = result.get('constraints', {}) or {}
     locks = cons.get('locks', []) or []
     bans = cons.get('bans', []) or []
+    auto_locked = cons.get('auto_locked', []) or []
     not_found = cons.get('not_found', []) or []
     cons_block = ""
-    if locks or bans or not_found:
+    if locks or bans or auto_locked or not_found:
         lines = ["CONSTRAINTS", "-----------"]
-        if locks:     lines.append("Locked: " + ", ".join(locks))
-        if bans:      lines.append("Banned: " + ", ".join(bans))
-        if not_found: lines.append("Not found: " + ", ".join(not_found))
+        if auto_locked: lines.append("Auto-locked: " + ", ".join(auto_locked))
+        if locks:       lines.append("Locked: " + ", ".join(locks))
+        if bans:        lines.append("Banned: " + ", ".join(bans))
+        if not_found:   lines.append("Not found: " + ", ".join(not_found))
         lines.append("")
         cons_block = "\n".join(lines)
 
