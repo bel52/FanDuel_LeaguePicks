@@ -18,5 +18,8 @@ __pycache__/
 
 # Mac
 .DS_Store
+<<<<<<< HEAD
 data/weekly/*
 logs/*
+=======
+>>>>>>> 2577e19 (v1.0 (production): late-swap locks/bans, readable CLI & /optimize_text, structured AI analysis, docs)
