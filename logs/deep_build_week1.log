@@ -1,0 +1,136 @@
+2025-09-05 00:29:43,578 [INFO] Logging started for logs/deep_build_week1.log
+2025-09-05 00:29:43,578 [INFO] === Deep Build (Week 1) ===
+2025-09-05 00:29:43,593 [INFO] Loaded 4650 players from FantasyPros CSVs.
+2025-09-05 00:29:43,789 [INFO] Fetched odds for 242 games.
+2025-09-05 00:29:43,796 [ERROR] Failed to build a valid lineup.
+2025-09-05 00:29:57,114 [INFO] Logging started for logs/deep_build_week1.log
+2025-09-05 00:29:57,115 [INFO] === Deep Build (Week 1) ===
+2025-09-05 00:29:57,129 [INFO] Loaded 4650 players from FantasyPros CSVs.
+2025-09-05 00:29:57,342 [INFO] Fetched odds for 242 games.
+2025-09-05 00:29:57,347 [ERROR] Failed to build a valid lineup.
+2025-09-05 00:31:58,101 [INFO] Logging started for logs/deep_build_week1.log
+2025-09-05 00:31:58,101 [INFO] === Deep Build (Week 1) ===
+2025-09-05 00:31:58,115 [INFO] Loaded 4650 players from FantasyPros CSVs.
+2025-09-05 00:31:58,306 [INFO] Fetched odds for 241 games.
+2025-09-05 00:31:58,314 [ERROR] Failed to build a valid lineup.
+2025-09-05 00:31:59,935 [INFO] Logging started for logs/deep_build_week1.log
+2025-09-05 00:31:59,935 [INFO] === Deep Build (Week 1) ===
+2025-09-05 00:31:59,949 [INFO] Loaded 4650 players from FantasyPros CSVs.
+2025-09-05 00:32:00,140 [INFO] Fetched odds for 241 games.
+2025-09-05 00:32:00,144 [ERROR] Failed to build a valid lineup.
+2025-09-05 00:32:01,046 [INFO] Logging started for logs/deep_build_week1.log
+2025-09-05 00:32:01,046 [INFO] === Deep Build (Week 1) ===
+2025-09-05 00:32:01,060 [INFO] Loaded 4650 players from FantasyPros CSVs.
+2025-09-05 00:32:01,281 [INFO] Fetched odds for 241 games.
+2025-09-05 00:32:01,283 [ERROR] Failed to build a valid lineup.
+2025-09-05 00:35:22,625 [INFO] Logging started for logs/deep_build_week1.log
+2025-09-05 00:35:22,625 [INFO] === Deep Build (Week 1) ===
+2025-09-05 00:35:22,639 [INFO] Loaded 4650 players from FantasyPros CSVs.
+2025-09-05 00:35:22,844 [INFO] Fetched odds for 241 games.
+2025-09-05 00:35:22,850 [ERROR] Failed to build a valid lineup.
+2025-09-05 00:52:38,760 [INFO] Logging started for logs/deep_build_week1.log
+2025-09-05 00:52:38,760 [INFO] === Deep Build (Week 1) ===
+2025-09-05 00:52:38,779 [INFO] CheatSheets rows per file: {'qb.csv': 930, 'rb.csv': 930, 'wr.csv': 930, 'te.csv': 930, 'dst.csv': 930} | kept Sunday-Main unique: 327
+2025-09-05 00:52:38,779 [INFO] Loaded per-pos: {'QB': 46, 'WR': 114, 'RB': 72, 'TE': 71, 'DST': 24}
+2025-09-05 00:52:38,978 [INFO] Fetched odds for 241 games.
+2025-09-05 00:52:38,982 [ERROR] Failed to build a valid lineup.
+2025-09-05 01:01:36,833 [INFO] Logging started for logs/deep_build_week1.log
+2025-09-05 01:01:36,834 [INFO] === Deep Build (Week 1) ===
+2025-09-05 01:01:36,857 [INFO] CheatSheets rows per file: {'qb.csv': 930, 'rb.csv': 930, 'wr.csv': 930, 'te.csv': 930, 'dst.csv': 930} | kept Sunday-Main unique: 327
+2025-09-05 01:01:36,857 [INFO] Loaded per-pos: {'QB': 46, 'WR': 114, 'RB': 72, 'TE': 71, 'DST': 24}
+2025-09-05 01:01:37,056 [INFO] Fetched odds for 241 games.
+2025-09-05 01:01:55,692 [INFO] Logging started for logs/deep_build_week1.log
+2025-09-05 01:01:55,692 [INFO] === Deep Build (Week 1) ===
+2025-09-05 01:01:55,712 [INFO] CheatSheets rows per file: {'qb.csv': 930, 'rb.csv': 930, 'wr.csv': 930, 'te.csv': 930, 'dst.csv': 930} | kept Sunday-Main unique: 327
+2025-09-05 01:01:55,712 [INFO] Loaded per-pos: {'QB': 46, 'WR': 114, 'RB': 72, 'TE': 71, 'DST': 24}
+2025-09-05 01:01:55,947 [INFO] Fetched odds for 241 games.
+2025-09-05 01:02:07,583 [INFO] Logging started for logs/deep_build_week1.log
+2025-09-05 01:02:07,583 [INFO] === Deep Build (Week 1) ===
+2025-09-05 01:02:07,604 [INFO] CheatSheets rows per file: {'qb.csv': 930, 'rb.csv': 930, 'wr.csv': 930, 'te.csv': 930, 'dst.csv': 930} | kept Sunday-Main unique: 327
+2025-09-05 01:02:07,604 [INFO] Loaded per-pos: {'QB': 46, 'WR': 114, 'RB': 72, 'TE': 71, 'DST': 24}
+2025-09-05 01:02:07,769 [INFO] Fetched odds for 241 games.
+2025-09-05 01:04:54,778 [INFO] Logging started for logs/deep_build_week1.log
+2025-09-05 01:04:54,778 [INFO] === Deep Build (Week 1) ===
+2025-09-05 01:04:54,798 [INFO] CheatSheets rows per file: {'qb.csv': 930, 'rb.csv': 930, 'wr.csv': 930, 'te.csv': 930, 'dst.csv': 930} | kept Sunday-Main unique: 327
+2025-09-05 01:04:54,798 [INFO] Loaded per-pos: {'QB': 46, 'WR': 114, 'RB': 72, 'TE': 71, 'DST': 24}
+2025-09-05 01:04:55,008 [INFO] Fetched odds for 241 games.
+2025-09-05 01:04:55,683 [INFO] Lineup (AdjScore=125.8, Salary=$59900):
+2025-09-05 01:04:55,683 [INFO]   QB: Kyler Murray (ARI) $7700 Proj 19.3
+2025-09-05 01:04:55,683 [INFO]   RB1: Bijan Robinson (ATL) $8800 Proj 17.6
+2025-09-05 01:04:55,683 [INFO]   RB2: Chase Brown (CIN) $6900 Proj 16.0
+2025-09-05 01:04:55,683 [INFO]   DST: Denver Broncos (DEN) $4800 Proj 8.2
+2025-09-05 01:04:55,683 [INFO]   FLEX: Ashton Jeanty (LV) $6400 Proj 15.0
+2025-09-05 01:04:55,683 [INFO]   WR1: Drake London (ATL) $7000 Proj 14.1
+2025-09-05 01:04:55,683 [INFO]   WR2: Marvin Harrison Jr. (ARI) $6400 Proj 12.1
+2025-09-05 01:04:55,683 [INFO]   WR3: Tetairoa McMillan (CAR) $5600 Proj 11.8
+2025-09-05 01:04:55,683 [INFO]   TE: Trey McBride (ARI) $6300 Proj 11.7
+2025-09-05 01:04:55,683 [INFO] Wrote 9 rows to data/targets/fd_target.csv
+2025-09-05 01:04:55,684 [INFO] Wrote 241 rows to data/weekly/2025_w01/board.csv
+2025-09-05 01:07:21,785 [INFO] Logging started for logs/deep_build_week1.log
+2025-09-05 01:07:21,786 [INFO] === Deep Build (Week 1) ===
+2025-09-05 01:07:21,805 [INFO] CheatSheets rows per file: {'qb.csv': 930, 'rb.csv': 930, 'wr.csv': 930, 'te.csv': 930, 'dst.csv': 930} | kept Sunday-Main unique: 327
+2025-09-05 01:07:21,805 [INFO] Loaded per-pos: {'QB': 46, 'WR': 114, 'RB': 72, 'TE': 71, 'DST': 24}
+2025-09-05 01:07:22,022 [INFO] Fetched odds for 242 games.
+2025-09-05 01:07:24,037 [INFO] Lineup (AdjScore=126.1, Salary=$59900):
+2025-09-05 01:07:24,037 [INFO]   QB: Joe Burrow (CIN) $8000 Proj 21.2
+2025-09-05 01:07:24,037 [INFO]   RB1: Chase Brown (CIN) $6900 Proj 16.0
+2025-09-05 01:07:24,037 [INFO]   RB2: Ashton Jeanty (LV) $6400 Proj 15.0
+2025-09-05 01:07:24,037 [INFO]   DST: Denver Broncos (DEN) $4800 Proj 8.2
+2025-09-05 01:07:24,037 [INFO]   FLEX: Chuba Hubbard (CAR) $6500 Proj 12.9
+2025-09-05 01:07:24,037 [INFO]   WR2: Tetairoa McMillan (CAR) $5600 Proj 11.8
+2025-09-05 01:07:24,037 [INFO]   WR3: Jaylen Waddle (MIA) $5500 Proj 10.9
+2025-09-05 01:07:24,037 [INFO]   WR1: Ja'Marr Chase (CIN) $9200 Proj 17.8
+2025-09-05 01:07:24,037 [INFO]   TE: Brock Bowers (LV) $7000 Proj 12.3
+2025-09-05 01:07:24,037 [INFO] Wrote 9 rows to data/targets/fd_target.csv
+2025-09-05 01:07:24,037 [INFO] Wrote 242 rows to data/weekly/2025_w01/board.csv
+2025-09-05 01:15:15,938 [INFO] Logging started for logs/deep_build_week1.log
+2025-09-05 01:15:15,938 [INFO] === Deep Build (Week 1) ===
+2025-09-05 01:15:15,958 [INFO] CheatSheets rows per file: {'qb.csv': 930, 'rb.csv': 930, 'wr.csv': 930, 'te.csv': 930, 'dst.csv': 930} | kept Sunday-Main unique: 327
+2025-09-05 01:15:15,958 [INFO] Loaded per-pos: {'QB': 46, 'WR': 114, 'RB': 72, 'TE': 71, 'DST': 24}
+2025-09-05 01:15:16,187 [INFO] Fetched odds for 242 games.
+2025-09-05 01:15:18,295 [INFO] Lineup (AdjScore=126.1, Salary=$59900):
+2025-09-05 01:15:18,295 [INFO]   QB: Joe Burrow (CIN) $8000 Proj 21.2
+2025-09-05 01:15:18,295 [INFO]   RB1: Chase Brown (CIN) $6900 Proj 16.0
+2025-09-05 01:15:18,295 [INFO]   RB2: Ashton Jeanty (LV) $6400 Proj 15.0
+2025-09-05 01:15:18,295 [INFO]   DST: Denver Broncos (DEN) $4800 Proj 8.2
+2025-09-05 01:15:18,295 [INFO]   FLEX: Chuba Hubbard (CAR) $6500 Proj 12.9
+2025-09-05 01:15:18,295 [INFO]   WR2: Tetairoa McMillan (CAR) $5600 Proj 11.8
+2025-09-05 01:15:18,295 [INFO]   WR3: Jaylen Waddle (MIA) $5500 Proj 10.9
+2025-09-05 01:15:18,295 [INFO]   WR1: Ja'Marr Chase (CIN) $9200 Proj 17.8
+2025-09-05 01:15:18,295 [INFO]   TE: Brock Bowers (LV) $7000 Proj 12.3
+2025-09-05 01:15:18,296 [INFO] Wrote 9 rows to data/targets/fd_target.csv
+2025-09-05 01:15:18,296 [INFO] Wrote 242 rows to data/weekly/2025_w01/board.csv
+2025-09-05 01:21:06,559 [INFO] Logging started for logs/deep_build_week1.log
+2025-09-05 01:21:06,559 [INFO] === Deep Build (Week 1) ===
+2025-09-05 01:21:06,575 [INFO] CheatSheets rows per file: {'qb.csv': 930, 'rb.csv': 930, 'wr.csv': 930, 'te.csv': 930, 'dst.csv': 930} | kept Sunday-Main unique: 727
+2025-09-05 01:21:06,575 [INFO] Loaded per-pos: {'QB': 95, 'RB': 152, 'WR': 304, 'TE': 152, 'DST': 24}
+2025-09-05 01:21:06,764 [INFO] Fetched odds for 242 games.
+2025-09-05 01:21:08,733 [INFO] Lineup (AdjScore=126.2, Salary=$59900):
+2025-09-05 01:21:08,733 [INFO]   QB: Kyler Murray (ARI) $7700 Proj 19.3
+2025-09-05 01:21:08,733 [INFO]   RB1: Christian McCaffrey (SF) $8100 Proj 17.2
+2025-09-05 01:21:08,733 [INFO]   RB2: Chase Brown (CIN) $6900 Proj 16.0
+2025-09-05 01:21:08,733 [INFO]   DST: Denver Broncos (DEN) $4800 Proj 8.2
+2025-09-05 01:21:08,733 [INFO]   FLEX: Ashton Jeanty (LV) $6400 Proj 15.0
+2025-09-05 01:21:08,733 [INFO]   WR1: Drake London (ATL) $7000 Proj 14.1
+2025-09-05 01:21:08,733 [INFO]   WR2: Tee Higgins (CIN) $7100 Proj 12.9
+2025-09-05 01:21:08,733 [INFO]   WR3: Tetairoa McMillan (CAR) $5600 Proj 11.8
+2025-09-05 01:21:08,733 [INFO]   TE: Trey McBride (ARI) $6300 Proj 11.7
+2025-09-05 01:21:08,733 [INFO] Wrote 9 rows to data/targets/fd_target.csv
+2025-09-05 01:21:08,734 [INFO] Wrote 242 rows to data/weekly/2025_w01/board.csv
+2025-09-05 01:24:46,920 [INFO] Logging started for logs/deep_build_week1.log
+2025-09-05 01:24:46,920 [INFO] === Deep Build (Week 1) ===
+2025-09-05 01:24:46,936 [INFO] CheatSheets rows per file: {'qb.csv': 930, 'rb.csv': 930, 'wr.csv': 930, 'te.csv': 930, 'dst.csv': 930} | kept Sunday-Main unique: 727
+2025-09-05 01:24:46,936 [INFO] Loaded per-pos: {'QB': 95, 'RB': 152, 'WR': 304, 'TE': 152, 'DST': 24}
+2025-09-05 01:24:47,152 [INFO] Fetched odds for 242 games.
+2025-09-05 01:24:49,147 [INFO] Lineup (AdjScore=126.2, Salary=$59900):
+2025-09-05 01:24:49,147 [INFO]   QB: Kyler Murray (ARI) $7700 Proj 19.3
+2025-09-05 01:24:49,147 [INFO]   RB1: Christian McCaffrey (SF) $8100 Proj 17.2
+2025-09-05 01:24:49,148 [INFO]   RB2: Chase Brown (CIN) $6900 Proj 16.0
+2025-09-05 01:24:49,148 [INFO]   DST: Denver Broncos (DEN) $4800 Proj 8.2
+2025-09-05 01:24:49,148 [INFO]   FLEX: Ashton Jeanty (LV) $6400 Proj 15.0
+2025-09-05 01:24:49,148 [INFO]   WR1: Drake London (ATL) $7000 Proj 14.1
+2025-09-05 01:24:49,148 [INFO]   WR2: Tee Higgins (CIN) $7100 Proj 12.9
+2025-09-05 01:24:49,148 [INFO]   WR3: Tetairoa McMillan (CAR) $5600 Proj 11.8
+2025-09-05 01:24:49,148 [INFO]   TE: Trey McBride (ARI) $6300 Proj 11.7
+2025-09-05 01:24:49,148 [INFO] Wrote 9 rows to data/targets/fd_target.csv
+2025-09-05 01:24:49,148 [INFO] Wrote 242 rows to data/weekly/2025_w01/board.csv

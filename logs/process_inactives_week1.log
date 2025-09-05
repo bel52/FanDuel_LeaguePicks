@@ -1,0 +1,24 @@
+2025-09-05 01:08:02,783 [INFO] Logging started for logs/process_inactives_week1.log
+2025-09-05 01:08:02,783 [INFO] === Inactives Processing (Week 1) ===
+2025-09-05 01:08:02,802 [INFO] CheatSheets rows per file: {'qb.csv': 930, 'rb.csv': 930, 'wr.csv': 930, 'te.csv': 930, 'dst.csv': 930} | kept Sunday-Main unique: 327
+2025-09-05 01:08:02,802 [INFO] Loaded per-pos: {'QB': 46, 'WR': 114, 'RB': 72, 'TE': 71, 'DST': 24}
+2025-09-05 01:08:02,802 [INFO] No inactives detected in current lineup.
+2025-09-05 01:08:02,802 [INFO] Wrote 9 rows to data/executed/fd_executed.csv
+2025-09-05 01:15:19,775 [INFO] Logging started for logs/process_inactives_week1.log
+2025-09-05 01:15:19,775 [INFO] === Inactives Processing (Week 1) ===
+2025-09-05 01:15:19,795 [INFO] CheatSheets rows per file: {'qb.csv': 930, 'rb.csv': 930, 'wr.csv': 930, 'te.csv': 930, 'dst.csv': 930} | kept Sunday-Main unique: 327
+2025-09-05 01:15:19,795 [INFO] Loaded per-pos: {'QB': 46, 'WR': 114, 'RB': 72, 'TE': 71, 'DST': 24}
+2025-09-05 01:15:19,795 [INFO] No inactives detected in current lineup.
+2025-09-05 01:15:19,795 [INFO] Wrote 9 rows to data/executed/fd_executed.csv
+2025-09-05 01:21:09,532 [INFO] Logging started for logs/process_inactives_week1.log
+2025-09-05 01:21:09,532 [INFO] === Inactives Processing (Week 1) ===
+2025-09-05 01:21:09,548 [INFO] CheatSheets rows per file: {'qb.csv': 930, 'rb.csv': 930, 'wr.csv': 930, 'te.csv': 930, 'dst.csv': 930} | kept Sunday-Main unique: 727
+2025-09-05 01:21:09,548 [INFO] Loaded per-pos: {'QB': 95, 'RB': 152, 'WR': 304, 'TE': 152, 'DST': 24}
+2025-09-05 01:21:09,548 [INFO] No inactives detected in current lineup.
+2025-09-05 01:21:09,548 [INFO] Wrote 9 rows to data/executed/fd_executed.csv
+2025-09-05 01:24:49,961 [INFO] Logging started for logs/process_inactives_week1.log
+2025-09-05 01:24:49,961 [INFO] === Inactives Processing (Week 1) ===
+2025-09-05 01:24:49,977 [INFO] CheatSheets rows per file: {'qb.csv': 930, 'rb.csv': 930, 'wr.csv': 930, 'te.csv': 930, 'dst.csv': 930} | kept Sunday-Main unique: 727
+2025-09-05 01:24:49,977 [INFO] Loaded per-pos: {'QB': 95, 'RB': 152, 'WR': 304, 'TE': 152, 'DST': 24}
+2025-09-05 01:24:49,977 [INFO] No inactives detected in current lineup.
+2025-09-05 01:24:49,977 [INFO] Wrote 9 rows to data/executed/fd_executed.csv

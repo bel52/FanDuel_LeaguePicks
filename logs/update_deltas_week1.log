@@ -1,0 +1,7 @@
+2025-09-05 01:07:49,641 [INFO] Logging started for logs/update_deltas_week1.log
+2025-09-05 01:07:49,641 [INFO] === Update Deltas (Week 1) ===
+2025-09-05 01:07:49,660 [INFO] CheatSheets rows per file: {'qb.csv': 930, 'rb.csv': 930, 'wr.csv': 930, 'te.csv': 930, 'dst.csv': 930} | kept Sunday-Main unique: 327
+2025-09-05 01:07:49,660 [INFO] Loaded per-pos: {'QB': 46, 'WR': 114, 'RB': 72, 'TE': 71, 'DST': 24}
+2025-09-05 01:07:49,908 [INFO] Fetched odds for 242 games.
+2025-09-05 01:07:51,965 [INFO] No changes after deltas.
+2025-09-05 01:07:51,965 [INFO] Wrote 9 rows to data/targets/fd_target.csv

@@ -1,20 +1,22 @@
-FROM python:3.11-slim
+# Multi-stage Docker build for production DFS system:contentReference[oaicite:0]{index=0}  
+FROM python:3.11-slim as builder  
+RUN apt-get update && apt-get install -y build-essential gcc  
+WORKDIR /app  
+COPY requirements.txt .  
+RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt  
 
-WORKDIR /app
-ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# App code
-COPY src/ src/
-COPY scripts/ scripts/
-
-# Data/logs (bind-mounted at runtime but created for convenience)
-RUN mkdir -p data/fantasypros data/weekly data/targets data/executed data/season data/bankroll logs
-
-ENV TZ=America/New_York
-ENV PYTHONPATH=/app
-
-# Scripts are run via `docker compose run`; keep container idle otherwise
-CMD ["tail","-f","/dev/null"]
+FROM python:3.11-slim as production  
+RUN apt-get update && apt-get install -y curl && groupadd -r dfsuser && useradd -r -g dfsuser dfsuser  
+WORKDIR /app  
+COPY --from=builder /wheels /wheels  
+RUN pip install --no-cache /wheels/*  
+COPY --chown=dfsuser:dfsuser . .  
+ENV PYTHONDONTWRITEBYTECODE=1  
+ENV PYTHONUNBUFFERED=1  
+ENV PYTHONPATH=/app  
+USER dfsuser  
+# Healthcheck to ensure service is running:contentReference[oaicite:1]{index=1}  
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \  
+    CMD curl -f http://localhost:8000/health || exit 1  
+EXPOSE 8000  
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]  
