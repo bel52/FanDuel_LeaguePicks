@@ -1,62 +1,97 @@
-from ortools.sat.python import cp_model
-import logging
+import itertools
 
-def optimize_lineup(players_df, salary_cap=60000, enforce_stack=False, min_stack_receivers=1,
-                    lock_indices=None, ban_indices=None):
-    """FanDuel NFL: QB(1), RB(2), WR(3), TE(1), FLEX(1 from RB/WR/TE), DST(1), total 9, cap=60k."""
-    model = cp_model.CpModel()
-    idxs = list(players_df.index)
-    x = {i: model.NewBoolVar(f"x{i}") for i in idxs}
+# Simple, fast search over top candidates. Not perfect but stable & deterministic.
+def optimize_lineup(df, salary_cap=60000, enforce_stack=False, min_stack_receivers=1, lock_ids=None, ban_ids=None):
+    lock_ids = set(lock_ids or [])
+    ban_ids = set(ban_ids or [])
 
-    # Salary cap
-    model.Add(sum(int(players_df.loc[i,'SALARY']) * x[i] for i in idxs) <= salary_cap)
+    use = df[~df.index.isin(ban_ids)].copy()
 
-    # Pos groups
-    qb_idx = [i for i in idxs if players_df.loc[i,'POS'] == 'QB']
-    rb_idx = [i for i in idxs if players_df.loc[i,'POS'] == 'RB']
-    wr_idx = [i for i in idxs if players_df.loc[i,'POS'] == 'WR']
-    te_idx = [i for i in idxs if players_df.loc[i,'POS'] == 'TE']
-    dst_idx = [i for i in idxs if players_df.loc[i,'POS'] == 'DST']
+    # Keep only necessary columns
+    cols = ["PLAYER NAME","POS","TEAM","OPP","PROJ PTS","SALARY","PROJ ROSTER %","OWN_PCT"]
+    for c in cols:
+        if c not in use.columns:
+            use[c] = None
 
-    if qb_idx:  model.Add(sum(x[i] for i in qb_idx) == 1)
-    if dst_idx: model.Add(sum(x[i] for i in dst_idx) == 1)
-    if rb_idx:  model.Add(sum(x[i] for i in rb_idx) >= 2)
-    if wr_idx:  model.Add(sum(x[i] for i in wr_idx) >= 3)
-    if te_idx:  model.Add(sum(x[i] for i in te_idx) >= 1)
+    # Index we will use to refer back
+    use = use.reset_index().rename(columns={"index":"RID"})
 
-    # RB/WR/TE = 7 (2 RB + 3 WR + 1 TE + 1 FLEX)
-    model.Add(sum(x[i] for i in (rb_idx + wr_idx + te_idx)) == 7)
+    # Split by pos and take top N by projection to constrain the search space
+    def topn(pos, n):
+        subset = use[use["POS"]==pos].sort_values("PROJ PTS", ascending=False).head(n)
+        return subset
 
-    # Total players
-    model.Add(sum(x[i] for i in idxs) == 9)
+    Q = topn("QB", 5)
+    R = topn("RB", 7)
+    W = topn("WR", 8)
+    T = topn("TE", 6)
+    D = topn("DST", 5)
 
-    # Late-swap locks/bans
-    lock_indices = lock_indices or []
-    ban_indices = ban_indices or []
-    for i in lock_indices:
-        if i in x:
-            model.Add(x[i] == 1)
-    for i in ban_indices:
-        if i in x:
-            model.Add(x[i] == 0)
+    best = None
+    best_pts = -1
 
-    # Optional stacking
-    if enforce_stack and qb_idx:
-        for q in qb_idx:
-            q_team = str(players_df.loc[q,'TEAM'])
-            receivers_same_team = [j for j in (wr_idx + te_idx) if str(players_df.loc[j,'TEAM']) == q_team]
-            if receivers_same_team:
-                model.Add(sum(x[j] for j in receivers_same_team) >= min_stack_receivers * x[q])
+    # Precompute flex pool
+    F = use[use["POS"].isin(["RB","WR","TE"])].sort_values("PROJ PTS", ascending=False).head(20)
 
-    # Objective
-    model.Maximize(sum(int(float(players_df.loc[i,'PROJ PTS']) * 10) * x[i] for i in idxs))
-
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 10
-    status = solver.Solve(model)
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        logging.error("No feasible lineup found.")
+    # lock feasibility: must include all locks
+    lock_set = set(lock_ids)
+    lock_rows = use[use["RID"].isin(lock_set)]
+    # If any lock is banned/absent, return empty
+    if len(lock_rows) != len(lock_set):
         return []
-    chosen = [i for i in idxs if solver.Value(x[i]) == 1]
-    logging.info(f"Selected {len(chosen)} players. Objective={solver.ObjectiveValue()/10:.2f}")
-    return chosen
+
+    # Utility
+    def total(items, col): return sum(float(x[col]) for _,x in items)
+    def names(items): return [x["RID"] for _,x in items]
+
+    for q in Q.iterrows():
+        for r2 in itertools.combinations(R.iterrows(), 2):
+            for w3 in itertools.combinations(W.iterrows(), 3):
+                for t in T.iterrows():
+                    for d in D.iterrows():
+                        chosen = list(r2) + list(w3) + [q, t, d]
+                        chosen_ids = set(names(chosen))
+                        # add FLEX best fit not already chosen
+                        remaining = salary_cap - int(total(chosen, "SALARY"))
+                        if remaining <= 0:
+                            continue
+                        flex = None
+                        for f in F.iterrows():
+                            frid = f[1]["RID"]
+                            if frid in chosen_ids: continue
+                            if int(f[1]["SALARY"]) <= remaining:
+                                flex = f
+                                break
+                        if not flex:
+                            continue
+
+                        final = chosen + [flex]
+                        final_ids = set(names(final))
+
+                        # must include all locks
+                        if not lock_set.issubset(final_ids):
+                            continue
+
+                        # stack rule: if enforce_stack, QB team must have >= min_stack_receivers among WR/TE
+                        if enforce_stack:
+                            qb_team = str(q[1]["TEAM"])
+                            recv = 0
+                            for it in final:
+                                pos = it[1]["POS"]
+                                tm = str(it[1]["TEAM"])
+                                if pos in ("WR","TE") and tm == qb_team:
+                                    recv += 1
+                            if recv < int(min_stack_receivers):
+                                continue
+
+                        pts = total(final, "PROJ PTS")
+                        sal = int(total(final, "SALARY"))
+                        if sal <= salary_cap and pts > best_pts:
+                            best = final
+                            best_pts = pts
+
+    if not best:
+        return []
+
+    # Return original df row indices (RID is original index)
+    return [int(it[1]["RID"]) for it in best]

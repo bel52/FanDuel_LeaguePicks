@@ -1,102 +1,65 @@
 import os
-import logging
+import datetime as dt
+from zoneinfo import ZoneInfo
 import requests
-from datetime import datetime, timedelta, timezone
-from typing import Dict
-try:
-    import pytz
-except Exception:
-    pytz = None
 
-ODDS_API_KEY = os.getenv("ODDS_API_KEY")
-DEFAULT_TZ = os.getenv("TIMEZONE", "America/Chicago")
+def _to_local_iso(iso_utc: str, tz_name: str) -> str:
+    # ESPN returns '2025-09-14T16:05Z' or with offset; normalize:
+    iso = iso_utc.replace("Z", "+00:00")
+    t = dt.datetime.fromisoformat(iso)
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=dt.timezone.utc)
+    target = ZoneInfo(tz_name)
+    return t.astimezone(target).isoformat()
 
-TEAM_NAME_TO_ABBR = {
-    "Arizona Cardinals":"ARI","Atlanta Falcons":"ATL","Baltimore Ravens":"BAL","Buffalo Bills":"BUF",
-    "Carolina Panthers":"CAR","Chicago Bears":"CHI","Cincinnati Bengals":"CIN","Cleveland Browns":"CLE",
-    "Dallas Cowboys":"DAL","Denver Broncos":"DEN","Detroit Lions":"DET","Green Bay Packers":"GB",
-    "Houston Texans":"HOU","Indianapolis Colts":"IND","Jacksonville Jaguars":"JAC","Kansas City Chiefs":"KC",
-    "Las Vegas Raiders":"LV","Los Angeles Chargers":"LAC","Los Angeles Rams":"LAR","Miami Dolphins":"MIA",
-    "Minnesota Vikings":"MIN","New England Patriots":"NE","New Orleans Saints":"NO","New York Giants":"NYG",
-    "New York Jets":"NYJ","Philadelphia Eagles":"PHI","Pittsburgh Steelers":"PIT","San Francisco 49ers":"SF",
-    "Seattle Seahawks":"SEA","Tampa Bay Buccaneers":"TB","Tennessee Titans":"TEN","Washington Commanders":"WAS",
-}
+def fetch_kickoffs_from_espn(days_ahead: int = 10, tz_name: str = "America/New_York"):
+    base = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+    today = dt.date.today()
+    end = today + dt.timedelta(days=days_ahead)
+    params = {"limit":"1000","dates":f"{today:%Y%m%d}-{end:%Y%m%d}"}
+    r = requests.get(base, params=params, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    events = data.get("events") or []
+    m = {}
+    for ev in events:
+        comps = (ev.get("competitions") or [{}])[0]
+        start = comps.get("date") or ev.get("date") or ev.get("startDate")
+        if not start:
+            continue
+        for team in (comps.get("competitors") or []):
+            abbr = ((team.get("team") or {}).get("abbreviation") or "").upper()
+            if abbr:
+                m[abbr] = _to_local_iso(start, tz_name)
+    return m
 
-ALT_NAMES = {
-    "Washington Football Team":"WAS","Oakland Raiders":"LV","San Diego Chargers":"LAC","St. Louis Rams":"LAR",
-    "Jacksonville":"JAC","New York Jets":"NYJ","NY Jets":"NYJ","New York Giants":"NYG","NY Giants":"NYG",
-    "Tampa Bay":"TB","New England":"NE","San Francisco":"SF","Kansas City":"KC","Green Bay":"GB",
-    "Cleveland":"CLE","Cincinnati":"CIN","Pittsburgh":"PIT","Baltimore":"BAL","Buffalo":"BUF","Miami":"MIA",
-    "Detroit":"DET","Dallas":"DAL","Denver":"DEN","Chicago":"CHI","Carolina":"CAR","Atlanta":"ATL","Seattle":"SEA",
-    "Indianapolis":"IND","Houston":"HOU","Tennessee":"TEN","Philadelphia":"PHI","Minnesota":"MIN","Los Angeles Chargers":"LAC",
-    "Los Angeles Rams":"LAR","Las Vegas":"LV","New Orleans":"NO","Arizona":"ARI","Jacksonville Jaguars":"JAC",
-}
-
-def _to_abbr(name: str) -> str|None:
-    if not name: return None
-    name = str(name).strip()
-    if name in TEAM_NAME_TO_ABBR: return TEAM_NAME_TO_ABBR[name]
-    if name in ALT_NAMES: return ALT_NAMES[name]
-    # Sometimes API returns abbreviations already
-    if name.isupper() and len(name) in (2,3): return name
-    return None
-
-def _localize(dt_utc: datetime) -> datetime:
-    if pytz is None: return dt_utc
-    try:
-        tz = pytz.timezone(DEFAULT_TZ)
-        return dt_utc.astimezone(tz)
-    except Exception:
-        return dt_utc
-
-def fetch_kickoffs_from_oddsapi() -> Dict[str, datetime]:
-    """
-    Returns {TEAM_ABBR: kickoff_local_dt, ...} using The Odds API.
-    Endpoint: /v4/sports/americanfootball_nfl/odds?regions=us&markets=h2h&oddsFormat=american&apiKey=...
-    """
-    if not ODDS_API_KEY:
-        logging.warning("ODDS_API_KEY not set; cannot fetch schedule from The Odds API.")
+def fetch_kickoffs_from_oddsapi_events(tz_name: str = "America/New_York"):
+    key = os.getenv("ODDS_API_KEY")
+    if not key:
         return {}
-
-    url = "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds"
-    params = {
-        "regions": "us",
-        "markets": "h2h",
-        "oddsFormat": "american",
-        "apiKey": ODDS_API_KEY,
-    }
+    url = "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events"
+    # Ask for a broad window (14d) to avoid 422 on missing params
+    params = {"apiKey": key}
     try:
-        r = requests.get(url, params=params, timeout=15)
+        r = requests.get(url, params=params, timeout=20)
         r.raise_for_status()
         events = r.json() or []
-    except Exception as e:
-        logging.error(f"Odds API request failed: {e}")
+    except Exception:
         return {}
-
-    # Construct kickoff map
-    ko_map: Dict[str, datetime] = {}
-    now = datetime.now(timezone.utc)
-    horizon = now + timedelta(days=10)  # look ~10 days ahead
+    # Try simple mapping by team abbreviations in 'home_team','away_team' if present
+    m = {}
     for ev in events:
-        ct = ev.get("commence_time")
-        home = ev.get("home_team")
-        away = ev.get("away_team")
-        if not ct or not (home and away): continue
-        try:
-            dt_utc = datetime.fromisoformat(ct.replace("Z","+00:00"))
-        except Exception:
+        start = ev.get("commence_time")
+        if not start:
             continue
-        # only keep future games within horizon
-        if not (now - timedelta(days=1) <= dt_utc <= horizon):
-            continue
-        for nm in (home, away):
-            abbr = _to_abbr(nm)
-            if not abbr:
-                logging.debug(f"Unmapped team name from Odds API: {nm}")
-                continue
-            ko_map[abbr] = _localize(dt_utc)
-    if not ko_map:
-        logging.warning("No kickoff times parsed from Odds API.")
-    else:
-        logging.info(f"Built kickoff map for {len(ko_map)} teams from Odds API.")
-    return ko_map
+        start = start.replace("Z", "+00:00")
+        t = dt.datetime.fromisoformat(start)
+        target = ZoneInfo(tz_name)
+        loc = t.astimezone(target).isoformat()
+        # Odds API team names are long; we can't 100% map. Skip unless already an abbreviation-like 2-4 chars.
+        for k in ("home_team","away_team"):
+            name = ev.get(k) or ""
+            abbr = name.strip().upper()
+            if 2 <= len(abbr) <= 4:  # very naive; ESPN will be our authoritative source
+                m[abbr] = loc
+    return m
