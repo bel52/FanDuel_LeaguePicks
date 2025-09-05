@@ -52,7 +52,7 @@ def _run_optimization(salary_cap: int, enforce_stack: bool, min_stack_receivers:
     lock_idx_manual, lock_nf_manual = match_names_to_indices(lock_names or [], players_df)
     ban_idx_manual,  ban_nf_manual  = match_names_to_indices(ban_names or [],  players_df)
 
-    # Auto-lock based on kickoff times from last saved lineup
+    # Auto-lock from last saved lineup based on kickoff times
     kickoff_map = build_kickoff_map(players_df) if auto_late_swap else {}
     lock_idx_auto, auto_locked_names, nf_auto = auto_lock_started_players(players_df, kickoff_map) if kickoff_map else ([], [], [])
 
@@ -113,7 +113,7 @@ def _run_optimization(salary_cap: int, enforce_stack: bool, min_stack_receivers:
             'own_pct': (None if 'OWN_PCT' not in row else (None if pd.isna(row['OWN_PCT']) else float(row['OWN_PCT'])))
         })
 
-    # Persist last lineup for future auto-locks
+    # Save for next auto-lock run
     try:
         save_last_lineup(lineup_players, meta={
             "salary_cap": salary_cap,
@@ -123,7 +123,7 @@ def _run_optimization(salary_cap: int, enforce_stack: bool, min_stack_receivers:
     except Exception as e:
         logging.warning(f"Failed to save last lineup: {e}")
 
-    result = {
+    return {
         "params": {
             "salary_cap": salary_cap,
             "enforce_stack": enforce_stack,
@@ -137,15 +137,14 @@ def _run_optimization(salary_cap: int, enforce_stack: bool, min_stack_receivers:
             "not_found": list(set(lock_nf_manual + ban_nf_manual + nf_auto))
         },
         "cap_usage": {
-            "total_salary": total_salary,
-            "remaining": salary_cap - total_salary
+            "total_salary": int(total_salary),
+            "remaining": int(salary_cap - total_salary)
         },
         "lineup": lineup_players,
         "total_projected_points": round(total_proj, 2),
         "simulation": sim_results,
         "analysis": ai_text if ai_text else "Analysis not available"
     }
-    return result
 
 @app.get("/optimize")
 def optimize_endpoint(
@@ -173,14 +172,11 @@ def optimize_text_endpoint(
         msg = f"ERROR: {result['error']}\n"
         cons = result.get("constraints", {})
         if cons:
-            msg += f"Locks: {', '.join(cons.get('locks',[]))}\n"
-            msg += f"Bans: {', '.join(cons.get('bans',[]))}\n"
-            auto_l = cons.get("auto_locked", [])
-            if auto_l:
-                msg += f"Auto-locked: {', '.join(auto_l)}\n"
+            if cons.get("auto_locked"): msg += f"Auto-locked: {', '.join(cons['auto_locked'])}\n"
+            if cons.get("locks"):       msg += f"Locks: {', '.join(cons['locks'])}\n"
+            if cons.get("bans"):        msg += f"Bans: {', '.join(cons['bans'])}\n"
             nf = cons.get('not_found', [])
-            if nf:
-                msg += f"Not found: {', '.join(nf)}\n"
+            if nf:                       msg += f"Not found: {', '.join(nf)}\n"
         return msg
     return build_text_report(result, width=width)
 
