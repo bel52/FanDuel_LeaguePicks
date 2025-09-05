@@ -2,6 +2,7 @@ import re
 import textwrap
 
 def _clean_player_name(full_name: str) -> str:
+    """Strip '(TEAM - POS)' and trailing injury tags like 'Q', 'O', 'GTD', etc."""
     if not full_name:
         return ""
     base = re.sub(r'\s*\([^)]+\)\s*', '', str(full_name)).strip()
@@ -25,13 +26,14 @@ def _pad(s: str, width: int) -> str:
     return (s[:width]).ljust(width)
 
 def format_lineup_table(lineup_players, width=100) -> str:
-    pos_w = 4   # a touch wider for 'FLEX'
+    # Column widths (tuned for readability)
+    pos_w = 4
     team_w = 4
     opp_w = 4
     sal_w = 9
     proj_w = 6
     own_w = 6
-    fixed = pos_w + team_w + opp_w + sal_w + proj_w + own_w + 6*3
+    fixed = pos_w + team_w + opp_w + sal_w + proj_w + own_w + 6*3  # pipes + spaces
     player_w = max(18, min(44, width - fixed))
 
     header = (
@@ -53,6 +55,7 @@ def format_lineup_table(lineup_players, width=100) -> str:
         opp = _pad(p.get("opponent",""), opp_w)
         sal = _fmt_money(p.get("salary"))
         proj = f"{float(p.get('proj_points',0.0)):.1f}"
+        # own% numeric if provided; else parse "20-30%-" mid-point
         own = p.get("own_pct")
         if own is None:
             raw = str(p.get("proj_roster_pct_raw","")).replace("%","")
@@ -77,7 +80,7 @@ def format_lineup_table(lineup_players, width=100) -> str:
     return "\n".join(lines)
 
 def _wrap_markdown_console(text: str, width: int) -> str:
-    """Wrap paragraphs but preserve headings and bullets with proper indentation."""
+    """Wrap paragraphs, but preserve headings and bullets with hanging indents."""
     out = []
     paragraphs = text.split("\n\n")
     for para in paragraphs:
@@ -85,7 +88,6 @@ def _wrap_markdown_console(text: str, width: int) -> str:
         if not lines:
             out.append("")
             continue
-        # Is this a list or heading block?
         is_list = all(l.strip().startswith(("-", "*")) or re.match(r"^\d+\.\s", l.strip() or "") for l in lines if l.strip()) \
                   or any(l.strip().startswith(("#","##","###")) for l in lines)
         if is_list:
@@ -94,16 +96,17 @@ def _wrap_markdown_console(text: str, width: int) -> str:
                 if not s:
                     out.append("")
                     continue
-                # Headings: print as-is
+                # headings → as-is
                 if s.lstrip().startswith(("#","##","###")):
                     out.append(s.strip())
                     continue
-                # Bullets/numbers: wrap with hanging indent
+                # bullets / numbered with hanging indent
                 stripped = s.lstrip()
                 indent = " " * (len(s) - len(stripped))
                 if stripped.startswith(("-", "*")):
                     content = stripped[1:].strip()
-                    wrapped = textwrap.fill(content, width=width, initial_indent=indent + "- ",
+                    wrapped = textwrap.fill(content, width=width,
+                                            initial_indent=indent + "- ",
                                             subsequent_indent=indent + "  ")
                     out.append(wrapped)
                 else:
@@ -140,28 +143,22 @@ def build_text_report(result: dict, width=100) -> str:
         f"Total Projection: {total_proj:.2f} pts",
         ""
     ]
-    table = format_lineup_table(lineup, width=width)
 
-    # Render constraints section if provided
-    cons = result.get('constraints', {})
+    # Optional CONSTRAINTS section (only if locks/bans/not_found present)
+    cons = result.get('constraints', {}) or {}
     locks = cons.get('locks', []) or []
     bans = cons.get('bans', []) or []
     not_found = cons.get('not_found', []) or []
-    cons_lines = []
+    cons_block = ""
     if locks or bans or not_found:
-        cons_lines.append('CONSTRAINTS')
-        cons_lines.append('-----------')
-        if locks:
-            cons_lines.append('Locked: ' + ', '.join(locks))
-        if bans:
-            cons_lines.append('Banned: ' + ', '.join(bans))
-        if not_found:
-            cons_lines.append('Not found: ' + ', '.join(not_found))
-        cons_lines.append('')
-        cons_block='\n'.join(cons_lines)
-    else:
-        cons_block=''
+        lines = ["CONSTRAINTS", "-----------"]
+        if locks:     lines.append("Locked: " + ", ".join(locks))
+        if bans:      lines.append("Banned: " + ", ".join(bans))
+        if not_found: lines.append("Not found: " + ", ".join(not_found))
+        lines.append("")
+        cons_block = "\n".join(lines)
 
+    table = format_lineup_table(lineup, width=width)
 
     sim_lines = [
         "",
