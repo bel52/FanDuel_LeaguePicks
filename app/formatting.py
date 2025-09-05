@@ -8,15 +8,9 @@ def _clean_player_name(full_name: str) -> str:
     base = re.sub(r'\s+(Q|O|D|T|GTD|P)$', '', base).strip()
     return base
 
-def _fmt_money(n: int) -> str:
+def _fmt_money(n) -> str:
     try:
         return f"${int(n):,}"
-    except Exception:
-        return "-"
-
-def _fmt_pct(x) -> str:
-    try:
-        return f"{float(x):.1f}%"
     except Exception:
         return "-"
 
@@ -25,14 +19,15 @@ def _pad(s: str, width: int) -> str:
     return (s[:width]).ljust(width)
 
 def format_lineup_table(lineup_players, width=100) -> str:
-    pos_w = 4
+    # POS | PLAYER | TEAM | OPP | SALARY | PROJ | OWN%
+    pos_w = 3
     team_w = 4
-    opp_w = 4
-    sal_w = 9
+    opp_w  = 4
+    sal_w  = 8
     proj_w = 6
-    own_w = 6
+    own_w  = 6
     fixed = pos_w + team_w + opp_w + sal_w + proj_w + own_w + 6*3
-    player_w = max(18, min(44, width - fixed))
+    player_w = max(18, min(40, width - fixed))
 
     header = (
         f"{'POS':<{pos_w}} | "
@@ -44,135 +39,99 @@ def format_lineup_table(lineup_players, width=100) -> str:
         f"{'OWN%':>{own_w}}"
     )
     sep = "-" * len(header)
-
     lines = [header, sep]
-    for p in lineup_players:
-        pos = _pad(p.get("position",""), pos_w)
-        name = _pad(_clean_player_name(p.get("name","")), player_w)
-        team = _pad(p.get("team",""), team_w)
-        opp = _pad(p.get("opponent",""), opp_w)
-        sal = _fmt_money(p.get("salary"))
-        proj = f"{float(p.get('proj_points',0.0)):.1f}"
-        own = p.get("own_pct")
-        if own is None:
-            raw = str(p.get("proj_roster_pct_raw","")).replace("%","")
-            m = re.findall(r"\d+\.?\d*", raw)
-            if len(m) == 1:
-                own = float(m[0])
-            elif len(m) >= 2:
-                own = (float(m[0]) + float(m[1]))/2.0
-        own_txt = _fmt_pct(own) if own is not None else "-"
 
-        line = (
+    for p in lineup_players:
+        pos = _pad(p.get('position',''), pos_w)
+        name = _clean_player_name(p.get('name',''))
+        team = _pad(p.get('team',''), team_w)
+        opp  = _pad(p.get('opponent',''), opp_w)
+        sal  = _pad(_fmt_money(p.get('salary',0)), sal_w)
+        proj = _pad(f"{float(p.get('proj_points',0.0)):.1f}", proj_w)
+        own_pct = p.get('own_pct')
+        if own_pct is None:
+            raw = str(p.get('proj_roster_pct_raw') or "").strip("-").strip()
+            own_str = raw or ""
+        else:
+            own_str = f"{float(own_pct):.1f}%"
+        own  = _pad(own_str if own_str else " - ", own_w)
+
+        lines.append(
             f"{pos} | "
-            f"{name} | "
+            f"{_pad(name, player_w)} | "
             f"{team} | "
             f"{opp} | "
             f"{sal:>{sal_w}} | "
             f"{proj:>{proj_w}} | "
-            f"{own_txt:>{own_w}}"
+            f"{own:>{own_w}}"
         )
-        lines.append(line)
-
     return "\n".join(lines)
 
-def _wrap_markdown_console(text: str, width: int) -> str:
-    out = []
-    paragraphs = text.split("\n\n")
-    for para in paragraphs:
-        lines = para.splitlines()
-        if not lines:
-            out.append("")
-            continue
-        is_list = all(l.strip().startswith(("-", "*")) or re.match(r"^\d+\.\s", l.strip() or "") for l in lines if l.strip()) \
-                  or any(l.strip().startswith(("#","##","###")) for l in lines)
-        if is_list:
-            for l in lines:
-                s = l.rstrip()
-                if not s:
-                    out.append("")
-                    continue
-                if s.lstrip().startswith(("#","##","###")):
-                    out.append(s.strip())
-                    continue
-                stripped = s.lstrip()
-                indent = " " * (len(s) - len(stripped))
-                if stripped.startswith(("-", "*")):
-                    content = stripped[1:].strip()
-                    wrapped = textwrap.fill(content, width=width, initial_indent=indent + "- ",
-                                            subsequent_indent=indent + "  ")
-                    out.append(wrapped)
-                else:
-                    m = re.match(r"^(\d+)\.\s+(.*)$", stripped)
-                    if m:
-                        num, content = m.group(1), m.group(2)
-                        prefix = f"{num}. "
-                        wrapped = textwrap.fill(content, width=width,
-                                                initial_indent=indent + prefix,
-                                                subsequent_indent=indent + " " * len(prefix))
-                        out.append(wrapped)
-                    else:
-                        out.append(textwrap.fill(s, width=width))
-            out.append("")
-        else:
-            out.append(textwrap.fill(para.strip(), width=width))
-            out.append("")
-    return "\n".join(out).rstrip() + "\n"
-
-def build_text_report(result: dict, width=100) -> str:
-    cap = result.get("cap_usage", {})
-    lineup = result.get("lineup", [])
-    total_proj = result.get("total_projected_points", 0.0)
-    sim = result.get("simulation", {}) or {}
-    analysis = result.get("analysis", "")
+def build_text_report(result, width=100) -> str:
+    width = max(70, min(160, int(width)))
 
     title = "FANDUEL OPTIMIZED LINEUP"
-    bar = "=" * min(len(title), width)
+    header = f"{title}\n{'='*len(title)}"
 
-    header = [
-        title,
-        bar,
-        f"Cap Used: {_fmt_money(cap.get('total_salary',0))}  |  Remaining: {_fmt_money(cap.get('remaining',0))}",
-        f"Total Projection: {total_proj:.2f} pts",
-        ""
-    ]
+    cap = result.get('cap_usage', {}) or {}
+    cap_line = f"Cap Used: {_fmt_money(cap.get('total_salary',0))}  |  Remaining: {_fmt_money(cap.get('remaining',0))}"
+    proj_line = f"Total Projection: {float(result.get('total_projected_points',0.0)):.2f} pts"
 
-    # Constraints section
-    cons = result.get('constraints', {}) or {}
-    locks = cons.get('locks', []) or []
-    bans = cons.get('bans', []) or []
-    auto_locked = cons.get('auto_locked', []) or []
-    not_found = cons.get('not_found', []) or []
+    cons = result.get("constraints", {}) or {}
+    auto_locked = [*cons.get("auto_locked", [])]
+    locked      = [*cons.get("locks", [])]
+    banned      = [*cons.get("bans", [])]
+    not_found   = [*cons.get("not_found", [])]
     cons_block = ""
-    if locks or bans or auto_locked or not_found:
-        lines = ["CONSTRAINTS", "-----------"]
-        if auto_locked: lines.append("Auto-locked: " + ", ".join(auto_locked))
-        if locks:       lines.append("Locked: " + ", ".join(locks))
-        if bans:        lines.append("Banned: " + ", ".join(bans))
-        if not_found:   lines.append("Not found: " + ", ".join(not_found))
-        lines.append("")
-        cons_block = "\n".join(lines)
+    if auto_locked or locked or banned or not_found:
+        cons_lines = ["CONSTRAINTS", "-"*len("CONSTRAINTS")]
+        if auto_locked: cons_lines.append(f"Auto-locked: {', '.join(auto_locked)}")
+        if locked:      cons_lines.append(f"Locked: {', '.join(locked)}")
+        if banned:      cons_lines.append(f"Banned: {', '.join(banned)}")
+        if not_found:   cons_lines.append(f"Not found: {', '.join(not_found)}")
+        cons_lines.append("")
+        cons_block = "\n".join(cons_lines)
 
-    table = format_lineup_table(lineup, width=width)
+    table = format_lineup_table(result.get('lineup', []), width=width)
 
-    sim_lines = [
-        "",
+    sim = result.get('simulation', {}) or {}
+    mean = float(sim.get('mean_score', 0.0))
+    std  = float(sim.get('std_dev', 0.0)) if sim.get('std_dev') is not None else 0.0
+    pcts = sim.get('percentiles', {}) or {}
+    p50  = float(pcts.get('50th', 0.0))
+    p90  = float(pcts.get('90th', 0.0))
+    p95  = float(pcts.get('95th', 0.0))
+    sharpe = float(sim.get('sharpe_ratio', 0.0))
+    sim_block = "\n".join([
         "SIMULATION SUMMARY",
         "------------------",
-        f"Mean: {sim.get('mean_score',0):.2f}   "
-        f"StdDev: {sim.get('std_dev',0):.2f}   "
-        f"P50: {sim.get('percentiles',{}).get('50th',0):.2f}   "
-        f"P90: {sim.get('percentiles',{}).get('90th',0):.2f}   "
-        f"P95: {sim.get('percentiles',{}).get('95th',0):.2f}   "
-        f"Sharpe: {sim.get('sharpe_ratio',0):.3f}",
+        f"Mean: {mean:.2f}   StdDev: {std:.2f}   P50: {p50:.2f}   P90: {p90:.2f}   P95: {p95:.2f}   Sharpe: {sharpe:.3f}",
         ""
-    ]
+    ])
 
-    if analysis and isinstance(analysis, str):
-        pretty = _wrap_markdown_console(analysis.strip(), width=width)
-        analysis_lines = ["ANALYSIS", "--------", pretty.rstrip()]
+    analysis_text = str(result.get("analysis") or "Analysis not available").strip()
+    if analysis_text and not analysis_text.lower().startswith("analysis not available"):
+        txt = analysis_text
+        for sect in ["Correlation", "Leverage", "Risk", "Risk/Ceiling", "Strengths", "Weaknesses", "Swap Ideas", "Suggested Swaps"]:
+            txt = re.sub(rf"(?i)\b{re.escape(sect)}\b\s*:?", sect.upper() + ":", txt)
+        blocks = ["ANALYSIS", "--------"]
+        for para in txt.split("\n"):
+            para = re.sub(r"\s+", " ", para).strip()
+            if para:
+                blocks.append(textwrap.fill(para, width=width))
+        analysis_block = "\n".join(blocks) + "\n"
     else:
-        analysis_lines = ["ANALYSIS", "--------", "Analysis not available"]
+        analysis_block = "ANALYSIS\n--------\nAnalysis not available\n"
 
-    blocks = header + ([cons_block] if cons_block else []) + [table] + sim_lines + analysis_lines
-    return "\n".join(blocks) + "\n"
+    parts = [
+        header,
+        cap_line,
+        proj_line,
+        "",
+        cons_block if cons_block else "",
+        table,
+        "",
+        sim_block,
+        analysis_block
+    ]
+    return "\n".join([p for p in parts if p is not None and p != ""])

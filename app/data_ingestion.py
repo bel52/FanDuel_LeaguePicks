@@ -1,112 +1,64 @@
 import os
-import logging
 import pandas as pd
+import re
 
-from .normalizer import normalize
+INPUT_DIR = "data/input"
 
-# Optional Playwright usage
-try:
-    from playwright.sync_api import sync_playwright
-except ImportError:
-    sync_playwright = None
+def _safe_float(x, default=0.0):
+    try: return float(x)
+    except Exception: return default
 
-class FantasyProsAutomation:
-    def __init__(self):
-        self.auth_state_file = "fantasypros_auth.json"
-
-    def authenticate_and_save_state(self, username, password):
-        if sync_playwright is None:
-            logging.error("Playwright not installed/available.")
-            return False
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context()
-            page = context.new_page()
-            page.goto('https://fantasypros.com/login')
-            page.fill('#username', username)
-            page.fill('#password', password)
-            page.click('button[type=submit]')
-            page.wait_for_url('**/dashboard**')
-            context.storage_state(path=self.auth_state_file)
-            browser.close()
-            logging.info("FantasyPros login successful; state saved.")
-            return True
-
-    def collect_data_with_rate_limiting(self):
-        if sync_playwright is None:
-            logging.error("Playwright not available for collection.")
-            return None
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(storage_state=self.auth_state_file)
-            page = context.new_page()
-            import time
-            time.sleep(2)  # respectful delay
-            page.goto('https://fantasypros.com/premium-data')
-            data = None
-            try:
-                data = page.evaluate("() => window.playerData")
-            except Exception as e:
-                logging.error(f"Data extraction failed: {e}")
-            browser.close()
-            return data
-
-def _load_csv(path: str, pos_hint: str):
-    try:
-        df = pd.read_csv(path)
-        return normalize(df, pos_hint=pos_hint)
-    except Exception as e:
-        logging.error(f"Failed to read/normalize {path}: {e}")
-        return None
+def _parse_own(x):
+    # Accept "20-30%-" -> 25.0
+    if x is None: return None
+    s = str(x).strip().replace("%","").replace("-"," ").replace("–"," ")
+    nums = [float(n) for n in re.findall(r"[0-9]+\.?[0-9]*", s)]
+    if not nums: return None
+    return sum(nums)/len(nums)
 
 def load_weekly_data():
-    """Load and merge weekly projections from data/input/{qb,rb,wr,te,dst}.csv.
-       If none present, try FantasyPros scraping (requires creds)."""
-    data_dir = "data/input"
-    plan = [
-        ("qb.csv","QB"),
-        ("rb.csv","RB"),
-        ("wr.csv","WR"),
-        ("te.csv","TE"),
-        ("dst.csv","DST"),
-    ]
+    files = {
+        "QB": os.path.join(INPUT_DIR, "qb.csv"),
+        "RB": os.path.join(INPUT_DIR, "rb.csv"),
+        "WR": os.path.join(INPUT_DIR, "wr.csv"),
+        "TE": os.path.join(INPUT_DIR, "te.csv"),
+        "DST": os.path.join(INPUT_DIR, "dst.csv"),
+    }
     frames = []
-    existing = []
-    for fname, phint in plan:
-        fpath = os.path.join(data_dir, fname)
-        if os.path.isfile(fpath):
-            existing.append(fpath)
-            frames.append(_load_csv(fpath, phint))
-    frames = [f for f in frames if f is not None and not f.empty]
-    if frames:
-        df = pd.concat(frames, ignore_index=True)
-        # Deduplicate by name/team/pos, keep max proj
-        df = (df.sort_values('PROJ PTS', ascending=False)
-                .drop_duplicates(subset=['PLAYER NAME','TEAM','POS'], keep='first')
-                .reset_index(drop=True))
-        logging.info(f"Loaded {len(df)} players from: {', '.join(os.path.basename(x) for x in existing)}")
-        return df
-
-    # Else: attempt scrape if creds provided
-    user = os.getenv('FANTASYPROS_USER')
-    pwd = os.getenv('FANTASYPROS_PASS')
-    if not user or not pwd:
-        logging.error("No local CSVs and FantasyPros credentials not provided.")
-        return None
-    logging.info("No local CSVs found. Starting FantasyPros scrape...")
-    fp = FantasyProsAutomation()
-    if not os.path.exists("fantasypros_auth.json"):
-        ok = fp.authenticate_and_save_state(user, pwd)
-        if not ok:
+    for pos, path in files.items():
+        if not os.path.exists(path): continue
+        df = pd.read_csv(path)
+        # Common column mapping
+        cols = {c.lower(): c for c in df.columns}
+        def pick(*cands):
+            for c in cands:
+                for k in df.columns:
+                    if k.strip().lower() == c.lower():
+                        return k
             return None
-    data = fp.collect_data_with_rate_limiting()
-    if data is None:
+
+        name_c = pick("player", "player name", "name")
+        team_c = pick("team")
+        opp_c  = pick("opp","opponent")
+        proj_c = pick("proj pts","projection","proj")
+        sal_c  = pick("salary")
+        own_c  = pick("proj roster %","own%","ownership","proj roster pct")
+
+        df2 = pd.DataFrame()
+        df2["PLAYER NAME"] = df[name_c] if name_c else df.iloc[:,0]
+        df2["POS"] = pos
+        df2["TEAM"] = df[team_c] if team_c else ""
+        df2["OPP"]  = df[opp_c] if opp_c else ""
+        df2["PROJ PTS"] = df[proj_c].apply(_safe_float) if proj_c else 0.0
+        df2["SALARY"] = df[sal_c].apply(lambda x: int(float(x))) if sal_c else 0
+        df2["PROJ ROSTER %"] = df[own_c] if own_c else ""
+        df2["OWN_PCT"] = df2["PROJ ROSTER %"].apply(_parse_own)
+        frames.append(df2)
+
+    if not frames:
         return None
-    try:
-        df = pd.DataFrame(data)
-        df = normalize(df, pos_hint=None)
-        logging.info(f"Scraped data normalized: {len(df)} players.")
-        return df
-    except Exception as e:
-        logging.error(f"Error processing scraped JSON: {e}")
-        return None
+    all_df = pd.concat(frames, ignore_index=True)
+    # basic sanity: drop rows without salary or projection
+    all_df = all_df[(all_df["SALARY"] > 0) & (all_df["PROJ PTS"] >= 0)]
+    all_df.reset_index(drop=True, inplace=True)
+    return all_df
