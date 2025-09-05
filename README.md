@@ -1,244 +1,229 @@
-# FanDuel Sunday Main — Development README
 
-> **Status:** Active development. Docker-first, local cron-friendly.
-> **Scope:** FanDuel NFL **Sunday Main** only (1pm + 4:05/4:25pm ET). No TNF/SNF/MNF.
-> **League:** 12-person friends league (beat 11 opponents weekly).
-> **Data:** Paid = **FantasyPros (manual CSVs only)**. Free = **The Odds API** (spreads/totals), **NWS api.weather.gov** (weather), **ESPN scoreboard JSON** (live snapshot).
-> **Philosophy:** **Simple, transparent, scriptable** (no opaque ML). Single-stack rule (QB + 1 WR/TE). Bring-back optional.
+# FanDuel NFL DFS Automation (Docker) — Updated
 
----
+This project builds a **reproducible, low-cost, Dockerized DFS stack** that:
+- Normalizes your weekly **FantasyPros** CSV exports (QB/RB/WR/TE/DST).
+- **Optimizes** FanDuel lineups via **OR-Tools** under roster & cap rules.
+- Runs a **Monte Carlo simulation** to quantify risk/ceiling (mean, std dev, percentiles, Sharpe).
+- Produces **readable console & API reports** with **AI analysis** (GPT-4o-mini) behind a cache to control cost.
+- Optionally enforces **stacking** rules (e.g., QB must have ≥1 WR/TE from same team).
+- Isolates secrets via `.env` and **never** commits them to Git.
 
-## 0) What this project does
-
-This pipeline builds, monitors, and late-swaps a single FanDuel **Sunday Main** lineup each week:
-
-1. **Wednesday 9:00 ET** — Deep Build: ingest FantasyPros cheat sheets (CSV), fetch odds/weather → make `board.csv` + first target lineup `data/targets/fd_target.csv`.
-2. **Thu–Sat 10:00 ET** — Deltas: small bumps/penalties from line moves/weather → update target lineup.
-3. **Sunday 11:30 ET** — Inactives: apply pivots, write final **executed** lineup `data/executed/fd_executed.csv`.
-4. **\~2:15 ET** — Mid-Slate Review (at early-game halftime): compute status **AHEAD/EVEN/BEHIND** → `late_swap_plan.json`.
-5. **3:55–4:05 ET** — Late-Swap Suggestions: cap/slot/schedule-aware swaps for late games → suggestions log.
-6. **Monday 10:00 ET** — Post-mortem & standings/bankroll updates.
-
-All times are **Eastern (Washington, DC)**.
+> Cost focus: defaults to `gpt-4o-mini` + multi-layer caching (in-memory + Redis). Typical usage stays at or under **$10–$15/week** with repeated calls benefiting from cache hits.
 
 ---
 
-## 1) Project structure (containers + bind-mounts)
+## Quick Start
 
-```
-~/fanduel/
-├─ Dockerfile
-├─ docker-compose.yml
-├─ Makefile
-├─ requirements.txt
-├─ .env.example        # copy to .env and put your ODDS_API_KEY there
-├─ README.md       # THIS FILE
-├─ src/
-│  ├─ __init__.py
-│  ├─ util.py          # logging, csv helpers, current_week, ValuePer1k
-│  ├─ data_fetch.py    # FantasyPros CSV loader, Odds (The Odds API)
-│  ├─ lineup_rules.py  # thresholds, weather/vegas adjustments
-│  ├─ lineup_builder.py# greedy search (single stack, cap, validation hooks)
-│  ├─ postmortem.py    # standings & bankroll writers
-├─ scripts/
-│  ├─ deep_build.py            # Wed build (board + target)
-│  ├─ update_deltas.py         # Thu–Sat deltas
-│  ├─ process_inactives.py     # Sun 11:30 ET → executed lineup
-│  ├─ review_early_games.py    # ~2:15 ET mid-slate status -> late_swap_plan.json
-│  ├─ late_swap.py             # 3:55–4:05 ET suggestions (cap/slot/late-only)
-│  ├─ validate_target.py       # schema/salary/stack checks
-│  ├─ inspect_fp_raw.py        # quick peek at FP CSV columns/samples
-│  └─ inspect_candidate_pool.py# counts after value thresholds
-├─ data/
-│  ├─ fantasypros/             # DROP 5 CSVs HERE: qb.csv rb.csv wr.csv te.csv dst.csv
-│  ├─ weekly/2025_wXX/         # per-week board + late swap artifacts
-│  ├─ targets/                 # fd_target.csv (latest target lineup)
-│  ├─ executed/                # fd_executed.csv (final submitted)
-│  ├─ season/                  # standings.csv (header or rolling log)
-│  └─ bankroll/                # bankroll.csv (header or rolling log)
-└─ logs/                       # script logs by week
-```
-
----
-
-## 2) Data inputs (FantasyPros) — how to export and where to drop
-
-**FantasyPros → Cheat Sheets → FanDuel → NFL → Positions (QB/RB/WR/TE/DST)**
-
-1. For each position page, set **Site = FanDuel**, **Slate filter = Sun Main**, then **copy the grid to CSV** (FantasyPros shows a **“Copy CSV”** action near the table header on Cheat Sheets).
-2. Save files exactly as:
-
-   * `data/fantasypros/qb.csv`
-   * `data/fantasypros/rb.csv`
-   * `data/fantasypros/wr.csv`
-   * `data/fantasypros/te.csv`
-   * `data/fantasypros/dst.csv`
-3. Each file should have columns like:
-   `"PLAYER NAME","OPP","KICKOFF","WX","SPREAD","O/U","PRED SCORE","PROJ RANK","$ RANK","RANK DIFF","PROJ PTS","SALARY","CPP","PROJ ROSTER %"`
-
-**Filtering done by the loader**
-
-* Only **Sun 1:00PM**, **Sun 4:05PM**, **Sun 4:25PM** rows are kept (no TNF/SNF/MNF).
-* Positions are inferred from `PLAYER NAME` (e.g., `(BAL - QB)` → `QB`).
-* `ProjFP` and `Salary` are parsed from `PROJ PTS` and `SALARY`.
-
-**Quick verification**
+**Prereqs**: Docker & Docker Compose
 
 ```bash
-docker compose run --rm bot python scripts/inspect_fp_raw.py
-docker compose run --rm bot python scripts/inspect_loader_output.py
+# 1) Place weekly CSVs
+data/input/qb.csv
+data/input/rb.csv
+data/input/wr.csv
+data/input/te.csv
+data/input/dst.csv
+
+# 2) Set secrets in .env (do NOT commit this file)
+# REQUIRED
+OPENAI_API_KEY=sk-...
+
+# OPTIONAL (only if you later enable scraping)
+FANTASYPROS_USER=...
+FANTASYPROS_PASS=...
+
+# Redis inside compose network
+REDIS_URL=redis://redis:6379
+CACHE_TTL=300
+GPT_MODEL=gpt-4o-mini
+
+# 3) Build & run
+docker compose up -d --build
+
+# 4) Healthcheck
+curl -s http://localhost:8010/health
+# -> {"status":"ok"}
 ```
 
 ---
 
-## 3) Free endpoints wired in
+## Using the App
 
-* **Odds (The Odds API)**: spreads + totals (FanDuel market)
-  `https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds?regions=us&oddsFormat=american&markets=spreads,totals&apiKey=$ODDS_API_KEY`
-  → Used to infer **implied team totals** per game (stored into `board.csv`).
-* **Weather (NWS)**: `https://api.weather.gov/points/{lat},{lon}` → forecast JSON; wind/precip tiers (hook points exist; optional until we add stadium coords).
-* **Live snapshot (ESPN)**: `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard` (unofficial) → used for **mid-slate status** heuristic.
+### Endpoints
+- **`GET /optimize`** → JSON (lineup, totals, simulation, analysis)
+- **`GET /optimize_text`** → **formatted plain text** table + analysis (great for CLI)
+  - Query params on both endpoints:
+    - `salary_cap` (default `60000`)
+    - `enforce_stack` (`true|false`, default `false`)
+    - `min_stack_receivers` (`1..3`, default `1`)
+    - `width` (`70..160`, for `/optimize_text` only)
 
-Set your key:
-
+**Examples**:
 ```bash
-cp .env.example .env
-# put your Odds key
-echo 'ODDS_API_KEY=YOUR_KEY_HERE' > .env
+# Pretty text with default cap
+curl -s "http://localhost:8010/optimize_text?width=110"
+
+# Force a stack (QB with at least 1 same-team WR/TE)
+curl -s "http://localhost:8010/optimize_text?enforce_stack=true&min_stack_receivers=1&width=110"
+
+# Reduced cap example (59.5k) — useful to test sensitivity
+curl -s "http://localhost:8010/optimize_text?salary_cap=59500&width=110"
 ```
 
----
-
-## 4) Scoring & math (implemented)
-
-* `ValuePer1k = Proj / (Salary/1000)`
-* Weather modifiers applied in `lineup_rules.py` (QB/WR down in wind ≥15; RB/DST up in heavy precip/wind).
-* `adjusted_score()` adds light vegas/weather nudges; thresholds tunable in `lineup_rules.py`.
-* **Candidate pool gate:** `ValuePer1k ≥ 1.8` (TE/DST ≥ 1.7). (You temporarily lowered to 1.6/1.5 for testing; revert anytime.)
-
-**Lineup construction rules**
-
-* **Single stack**: exactly one pass-catcher (WR/TE) with your QB.
-* Bring-back optional if projection within \~1 pt and salary fits.
-* Roles: RB1 volume; RB2 value; WR1 = stack mate; WR2 best AdjScore at/under median; WR3 ceiling or value; TE elite if fits else value; FLEX best remaining; avoid DST vs your QB.
-* Cap ≤ **\$60,000**; ok to leave \$200–\$800.
-
-**Ownership proxy (tiebreaker only)**
-
-```
-OwnershipEstimate = BasePosRate * (Salary/PosAvgSalary)^0.7
-                    * (1 + (ImpliedTeamTotal - 21)/100) * NewsMultiplier
-BasePosRate: QB 0.10, RB 0.18, WR 0.15, TE 0.08
-NewsMultiplier: 0.8 .. 1.1 (manual)
-```
-
----
-
-## 5) Run cadence (ET) + scripts
-
-| Time (ET)     | Script                          | Output                                          | Purpose                                 |
-| ------------- | ------------------------------- | ----------------------------------------------- | --------------------------------------- |
-| Wed 09:00     | `scripts/deep_build.py`         | `weekly/.../board.csv`, `targets/fd_target.csv` | First target lineup + vegas board       |
-| Thu–Sat 10:00 | `scripts/update_deltas.py`      | updated `targets/fd_target.csv`                 | Small adjustments from odds/weather     |
-| Sun 11:30     | `scripts/process_inactives.py`  | `executed/fd_executed.csv`                      | Applies inactives; locks lineup file    |
-| Sun \~2:15    | `scripts/review_early_games.py` | `late_swap_plan.json`                           | Status AHEAD/EVEN/BEHIND for late swaps |
-| Sun 3:55–4:05 | `scripts/late_swap.py`          | suggestions log                                 | Slot/cap/schedule-aware pivots          |
-| Mon 10:00     | `scripts/postmortem_run.py`     | season/bankroll rows                            | Post-mortem & bookkeeping               |
-
-**Manual steps**
-
-* **Wed**: Export FP CSVs → drop in `data/fantasypros/` → run Deep Build (or let cron).
-* **Sun 11:30**: read inactives summary in log; confirm lineup in FanDuel.
-* **\~2:15**: open plan; if **BEHIND** and you have late slots → apply upside pivots; if **AHEAD** → apply safer pivots.
-* Keep the **single stack** unless forced.
-
----
-
-## 6) Docker usage (no venv needed)
-
-Build once:
-
+### CLI (inside the container)
 ```bash
-docker compose build
+docker compose exec web python -m app.cli --enforce-stack --min-stack-receivers 1 --width 110
 ```
 
-Common runs:
+---
 
+## Data Flow
+
+1) You export weekly **FantasyPros** CSVs and drop them into `data/input/` using the exact names:
+   `qb.csv, rb.csv, wr.csv, te.csv, dst.csv`.
+2) The **normalizer** (`app/normalizer.py`) reconciles column names/variants, parses player info from
+   `"Player Name (TEAM - POS)"`, cleans salary & projection fields, and estimates numeric ownership (`OWN_PCT`)
+   when the CSV carries strings like `"20-30%-"`.
+3) The **optimizer** (`app/optimization.py`) builds a CP-SAT model for FanDuel NFL:
+   - Roster: `QB(1), RB(2), WR(3), TE(1), FLEX(1 of RB/WR/TE), DST(1)` → **9 total**
+   - Cap: default **$60,000** (configurable)
+   - Optional **stacking**: if on, the chosen QB must have ≥ `min_stack_receivers` WR/TE from the same team.
+   - Objective: **maximize projected points**.
+4) The **simulator** (`app/analysis.py`) runs Monte Carlo on the chosen lineup:
+   - Each player’s outcome ~ Normal(mean = projection, stdev ≈ 0.15 × projection; floored at 0).
+   - Aggregates lineup totals across 10,000 runs.
+5) **AI analysis** (`app/openai_utils.py`) produces a concise, sectioned readout (correlation, leverage, risk/ceiling,
+   strengths, weaknesses, swap ideas). Calls are cached in memory and Redis to control cost.
+6) Results are rendered as either **JSON** or a **console-friendly table with headings and bullets**.
+
+> If you prefer automated collection from FantasyPros later, we can add Playwright-based scraping that only runs when CSVs are missing. It will use `FANTASYPROS_USER`/`FANTASYPROS_PASS` from `.env` and keep auth state out of Git via `.gitignore`.
+
+---
+
+## Simulation Summary — What the Numbers Mean
+
+- **Mean** — The average total points across all simulations. Higher mean = stronger central expectation.
+- **StdDev** — How volatile the lineup is. Higher std dev = wider range of outcomes (riskier).
+- **P50 (Median)** — Middle outcome (50% of sims score above this; 50% below).
+- **P90** — A ceiling-ish outcome (top ~10% of sims beat this). Good proxy for tournament spike.
+- **P95** — Even more ceiling (top ~5%).
+- **Sharpe (heuristic)** — `Mean / StdDev`. A quick risk-adjusted score; higher is “more points per risk.”
+
+### StdDev Rule-of-Thumb Scale (NFL, per lineup)
+
+| StdDev | Interpretation                              | Typical Use Case             |
+|:------:|---------------------------------------------|------------------------------|
+|  0–5   | **Low** volatility (cash-game / safe-ish)   | Head-to-head, double-ups     |
+|  5–7   | **Moderate** volatility                     | Small/medium GPPs            |
+|  7–9   | **High** volatility                         | Large-field tournaments       |
+|  9+    | **Very high** volatility (boom/bust)        | Milli-maker style shots       |
+
+> These are heuristics; they shift with slate size and projection sources. Compare **relative** std devs between your candidate lineups on the same slate.
+
+---
+
+## How the Analysis Works (under the hood)
+
+- **Projections & Ownership**: from your FantasyPros CSVs (normalized). Ownership strings are converted to numeric estimates when possible.
+- **Optimization**: OR-Tools CP-SAT solver maximizes projected points subject to FanDuel constraints and any optional stacking constraints you pass.
+- **Simulation**: 10,000-run Monte Carlo with player-level variance to quantify risk and tail outcomes.
+- **AI Layer**: GPT-4o-mini (cheap + capable) with a structured prompt that returns five sections:
+  - **CORRELATION** (stacks/bring-backs), **LEVERAGE** (chalk vs contrarian), **RISK & CEILING**, **STRENGTHS**, **WEAKNESSES**, and **SWAP IDEAS** (max 2 legal swaps).
+- **Caching**: Two-level cache (RAM + Redis) deduplicates identical prompts to keep your OpenAI bill low.
+
+---
+
+## Swap Ideas — What Are They? Do They Replace the Optimal?
+
+- The optimizer returns the **single best** lineup for the given constraints (max projected points).
+- **Swap Ideas** come from the AI layer. They are **human-style alternatives** that may:
+  - improve **correlation** (e.g., pair QB with WR/TE),
+  - change **leverage** (reduce chalk, raise uniqueness),
+  - or address **risk/ceiling** preferences.
+- They are **not guaranteed** to be the strict “second-best” solution by projection.
+- If you want true **next-best (K-best)** lineups by the solver, we can add a feature that iteratively finds the top N optimal solutions via “no-good” cuts, and list them (e.g., Top-10 by projection).
+
+**Bottom line**: The model “prefers” the reported optimal lineup under the current objective (max projection). **Swap ideas** surface *strategic* alternatives that may **trade a small amount of projection** for **better correlation/leverage** — useful for GPPs.
+
+---
+
+## Late Swap Workflow
+
+When news breaks (inactives, role changes), you can **late swap** quickly:
+
+1) **Lock already-started players**: add a constraint to keep them fixed (feature can be toggled in optimization; we can expose this as flags such as `--lock "Player Name"` or via an endpoint — easy to add).
+2) Re-run the optimizer for remaining slots (same cap rules, optionally update stacking).
+3) Re-check **SIMULATION SUMMARY** to ensure risk/ceiling fits your contest type.
+4) Use **/optimize_text** for a quick, readable report you can act on immediately.
+
+> If you want fully automated late-swap with a watcher (e.g., check injuries/actives every 5 minutes and re-optimize), say the word — we can add a scheduler container and “lock by kickoff” logic.
+
+---
+
+## Security & Cost Control
+
+- Secrets live only in `.env`. **Never** commit `.env` or auth state files; `.gitignore` already excludes them.
+- Caching (RAM + Redis) means **repeat AI calls are almost free**.
+- Default model `gpt-4o-mini` balances quality/cost. You can change `GPT_MODEL` in `.env` if needed.
+
+**Check for accidental secrets before pushing**:
 ```bash
-docker compose run --rm bot python scripts/deep_build.py
-docker compose run --rm bot python scripts/update_deltas.py
-docker compose run --rm bot python scripts/process_inactives.py
-docker compose run --rm bot python scripts/review_early_games.py
-docker compose run --rm bot python scripts/late_swap.py
-docker compose run --rm bot python scripts/validate_target.py
+# Look for common API key patterns
+grep -RIn --binary-files=without-match -E 'sk-[A-Za-z0-9_\-]+' .
+
+# If you ever pasted your FantasyPros password or email in code, scan for it too:
+grep -RIn --binary-files=without-match -E 'fantasypros|password|@' app || true
 ```
 
-Inspect outputs quickly:
+---
 
+## Repo Hygiene / Updating GitHub
+
+Make sure your **remote** is set to the GitHub repo (example: `bel52/FanDuel_LeaguePicks`):
 ```bash
-tail -n 120 logs/deep_build_week*.log
-column -s, -t < data/targets/fd_target.csv | sed -n '1,50p'
-column -s, -t < data/executed/fd_executed.csv | sed -n '1,50p'
+git remote -v
+# If needed:
+# git remote add origin https://github.com/bel52/FanDuel_LeaguePicks.git
 ```
 
----
-
-## 7) Cron (ET) with Docker
-
-Edit user crontab (`crontab -e`) and add:
-
+Verify `.gitignore` includes:
 ```
-# Wed Deep Research
-0 9 * * WED   cd ~/fanduel && docker compose run --rm bot python scripts/deep_build.py         >> logs/build_board.log 2>&1
-# Thu–Sat daily deltas
-0 10 * * THU,FRI,SAT  cd ~/fanduel && docker compose run --rm bot python scripts/update_deltas.py >> logs/pull_deltas.log 2>&1
-# Sun inactives (90 min pre-lock)
-30 11 * * SUN  cd ~/fanduel && docker compose run --rm bot python scripts/process_inactives.py  >> logs/inactives.log 2>&1
-# Sun mid-slate review (~2:15 ET)
-15 14 * * SUN  cd ~/fanduel && docker compose run --rm bot python scripts/review_early_games.py >> logs/mid_slate.log 2>&1
-# Sun late-swap suggestions (before 4:05/4:25)
-55 15 * * SUN  cd ~/fanduel && docker compose run --rm bot python scripts/late_swap.py          >> logs/late_swap.log 2>&1
+.env
+fantasypros_auth.json
+data/input/*
+data/output/*
 ```
 
-> **Note:** Host cron is simpler and more reliable than running cron inside a container for this workflow.
+Commit & push **only safe files**:
+```bash
+git add -A
+git status         # sanity check (ensure .env is NOT listed)
+git commit -m "Enhance DFS stack: readable CLI + /optimize_text, Monte Carlo docs, AI sections, caching"
+git push origin HEAD:main  # or 'master' depending on your repo
+```
+
+> If your default branch is different, replace `main` accordingly. If you get a rejection, pull first: `git pull --rebase` and retry the push.
 
 ---
 
-## 8) Troubleshooting & QA
+## Troubleshooting
 
-* **No lineup produced?**
-
-  * Verify 5 CSVs exist and have rows: `ls -lh data/fantasypros && wc -l data/fantasypros/*.csv`
-  * Inspect headers/samples: `docker compose run --rm bot python scripts/inspect_fp_raw.py`
-  * See candidate pool after thresholds: `docker compose run --rm bot python scripts/inspect_candidate_pool.py`
-  * Temporarily relax thresholds in `src/lineup_rules.py` (e.g., 1.8→1.7) and rebuild.
-
-* **Validate constraints**
-  `docker compose run --rm bot python scripts/validate_target.py`
-
-* **Late-only suggestions**
-  The builder writes a **Kick** column (e.g., `Sun 4:05PM`). Late-swap script restricts to those.
+- **`/optimize` returns “No data available”** → ensure all 5 CSVs exist with the exact names in `data/input/`.
+- **OpenAI errors** → check `OPENAI_API_KEY` in `.env` and that the container was restarted after edits.
+- **Port conflicts** → if 8010 is busy on your host, change the left side of the mapping in `docker-compose.yml`:
+  ```yaml
+  ports:
+    - "8015:8000"
+  ```
+- **Redis not reachable** → the app will still run with in-memory cache only; performance/cost may be slightly worse.
 
 ---
 
-## 9) Security & data hygiene
+## Roadmap (optional enhancements)
 
-* **Never commit secrets**. `.env` is git-ignored.
-* **Never commit raw FantasyPros CSVs**. `data/fantasypros/` is git-ignored.
-* Logs and generated artifacts can grow; rotate or prune old weeks as needed.
-
----
-
-## 10) Roadmap (nice-to-haves)
-
-* Stadium coordinates → NWS wind/precip tiers applied per game.
-* Ownership proxy surfaced in tie-breakers.
-* Bring-back logic (optional within \~1 pt).
-* Simple UI summary (`rich`/markdown) and HTML export.
-
----
-
-## 11) License & disclaimers
-
-For personal/league use. Respect all third-party terms (FantasyPros, The Odds API, NWS, ESPN).
-No guarantees; this is an engineering helper, not betting advice.
+- True **Top-N (K-best)** lineups via solver enumeration.
+- **Late-swap** helper flags and a scheduled watcher service.
+- Vegas lines & weather context.
+- Exposure/ownership constraints and team-level stacking caps.
+- Export to CSV/Markdown/Slack bot message.
