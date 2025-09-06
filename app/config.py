@@ -1,6 +1,6 @@
 import os
 from typing import Optional
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings  # Changed this line - was "from pydantic import BaseSettings"
 from functools import lru_cache
 
 class Settings(BaseSettings):
