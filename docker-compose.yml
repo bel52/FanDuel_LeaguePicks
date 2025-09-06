@@ -2,8 +2,10 @@ version: "3.9"
 
 services:
   web:
-    build: .
-    container_name: dfs-web
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: dfs-web-enhanced
     ports:
       - "8010:8000"
     env_file:
@@ -13,14 +15,49 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
+      - ./app:/app/app  # For development hot-reload
     restart: unless-stopped
     environment:
       - PYTHONPATH=/app
+      - TZ=America/New_York
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
+        reservations:
+          memory: 512M
+          cpus: "0.25"
+    networks:
+      - dfs-network
 
   redis:
     image: redis:7-alpine
-    container_name: dfs-redis
+    container_name: dfs-redis-enhanced
     restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"  # Expose for debugging, remove in production
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dfs-network
 
 volumes:
   redis_data:
+    driver: local
+
+networks:
+  dfs-network:
+    driver: bridge

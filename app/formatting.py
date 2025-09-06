@@ -1,137 +1,168 @@
-import re
-import textwrap
+from typing import Dict, List, Any
 
-def _clean_player_name(full_name: str) -> str:
-    if not full_name:
-        return ""
-    base = re.sub(r'\s*\([^)]+\)\s*', '', str(full_name)).strip()
-    base = re.sub(r'\s+(Q|O|D|T|GTD|P)$', '', base).strip()
-    return base
+def build_text_report(result: Dict[str, Any], width: int = 100) -> str:
+    """Build formatted text report for lineup results"""
+    
+    divider = "=" * width
+    sub_divider = "-" * width
+    
+    # Header
+    game_type = result.get('game_type', 'league').upper()
+    report = f"\n{divider}\n"
+    report += f"FANDUEL NFL DFS LINEUP - {game_type} STRATEGY\n"
+    report += f"{divider}\n\n"
+    
+    # Lineup details
+    report += "OPTIMIZED LINEUP:\n"
+    report += f"{sub_divider}\n"
+    report += f"{'POS':<4} {'PLAYER':<25} {'TEAM':<5} {'OPP':<5} {'SALARY':<8} {'PROJ':<7} {'OWN%':<6} {'VALUE':<6}\n"
+    report += f"{sub_divider}\n"
+    
+    total_salary = 0
+    total_proj = 0
+    
+    for player in result.get('lineup', []):
+        name = player['name'][:24]  # Truncate long names
+        pos = player['position']
+        team = player['team']
+        opp = player.get('opponent', 'N/A')
+        salary = player['salary']
+        proj = player['proj_points']
+        own = player.get('own_pct', 0)
+        value = proj / (salary / 1000)
+        
+        total_salary += salary
+        total_proj += proj
+        
+        report += f"{pos:<4} {name:<25} {team:<5} {opp:<5} ${salary:<7,} {proj:<7.1f} {own:<5.1f}% {value:<6.2f}\n"
+    
+    report += f"{sub_divider}\n"
+    report += f"{'TOTALS:':<42} ${total_salary:<7,} {total_proj:<7.1f}\n"
+    
+    # Cap usage
+    cap_info = result.get('cap_usage', {})
+    salary_remaining = cap_info.get('remaining', 60000 - total_salary)
+    report += f"SALARY REMAINING: ${salary_remaining:,}\n"
+    report += f"{sub_divider}\n\n"
+    
+    # Simulation results
+    sim = result.get('simulation', {})
+    if sim:
+        report += "SIMULATION ANALYSIS:\n"
+        report += f"{sub_divider}\n"
+        report += f"Expected Score: {sim.get('mean_score', total_proj):.1f} points\n"
+        report += f"Standard Deviation: {sim.get('std_dev', 0):.1f} points\n"
+        
+        percentiles = sim.get('percentiles', {})
+        if percentiles:
+            report += f"90th Percentile: {percentiles.get('90th', 0):.1f} points\n"
+            report += f"95th Percentile: {percentiles.get('95th', 0):.1f} points\n"
+        
+        sharpe = sim.get('sharpe_ratio', 0)
+        report += f"Sharpe Ratio: {sharpe:.3f}\n"
+        report += f"{sub_divider}\n\n"
+    
+    # AI Analysis
+    ai_analysis = result.get('analysis', '')
+    if ai_analysis and ai_analysis != 'Analysis not available':
+        report += "AI ANALYSIS:\n"
+        report += f"{sub_divider}\n"
+        report += format_text_block(ai_analysis, width - 4)
+        report += f"\n{sub_divider}\n\n"
+    
+    # Constraints applied
+    constraints = result.get('constraints', {})
+    if any([constraints.get('locks'), constraints.get('bans'), constraints.get('auto_locked')]):
+        report += "CONSTRAINTS APPLIED:\n"
+        report += f"{sub_divider}\n"
+        
+        if constraints.get('auto_locked'):
+            report += f"Auto-locked (started): {', '.join(constraints['auto_locked'])}\n"
+        if constraints.get('locks'):
+            report += f"Manual locks: {', '.join(constraints['locks'])}\n"
+        if constraints.get('bans'):
+            report += f"Banned players: {', '.join(constraints['bans'])}\n"
+        if constraints.get('not_found'):
+            report += f"Players not found: {', '.join(constraints['not_found'])}\n"
+        
+        report += f"{sub_divider}\n\n"
+    
+    # Optimization details
+    opt_details = result.get('optimization_details', {})
+    if opt_details:
+        report += "OPTIMIZATION INFO:\n"
+        report += f"{sub_divider}\n"
+        report += f"Method: {opt_details.get('method', 'unknown')}\n"
+        report += f"AI Enhanced: {opt_details.get('ai_enhanced', False)}\n"
+        report += f"Game Type: {opt_details.get('game_type', 'league')}\n"
+        
+        if opt_details.get('objective_value'):
+            report += f"Objective Value: {opt_details['objective_value']:.2f}\n"
+        
+        report += f"{sub_divider}\n"
+    
+    report += f"\n{divider}\n"
+    
+    return report
 
-def _fmt_money(n) -> str:
-    try:
-        return f"${int(n):,}"
-    except Exception:
-        return "-"
+def format_text_block(text: str, width: int) -> str:
+    """Format a text block to fit within specified width"""
+    lines = []
+    current_line = ""
+    
+    # Split by existing newlines first
+    paragraphs = text.split('\n')
+    
+    for paragraph in paragraphs:
+        words = paragraph.split()
+        current_line = ""
+        
+        for word in words:
+            if len(current_line) + len(word) + 1 <= width:
+                if current_line:
+                    current_line += " " + word
+                else:
+                    current_line = word
+            else:
+                if current_line:
+                    lines.append("  " + current_line)
+                current_line = word
+        
+        if current_line:
+            lines.append("  " + current_line)
+        
+        # Add blank line between paragraphs
+        if paragraph != paragraphs[-1]:
+            lines.append("")
+    
+    return '\n'.join(lines)
 
-def _pad(s: str, width: int) -> str:
-    s = str(s) if s is not None else ""
-    return (s[:width]).ljust(width)
-
-def format_lineup_table(lineup_players, width=100) -> str:
-    # POS | PLAYER | TEAM | OPP | SALARY | PROJ | OWN%
-    pos_w = 3
-    team_w = 4
-    opp_w  = 4
-    sal_w  = 8
-    proj_w = 6
-    own_w  = 6
-    fixed = pos_w + team_w + opp_w + sal_w + proj_w + own_w + 6*3
-    player_w = max(18, min(40, width - fixed))
-
-    header = (
-        f"{'POS':<{pos_w}} | "
-        f"{'PLAYER':<{player_w}} | "
-        f"{'TEAM':<{team_w}} | "
-        f"{'OPP':<{opp_w}} | "
-        f"{'SALARY':>{sal_w}} | "
-        f"{'PROJ':>{proj_w}} | "
-        f"{'OWN%':>{own_w}}"
+def format_player_summary(player: Dict[str, Any]) -> str:
+    """Format a single player summary"""
+    return (
+        f"{player['position']} - {player['name']} "
+        f"({player['team']} vs {player.get('opponent', 'N/A')}) "
+        f"${player['salary']:,} - {player['proj_points']:.1f} pts"
     )
-    sep = "-" * len(header)
-    lines = [header, sep]
 
-    for p in lineup_players:
-        pos = _pad(p.get('position',''), pos_w)
-        name = _clean_player_name(p.get('name',''))
-        team = _pad(p.get('team',''), team_w)
-        opp  = _pad(p.get('opponent',''), opp_w)
-        sal  = _pad(_fmt_money(p.get('salary',0)), sal_w)
-        proj = _pad(f"{float(p.get('proj_points',0.0)):.1f}", proj_w)
-        own_pct = p.get('own_pct')
-        if own_pct is None:
-            raw = str(p.get('proj_roster_pct_raw') or "").strip("-").strip()
-            own_str = raw or ""
-        else:
-            own_str = f"{float(own_pct):.1f}%"
-        own  = _pad(own_str if own_str else " - ", own_w)
+def format_swap_summary(swap: Dict[str, Any]) -> str:
+    """Format a swap summary"""
+    out_player = swap['player_out']
+    in_player = swap['player_in']
+    trigger = swap.get('trigger', {})
+    
+    return (
+        f"SWAP: {out_player['name']} → {in_player['name']}\n"
+        f"  Position: {out_player['position']}\n"
+        f"  Salary: ${out_player['salary']:,} → ${in_player['salary']:,}\n"
+        f"  Projection: {out_player.get('proj_points', 0):.1f} → {in_player.get('projection', 0):.1f}\n"
+        f"  Reason: {trigger.get('description', 'Manual swap')}"
+    )
 
-        lines.append(
-            f"{pos} | "
-            f"{_pad(name, player_w)} | "
-            f"{team} | "
-            f"{opp} | "
-            f"{sal:>{sal_w}} | "
-            f"{proj:>{proj_w}} | "
-            f"{own:>{own_w}}"
-        )
-    return "\n".join(lines)
+def format_money(amount: float) -> str:
+    """Format money values"""
+    return f"${amount:,.0f}" if amount >= 0 else f"-${abs(amount):,.0f}"
 
-def build_text_report(result, width=100) -> str:
-    width = max(70, min(160, int(width)))
-
-    title = "FANDUEL OPTIMIZED LINEUP"
-    header = f"{title}\n{'='*len(title)}"
-
-    cap = result.get('cap_usage', {}) or {}
-    cap_line = f"Cap Used: {_fmt_money(cap.get('total_salary',0))}  |  Remaining: {_fmt_money(cap.get('remaining',0))}"
-    proj_line = f"Total Projection: {float(result.get('total_projected_points',0.0)):.2f} pts"
-
-    cons = result.get("constraints", {}) or {}
-    auto_locked = [*cons.get("auto_locked", [])]
-    locked      = [*cons.get("locks", [])]
-    banned      = [*cons.get("bans", [])]
-    not_found   = [*cons.get("not_found", [])]
-    cons_block = ""
-    if auto_locked or locked or banned or not_found:
-        cons_lines = ["CONSTRAINTS", "-"*len("CONSTRAINTS")]
-        if auto_locked: cons_lines.append(f"Auto-locked: {', '.join(auto_locked)}")
-        if locked:      cons_lines.append(f"Locked: {', '.join(locked)}")
-        if banned:      cons_lines.append(f"Banned: {', '.join(banned)}")
-        if not_found:   cons_lines.append(f"Not found: {', '.join(not_found)}")
-        cons_lines.append("")
-        cons_block = "\n".join(cons_lines)
-
-    table = format_lineup_table(result.get('lineup', []), width=width)
-
-    sim = result.get('simulation', {}) or {}
-    mean = float(sim.get('mean_score', 0.0))
-    std  = float(sim.get('std_dev', 0.0)) if sim.get('std_dev') is not None else 0.0
-    pcts = sim.get('percentiles', {}) or {}
-    p50  = float(pcts.get('50th', 0.0))
-    p90  = float(pcts.get('90th', 0.0))
-    p95  = float(pcts.get('95th', 0.0))
-    sharpe = float(sim.get('sharpe_ratio', 0.0))
-    sim_block = "\n".join([
-        "SIMULATION SUMMARY",
-        "------------------",
-        f"Mean: {mean:.2f}   StdDev: {std:.2f}   P50: {p50:.2f}   P90: {p90:.2f}   P95: {p95:.2f}   Sharpe: {sharpe:.3f}",
-        ""
-    ])
-
-    analysis_text = str(result.get("analysis") or "Analysis not available").strip()
-    if analysis_text and not analysis_text.lower().startswith("analysis not available"):
-        txt = analysis_text
-        for sect in ["Correlation", "Leverage", "Risk", "Risk/Ceiling", "Strengths", "Weaknesses", "Swap Ideas", "Suggested Swaps"]:
-            txt = re.sub(rf"(?i)\b{re.escape(sect)}\b\s*:?", sect.upper() + ":", txt)
-        blocks = ["ANALYSIS", "--------"]
-        for para in txt.split("\n"):
-            para = re.sub(r"\s+", " ", para).strip()
-            if para:
-                blocks.append(textwrap.fill(para, width=width))
-        analysis_block = "\n".join(blocks) + "\n"
-    else:
-        analysis_block = "ANALYSIS\n--------\nAnalysis not available\n"
-
-    parts = [
-        header,
-        cap_line,
-        proj_line,
-        "",
-        cons_block if cons_block else "",
-        table,
-        "",
-        sim_block,
-        analysis_block
-    ]
-    return "\n".join([p for p in parts if p is not None and p != ""])
+def format_percentage(value: float, decimals: int = 1) -> str:
+    """Format percentage values"""
+    return f"{value:.{decimals}f}%"
