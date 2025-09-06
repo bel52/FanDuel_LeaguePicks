@@ -1,221 +1,114 @@
 import os
-import time
 import re
 import pandas as pd
+import logging
 from typing import Tuple, List, Optional, Dict
 
+from app.config import INPUT_DIR
 
-# Canonical columns we use
-REQ = ["PLAYER NAME", "POS", "TEAM", "SALARY", "PROJ PTS"]
-OPT = ["OPP", "OWN_PCT"]
+logger = logging.getLogger(__name__)
 
-# Header aliases -> canonical (includes your "PROJ ROSTER %")
+# --- Column Aliases to handle variations in CSV headers ---
 ALIASES: Dict[str, str] = {
-    "PLAYER": "PLAYER NAME",
-    "NAME": "PLAYER NAME",
-    "PLAYERNAME": "PLAYER NAME",
+    "PLAYER": "PLAYER NAME", "NAME": "PLAYER NAME",
     "POSITION": "POS",
-    "TEAM_ABBR": "TEAM",
-    "DST_TEAM": "TEAM",
-    "SAL": "SALARY",
-    "PRICE": "SALARY",
-    "PROJ": "PROJ PTS",
-    "PROJECTION": "PROJ PTS",
-    "PROJECTED POINTS": "PROJ PTS",
-    "FPTS": "PROJ PTS",
-    "OWNERSHIP": "OWN_PCT",
-    "OWNERSHIP%": "OWN_PCT",
-    "OWN%": "OWN_PCT",
+    "SAL": "SALARY", "PRICE": "SALARY",
+    "PROJ": "PROJ PTS", "PROJECTION": "PROJ PTS", "FPTS": "PROJ PTS",
     "PROJ ROSTER %": "OWN_PCT",
-    "OPPONENT": "OPP",
-    "MATCHUP": "OPP",
+    "OPPONENT": "OPP", "MATCHUP": "OPP",
 }
 
-POS_EXPECTED = {"QB","RB","WR","TE","DST"}
-
-
-def _read_csv(path: str) -> Optional[pd.DataFrame]:
-    if not os.path.exists(path):
-        return None
-    try:
-        df = pd.read_csv(path)
-        if df is None or df.empty:
-            return None
-        return df
-    except Exception:
-        return None
-
-
-def _clean_money(x):
-    if pd.isna(x):
-        return pd.NA
-    s = str(x).strip().replace("$","").replace(",","")
-    if s == "":
-        return pd.NA
+def _clean_value(val, is_percent=False):
+    """Utility to clean salary and percentage strings into numbers."""
+    if pd.isna(val): return pd.NA
+    s = str(val).strip().replace("$", "").replace(",", "")
+    if is_percent: s = s.replace("%", "")
+    if s == "": return pd.NA
     try:
         return float(s)
-    except Exception:
+    except (ValueError, TypeError):
         return pd.NA
 
-
-def _clean_percent(x):
-    if pd.isna(x):
-        return pd.NA
-    s = str(x).strip().replace("%","")
-    if s == "":
-        return pd.NA
-    try:
-        return float(s)
-    except Exception:
-        return pd.NA
-
-
-def _upper_strip_cols(df: pd.DataFrame) -> pd.DataFrame:
-    return df.rename(columns={c: c.strip().upper() for c in df.columns})
-
-
-def _apply_aliases(df: pd.DataFrame) -> pd.DataFrame:
-    # apply aliases only if canonical not already present
-    for c in list(df.columns):
-        canon = ALIASES.get(c, c)
-        if canon != c and canon not in df.columns:
-            df.rename(columns={c: canon}, inplace=True)
-    return df
-
-
-def _normalize_opp(val: Optional[str]) -> Optional[str]:
-    if val is None or (isinstance(val, float) and pd.isna(val)):
-        return None
-    s = str(val).strip().upper()
-    s = s.replace("VS", "").replace("@", "").strip()
-    m = re.search(r"([A-Z]{2,4})", s)
-    return m.group(1) if m else (s or None)
-
-
-def _ensure_columns(df: pd.DataFrame) -> pd.DataFrame:
-    for col in REQ + OPT:
-        if col not in df.columns:
-            df[col] = pd.NA
-    return df
-
-
-def _normalize(df: pd.DataFrame, pos_hint: Optional[str], warnings: List[str]) -> pd.DataFrame:
-    df = _upper_strip_cols(df)
-    df = _apply_aliases(df)
-    df = _ensure_columns(df)
-
-    # PLAYER NAME
-    df["PLAYER NAME"] = df["PLAYER NAME"].astype(str).str.strip()
-
-    # POS (fill from hint if missing)
-    if pos_hint:
-        df["POS"] = df["POS"].fillna(pos_hint).replace("", pos_hint)
-    df["POS"] = df["POS"].astype(str).str.upper().str.strip()
-
-    # TEAM — force UNK if missing/blank BEFORE any string ops so we don't keep <NA>
-    df["TEAM"] = df["TEAM"].fillna("UNK")
-    df["TEAM"] = df["TEAM"].astype(str).str.upper().str.strip()
-    df.loc[df["TEAM"].isin(["", "NAN", "NONE"]), "TEAM"] = "UNK"
-
-    # OPP normalize
-    if "OPP" in df.columns:
-        df["OPP"] = df["OPP"].apply(_normalize_opp)
-
-    # numeric coercions
-    df["SALARY"] = df["SALARY"].apply(_clean_money)
-    df["PROJ PTS"] = df["PROJ PTS"].apply(_clean_money)
-    if "OWN_PCT" in df.columns:
-        df["OWN_PCT"] = df["OWN_PCT"].apply(_clean_percent)
-
-    # Diagnostics before drop
-    total = len(df)
-    drop_reasons = []
-
-    # Required fields (TEAM not strict; allow UNK)
-    need = ["PLAYER NAME","POS","SALARY","PROJ PTS"]
-    df = df.dropna(subset=need)
-    drop_missing = total - len(df)
-    if drop_missing > 0:
-        drop_reasons.append(f"missing required fields: {drop_missing}")
-
-    # POS sanity
-    before_pos = len(df)
-    df = df[df["POS"].isin(POS_EXPECTED)]
-    drop_pos = before_pos - len(df)
-    if drop_pos > 0:
-        drop_reasons.append(f"invalid POS: {drop_pos}")
-
-    if drop_reasons:
-        warnings.append("NOTICE: Dropped rows (" + "; ".join(drop_reasons) + ").")
-
-    return df
-
-
-def load_weekly_data() -> Optional[pd.DataFrame]:
-    df, _ = load_weekly_data_with_warnings()
-    return df
-
-
-def load_weekly_data_with_warnings() -> Tuple[Optional[pd.DataFrame], List[str]]:
+def parse_player_details(name_str: str) -> Tuple[str, str, str]:
     """
-    Reads per-position CSVs from data/input and merges them.
-    Expected files: qb.csv, rb.csv, wr.csv, te.csv, dst.csv (case-insensitive)
-    Returns (df, warnings) and prints per-file column discovery.
+    Parses 'Player Name (TEAM - POS)' format.
+    Returns (Clean Name, Team, Position).
     """
-    warnings: List[str] = []
-    base = os.path.join("data", "input")
-    files = {
-        "QB": os.path.join(base, "qb.csv"),
-        "RB": os.path.join(base, "rb.csv"),
-        "WR": os.path.join(base, "wr.csv"),
-        "TE": os.path.join(base, "te.csv"),
-        "DST": os.path.join(base, "dst.csv"),
-    }
+    match = re.search(r'\(([^)]+)\)', name_str)
+    if match:
+        parts = match.group(1).split(' - ')
+        if len(parts) == 2:
+            team, pos = parts[0].strip(), parts[1].strip()
+            clean_name = name_str.split('(')[0].strip()
+            return clean_name, team, pos
+    # Fallback for DSTs or other formats
+    return name_str.strip(), "UNK", "UNK"
 
-    now = time.time()
-    frames = []
+def load_data_from_input_dir() -> Tuple[Optional[pd.DataFrame], List[str]]:
+    """
+    Loads, parses, and de-duplicates player data from the data/input directory.
+    This is the master function to create a clean player pool.
+    """
+    warnings = []
+    all_players = {} # Use a dictionary to handle duplicates {player_name: player_data}
 
-    for pos, path in files.items():
+    if not os.path.exists(INPUT_DIR):
+        warnings.append(f"ERROR: Input directory not found: {INPUT_DIR}")
+        return None, warnings
+
+    # Process files in a specific order to prioritize position assignments
+    filenames = ["qb.csv", "rb.csv", "wr.csv", "te.csv", "dst.csv"]
+
+    for filename in filenames:
+        path = os.path.join(INPUT_DIR, filename)
         if not os.path.exists(path):
-            warnings.append(f"ERROR: Missing file: {path}")
+            warnings.append(f"WARNING: Missing expected file: {filename}")
             continue
 
         try:
-            mtime = os.path.getmtime(path)
-            if now - mtime > 7 * 24 * 3600:
-                warnings.append(f"WARNING: {path} is older than 7 days—consider updating.")
-        except Exception:
-            pass
+            df = pd.read_csv(path)
+            df = df.rename(columns={c: c.strip().upper() for c in df.columns})
 
-        raw = _read_csv(path)
-        if raw is None:
-            warnings.append(f"ERROR: Could not read or file is empty: {path}")
-            continue
+            # Apply Aliases
+            for alias, canonical in ALIASES.items():
+                if alias in df.columns and canonical not in df.columns:
+                    df.rename(columns={alias: canonical}, inplace=True)
 
-        warnings.append(f"INFO: {os.path.basename(path)} columns: {list(raw.columns)}")
+            for _, row in df.iterrows():
+                name_str = row.get("PLAYER NAME", "")
+                if not name_str:
+                    continue
 
-        before_rows = len(raw)
-        dfp = _normalize(raw, pos_hint=pos, warnings=warnings)
-        after_rows = len(dfp)
-        warnings.append(f"INFO: {pos}.csv usable rows: {after_rows}/{before_rows}")
+                clean_name, team, pos = parse_player_details(name_str)
+                
+                # --- This is the key de-duplication logic ---
+                if clean_name in all_players:
+                    continue # Skip if we've already processed this player
 
-        # Force POS to file's position
-        dfp["POS"] = pos
-        frames.append(dfp)
+                opponent = str(row.get("OPP", "")).replace('@', '').replace('vs', '').strip()
 
-    if not frames:
+                all_players[clean_name] = {
+                    'PLAYER NAME': clean_name,
+                    'POS': pos,
+                    'TEAM': team,
+                    'OPP': opponent,
+                    'SALARY': _clean_value(row.get("SALARY")),
+                    'PROJ PTS': _clean_value(row.get("PROJ PTS")),
+                    'OWN_PCT': _clean_value(row.get("OWN_PCT"), is_percent=True),
+                }
+            warnings.append(f"INFO: Processed {filename}.")
+
+        except Exception as e:
+            warnings.append(f"ERROR: Failed to process {filename}: {e}")
+    
+    if not all_players:
+        warnings.append("ERROR: No player data could be loaded after processing all files.")
         return None, warnings
 
-    df = pd.concat(frames, ignore_index=True)
+    # Convert the dictionary of players into a DataFrame
+    final_df = pd.DataFrame(list(all_players.values()))
+    final_df.dropna(subset=['PLAYER NAME', 'SALARY', 'PROJ PTS', 'POS', 'TEAM'], inplace=True)
+    final_df['SALARY'] = final_df['SALARY'].astype(int)
 
-    if df.empty:
-        warnings.append("ERROR: Combined data has no valid rows after cleaning.")
-        return None, warnings
-
-    # ensure numeric
-    df["SALARY"] = df["SALARY"].astype(int)
-    df["PROJ PTS"] = df["PROJ PTS"].astype(float)
-
-    # simple index
-    df = df.reset_index(drop=True)
-    return df, warnings
+    warnings.append(f"SUCCESS: Created a clean player pool with {len(final_df)} unique players.")
+    return final_df, warnings
