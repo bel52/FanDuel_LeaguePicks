@@ -1,9 +1,13 @@
 # FanDuel Sunday Main — Development README
 
 > **Status:** Active development. Docker-first, local cron-friendly.
+>
 > **Scope:** FanDuel NFL **Sunday Main** only (1pm + 4:05/4:25pm ET). No TNF/SNF/MNF.
+>
 > **League:** 12-person friends league (beat 11 opponents weekly).
+>
 > **Data:** Paid = **FantasyPros (manual CSVs only)**. Free = **The Odds API** (spreads/totals), **NWS api.weather.gov** (weather), **ESPN scoreboard JSON** (live snapshot).
+>
 > **Philosophy:** **Simple, transparent, scriptable** (no opaque ML). Single-stack rule (QB + 1 WR/TE). Bring-back optional.
 
 ---
@@ -25,6 +29,8 @@ All times are **Eastern (Washington, DC)**.
 
 ## 1) Project structure (containers + bind-mounts)
 
+This repo now supports both the **script pipeline** you’ve been using *and* a lightweight **FastAPI web service** for quick checks/testing.
+
 ```
 ~/fanduel/
 ├─ Dockerfile
@@ -32,8 +38,18 @@ All times are **Eastern (Washington, DC)**.
 ├─ Makefile
 ├─ requirements.txt
 ├─ .env.example        # copy to .env and put your ODDS_API_KEY there
-├─ README.md       # THIS FILE
-├─ src/
+├─ README.md           # THIS FILE
+├─ app/                # FastAPI service + shared analysis code
+│  ├─ __init__.py
+│  ├─ main.py          # API endpoints (/health, /schedule, /optimize, /optimize_text, /data/status)
+│  ├─ config.py        # settings (input_dir/output_dir/log level/timezone)
+│  ├─ data_ingestion.py
+│  ├─ optimization.py
+│  ├─ analysis.py
+│  ├─ formatting.py    # text report builder for /optimize_text
+│  ├─ kickoff_times.py # kickoff map + late-swap helpers (save/load last lineup)
+│  └─ player_match.py  # fuzzy/utility matching
+├─ src/                # Scripted pipeline (unchanged intent)
 │  ├─ __init__.py
 │  ├─ util.py          # logging, csv helpers, current_week, ValuePer1k
 │  ├─ data_fetch.py    # FantasyPros CSV loader, Odds (The Odds API)
@@ -58,6 +74,8 @@ All times are **Eastern (Washington, DC)**.
 │  └─ bankroll/                # bankroll.csv (header or rolling log)
 └─ logs/                       # script logs by week
 ```
+
+> **Note:** The `app/` folder is new for the API. The script flow in `src/` + `scripts/` remains the source of truth for the weekly pipeline.
 
 ---
 
@@ -85,7 +103,10 @@ All times are **Eastern (Washington, DC)**.
 **Quick verification**
 
 ```bash
+# raw column/header check
 docker compose run --rm bot python scripts/inspect_fp_raw.py
+
+# loader output quick glance
 docker compose run --rm bot python scripts/inspect_loader_output.py
 ```
 
@@ -114,7 +135,7 @@ echo 'ODDS_API_KEY=YOUR_KEY_HERE' > .env
 * `ValuePer1k = Proj / (Salary/1000)`
 * Weather modifiers applied in `lineup_rules.py` (QB/WR down in wind ≥15; RB/DST up in heavy precip/wind).
 * `adjusted_score()` adds light vegas/weather nudges; thresholds tunable in `lineup_rules.py`.
-* **Candidate pool gate:** `ValuePer1k ≥ 1.8` (TE/DST ≥ 1.7). (You temporarily lowered to 1.6/1.5 for testing; revert anytime.)
+* **Candidate pool gate:** `ValuePer1k ≥ 1.8` (TE/DST ≥ 1.7). (You may temporarily relax to 1.6/1.5 for testing.)
 
 **Lineup construction rules**
 
@@ -162,7 +183,7 @@ Build once:
 docker compose build
 ```
 
-Common runs:
+Common runs (script pipeline):
 
 ```bash
 docker compose run --rm bot python scripts/deep_build.py
@@ -183,7 +204,55 @@ column -s, -t < data/executed/fd_executed.csv | sed -n '1,50p'
 
 ---
 
-## 7) Cron (ET) with Docker
+## 7) Web API (FastAPI service)
+
+A small API is included for health checks, quick text output, and future UI hooks.
+
+**Compose port mapping**: container listens on `8000`; host exposes **`8010`** (see `docker-compose ps`).
+
+**Start/refresh**
+
+```bash
+docker compose up -d --build
+# check health
+curl -s http://localhost:8010/health | python3 -m json.tool
+```
+
+**Endpoints**
+
+* `GET /health` → JSON status, including player data availability
+* `GET /data/status` → JSON file presence counts and position breakdowns
+* `GET /schedule` → JSON `{ timezone, kickoffs, auto_locked_from_last_lineup }`
+* `GET /optimize` → JSON lineup object (accepts query params like `salary_cap`, `enforce_stack`, `min_stack_receivers`, `lock`, `ban`, `auto_late_swap`)
+* `GET /optimize_text` → **plain-text** lineup report (query param `width`)
+
+**Examples**
+
+```bash
+# JSON health (use jq or json.tool)
+curl -s http://localhost:8010/health | python3 -m json.tool
+
+# Schedule (JSON)
+curl -s http://localhost:8010/schedule | python3 -m json.tool
+
+# Text lineup (plain text)
+curl -s "http://localhost:8010/optimize_text?width=110"
+
+# JSON lineup (with optional locks/bans)
+curl -s "http://localhost:8010/optimize?lock=Patrick%20Mahomes&ban=Some%20DST" | python3 -m json.tool
+```
+
+> **Why you might see** `Expecting value: line 1 column 1 (char 0)`
+>
+> That error means you tried to pipe **plain text** or a 404 **HTML/Not found** page into a JSON parser. Fixes:
+>
+> * Use the correct **host port 8010** (not 8000 on host).
+> * Only pipe JSON endpoints (`/health`, `/optimize`, `/data/status`, `/schedule`) into `jq`/`json.tool`.
+> * Call text endpoints like `/optimize_text` **without** piping to a JSON tool.
+
+---
+
+## 8) Cron (ET) with Docker
 
 Edit user crontab (`crontab -e`) and add:
 
@@ -204,7 +273,7 @@ Edit user crontab (`crontab -e`) and add:
 
 ---
 
-## 8) Troubleshooting & QA
+## 9) Troubleshooting & QA
 
 * **No lineup produced?**
 
@@ -219,9 +288,15 @@ Edit user crontab (`crontab -e`) and add:
 * **Late-only suggestions**
   The builder writes a **Kick** column (e.g., `Sun 4:05PM`). Late-swap script restricts to those.
 
+* **API 404 or JSON parse errors**
+
+  * Confirm the mapped port: `docker compose ps` should show `0.0.0.0:8010->8000/tcp`.
+  * If you curl `http://localhost:8000` on host, you’ll hit **Not found**; use `http://localhost:8010` instead.
+  * Only pipe JSON endpoints to `jq`/`json.tool`; `/optimize_text` is plain text by design.
+
 ---
 
-## 9) Security & data hygiene
+## 10) Security & data hygiene
 
 * **Never commit secrets**. `.env` is git-ignored.
 * **Never commit raw FantasyPros CSVs**. `data/fantasypros/` is git-ignored.
@@ -229,7 +304,7 @@ Edit user crontab (`crontab -e`) and add:
 
 ---
 
-## 10) Roadmap (nice-to-haves)
+## 11) Roadmap (nice-to-haves)
 
 * Stadium coordinates → NWS wind/precip tiers applied per game.
 * Ownership proxy surfaced in tie-breakers.
@@ -238,7 +313,6 @@ Edit user crontab (`crontab -e`) and add:
 
 ---
 
-## 11) License & disclaimers
+## 12) License & disclaimers
 
-For personal/league use. Respect all third-party terms (FantasyPros, The Odds API, NWS, ESPN).
-No guarantees; this is an engineering helper, not betting advice.
+For personal/league use. Respect all third-party terms (FantasyPros, The Odds API, NWS, ESPN). No guarantees; this is an engineering helper, not betting advice.
