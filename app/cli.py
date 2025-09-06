@@ -168,9 +168,10 @@ def main():
     # 5) Filter by teams if single game chosen
     teams = selected["teams"]
     if teams:
+        # Try to match team names (handle potential mismatches)
         df2 = df[df["TEAM"].isin(teams)].copy()
-        if df2.empty:
-            print(f"WARNING: No data for teams {teams}. Using full slate instead.")
+        if df2.empty or len(df2) < 20:  # Need enough players for a lineup
+            print(f"WARNING: Insufficient data for teams {teams}. Using full slate instead.")
             df2 = df.copy()
     else:
         df2 = df.copy()
@@ -179,7 +180,11 @@ def main():
     strat = _load_strategy_weights()
     leverage_weight = strat[game_type]["leverage_weight"]
 
-    # 7) Optimize
+    # 7) Optimize - use original indices
+    print(f"\nOptimizing {game_type} lineup...")
+    print(f"Players available: {len(df2)}")
+    print(f"Salary cap: $60,000")
+    
     lineup_idxs = optimization.optimize_lineup(
         df2,
         salary_cap=60000,
@@ -189,6 +194,7 @@ def main():
         ban_indices=[],
         leverage_weight=leverage_weight
     )
+    
     if not lineup_idxs:
         print("ERROR: No feasible lineup found.")
         return 3
