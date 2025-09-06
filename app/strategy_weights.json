@@ -1,0 +1,10 @@
+{
+  "h2h": {
+    "projection_weight": 0.3,
+    "leverage_weight": 0.7
+  },
+  "league": {
+    "projection_weight": 0.7,
+    "leverage_weight": 0.3
+  }
+}

@@ -2,9 +2,9 @@ import itertools
 import logging
 from typing import List, Optional, Set
 import pandas as pd
-import numpy as np
 
 logger = logging.getLogger(__name__)
+
 
 def optimize_lineup(
     df: pd.DataFrame,
@@ -12,232 +12,264 @@ def optimize_lineup(
     enforce_stack: bool = True,
     min_stack_receivers: int = 1,
     lock_indices: Optional[List[int]] = None,
-    ban_indices: Optional[List[int]] = None
+    ban_indices: Optional[List[int]] = None,
+    leverage_weight: float = 0.2
 ) -> List[int]:
     """
-    Advanced lineup optimization with stacking and constraints
+    Lineup optimization. Tries LP if PuLP is present; otherwise a heuristic.
+    If TEAM data is unreliable (mostly 'UNK' / single unique team), stacking is auto-disabled.
+    Includes a cheapest-lineup fallback to ensure we detect impossible caps.
     """
-    
     lock_indices = set(lock_indices or [])
-    ban_indices = set(ban_indices or [])
-    
-    # Remove banned players
+    ban_indices  = set(ban_indices or [])
+
     use_df = df[~df.index.isin(ban_indices)].copy()
-    
-    # Add value metrics
-    use_df['value'] = use_df['PROJ PTS'] / (use_df['SALARY'] / 1000)
+    if use_df.empty:
+        return []
+
+    # Auto-disable stacking if teams look unreliable
+    teams_nonunk = set([t for t in use_df["TEAM"].astype(str) if t and t != "UNK"])
+    if (not teams_nonunk) or (use_df["TEAM"].nunique() <= 1):
+        enforce_stack = False
+
+    # value & adj proj
+    use_df['value']    = use_df['PROJ PTS'] / (use_df['SALARY'] / 1000)
     use_df['adj_proj'] = use_df['PROJ PTS']
-    
-    # Adjust for ownership if available
+
     if 'OWN_PCT' in use_df.columns:
-        use_df['leverage'] = use_df['PROJ PTS'] / (use_df['OWN_PCT'] + 1)
-        use_df['adj_proj'] = use_df['PROJ PTS'] * 0.8 + use_df['leverage'] * 0.2
-    
-    # Try linear programming if PuLP is available
+        # small warning fix for future pandas changes by infer_objects:
+        own = use_df['OWN_PCT'].fillna(0)
+        try:
+            own = own.infer_objects(copy=False)
+        except Exception:
+            pass
+        use_df['leverage'] = use_df['PROJ PTS'] / (own + 1)
+        use_df['adj_proj'] = use_df['PROJ PTS'] * (1 - leverage_weight) + use_df['leverage'] * leverage_weight
+
+    # Try LP first
     try:
-        return optimize_with_lp(
-            use_df, salary_cap, enforce_stack, 
-            min_stack_receivers, lock_indices
-        )
+        return _opt_lp(use_df, salary_cap, enforce_stack, min_stack_receivers, lock_indices)
     except ImportError:
-        logger.info("PuLP not available, using heuristic optimization")
-        return optimize_heuristic(
-            use_df, salary_cap, enforce_stack,
-            min_stack_receivers, lock_indices
-        )
+        logger.warning("PuLP not available; using heuristic optimizer.")
+        lineup = _opt_heuristic(use_df, salary_cap, enforce_stack, min_stack_receivers, lock_indices)
+        if lineup:
+            return lineup
+        # Fallback to cheapest valid lineup (if none exists under cap, explain why)
+        cheap = _cheapest_valid_lineup(use_df)
+        if not cheap:
+            return []
+        if _total_salary(use_df, cheap) > salary_cap:
+            min_sal = _total_salary(use_df, cheap)
+            print(f"ERROR: Even the cheapest valid lineup costs ${min_sal}, which exceeds the salary cap ${salary_cap}.")
+            print("Hint: Your salary scale may be from a different site/scoring. Adjust the cap in CLI or config.")
+            return []
+        return cheap
 
-def optimize_with_lp(
-    df: pd.DataFrame,
-    salary_cap: int,
-    enforce_stack: bool,
-    min_stack_receivers: int,
-    lock_indices: Set[int]
-) -> List[int]:
-    """Linear programming optimization using PuLP"""
+
+def _opt_lp(df: pd.DataFrame, salary_cap: int, enforce_stack: bool, min_stack_receivers: int, lock_indices: Set[int]) -> List[int]:
     import pulp
-    
-    # Create problem
-    prob = pulp.LpProblem("DFS_Optimization", pulp.LpMaximize)
-    
-    # Decision variables
-    player_vars = {}
-    for idx in df.index:
-        player_vars[idx] = pulp.LpVariable(f"player_{idx}", cat='Binary')
-    
-    # Objective: maximize adjusted projections
-    prob += pulp.lpSum([
-        df.loc[idx, 'adj_proj'] * player_vars[idx] 
-        for idx in df.index
-    ])
-    
-    # Salary constraint
-    prob += pulp.lpSum([
-        df.loc[idx, 'SALARY'] * player_vars[idx] 
-        for idx in df.index
-    ]) <= salary_cap
-    
-    # Position constraints
-    position_limits = {
-        'QB': (1, 1),
-        'RB': (2, 3),
-        'WR': (3, 4),
-        'TE': (1, 2),
-        'DST': (1, 1)
-    }
-    
-    for pos, (min_count, max_count) in position_limits.items():
-        pos_players = df[df['POS'] == pos].index
-        if pos != 'RB' and pos != 'WR' and pos != 'TE':
-            # Exact constraint for QB and DST
-            prob += pulp.lpSum([player_vars[idx] for idx in pos_players]) == min_count
-        else:
-            # Range constraint for flex positions
-            prob += pulp.lpSum([player_vars[idx] for idx in pos_players]) >= min_count
-            prob += pulp.lpSum([player_vars[idx] for idx in pos_players]) <= max_count
-    
-    # Total players constraint (9 players)
-    prob += pulp.lpSum([player_vars[idx] for idx in df.index]) == 9
-    
-    # FLEX constraint (7 RB/WR/TE total, since we have minimums)
-    flex_positions = df[df['POS'].isin(['RB', 'WR', 'TE'])].index
-    prob += pulp.lpSum([player_vars[idx] for idx in flex_positions]) == 7
-    
-    # Lock constraints
-    for idx in lock_indices:
-        if idx in player_vars:
-            prob += player_vars[idx] == 1
-    
-    # Stacking constraint
-    if enforce_stack:
-        # For each QB, ensure they have teammates
-        for qb_idx in df[df['POS'] == 'QB'].index:
-            qb_team = df.loc[qb_idx, 'TEAM']
-            teammates = df[(df['TEAM'] == qb_team) & 
-                          (df['POS'].isin(['WR', 'TE']))].index
-            
-            # If QB is selected, must have at least min_stack_receivers teammates
-            prob += pulp.lpSum([player_vars[tm_idx] for tm_idx in teammates]) >= \
-                   min_stack_receivers * player_vars[qb_idx]
-    
-    # Solve
-    prob.solve(pulp.PULP_CBC_CMD(msg=0))
-    
-    # Extract solution
-    if pulp.LpStatus[prob.status] == 'Optimal':
-        lineup = []
-        for idx in df.index:
-            if player_vars[idx].varValue == 1:
-                lineup.append(idx)
-        return lineup
-    else:
-        logger.warning("LP optimization failed, falling back to heuristic")
-        return optimize_heuristic(df, salary_cap, enforce_stack, min_stack_receivers, lock_indices)
 
-def optimize_heuristic(
-    df: pd.DataFrame,
-    salary_cap: int,
-    enforce_stack: bool,
-    min_stack_receivers: int,
-    lock_indices: Set[int]
-) -> List[int]:
-    """Heuristic optimization using greedy search"""
-    
-    # Sort by position and value
-    def get_top_n(pos: str, n: int):
-        return df[df['POS'] == pos].nlargest(n, 'adj_proj')
-    
-    qbs = get_top_n('QB', 5)
-    rbs = get_top_n('RB', 10)
-    wrs = get_top_n('WR', 12)
-    tes = get_top_n('TE', 6)
-    dsts = get_top_n('DST', 5)
-    
-    best_lineup = []
-    best_score = -1
-    
-    # Try combinations
-    for qb_idx in qbs.index:
-        qb = df.loc[qb_idx]
-        qb_team = qb['TEAM']
-        
-        # Get potential stack mates
-        stack_mates = df[(df['TEAM'] == qb_team) & 
-                        (df['POS'].isin(['WR', 'TE']))].nlargest(5, 'adj_proj')
-        
-        if enforce_stack and len(stack_mates) < min_stack_receivers:
-            continue
-        
-        # Try different stack combinations
-        for stack_indices in itertools.combinations(stack_mates.index, min(min_stack_receivers, len(stack_mates))):
-            used_indices = {qb_idx} | set(stack_indices)
-            remaining_salary = salary_cap - qb['SALARY'] - sum(df.loc[idx, 'SALARY'] for idx in stack_indices)
-            
-            # Fill remaining positions
-            lineup_indices = list(used_indices)
-            
-            # Add RBs (need 2-3)
-            available_rbs = rbs[~rbs.index.isin(used_indices)]
-            for rb_count in [2, 3]:
-                for rb_combo in itertools.combinations(available_rbs.index, rb_count):
-                    rb_cost = sum(df.loc[idx, 'SALARY'] for idx in rb_combo)
-                    if rb_cost > remaining_salary * 0.4:  # Don't spend too much on RBs
+    df = df.reset_index(drop=True)
+
+    prob = pulp.LpProblem("DFS_Optimization", pulp.LpMaximize)
+    x = {i: pulp.LpVariable(f"p_{i}", cat="Binary") for i in df.index}
+
+    prob += pulp.lpSum(df.loc[i, 'adj_proj'] * x[i] for i in df.index)
+    prob += pulp.lpSum(df.loc[i, 'SALARY'] * x[i] for i in df.index) <= salary_cap
+
+    pos = df['POS']
+    def _sum_pos(p): return pulp.lpSum(x[i] for i in df.index if pos[i] == p)
+
+    prob += _sum_pos('QB') == 1
+    prob += _sum_pos('DST') == 1
+    prob += _sum_pos('RB') >= 2
+    prob += _sum_pos('RB') <= 3
+    prob += _sum_pos('WR') >= 3
+    prob += _sum_pos('WR') <= 4
+    prob += _sum_pos('TE') >= 1
+    prob += _sum_pos('TE') <= 2
+    prob += pulp.lpSum(x[i] for i in df.index) == 9
+
+    for i in lock_indices:
+        if i in x:
+            prob += x[i] == 1
+
+    if enforce_stack:
+        for i in df.index:
+            if df.loc[i, 'POS'] != 'QB':
+                continue
+            team = df.loc[i, 'TEAM']
+            if pd.isna(team) or team == "UNK":
+                continue
+            mates = [j for j in df.index if df.loc[j, 'TEAM'] == team and df.loc[j, 'POS'] in ('WR','TE')]
+            if mates:
+                prob += pulp.lpSum(x[j] for j in mates) >= min_stack_receivers * x[i]
+
+    prob.solve(pulp.PULP_CBC_CMD(msg=0))
+    try:
+        status = pulp.LpStatus[prob.status]
+    except Exception:
+        status = "Undefined"
+
+    if status != 'Optimal':
+        raise ImportError("LP unavailable or failed")
+
+    return [i for i in df.index if x[i].value() == 1]
+
+
+def _opt_heuristic(df: pd.DataFrame, salary_cap: int, enforce_stack: bool, min_stack_receivers: int, lock_indices: Set[int]) -> List[int]:
+    df = df.reset_index(drop=True)
+
+    # Wider pools to allow cheaper combos
+    def pool(p, n):
+        # Mix top by adj_proj and by value to get both ceiling and efficiency
+        top_proj  = df[df['POS'] == p].nlargest(max(1, n//2), 'adj_proj')
+        top_value = df[df['POS'] == p].nlargest(max(1, n - len(top_proj)), 'value')
+        return pd.concat([top_proj, top_value]).drop_duplicates().nlargest(n, 'adj_proj')
+
+    qbs = pool('QB', 8)
+    rbs = pool('RB', 24)
+    wrs = pool('WR', 32)
+    tes = pool('TE', 12)
+    dsts = pool('DST', 10)
+
+    # As another angle, try some cheap subsets
+    cheap_rbs = df[df['POS']=='RB'].nsmallest(24, 'SALARY')
+    cheap_wrs = df[df['POS']=='WR'].nsmallest(32, 'SALARY')
+    cheap_tes = df[df['POS']=='TE'].nsmallest(12, 'SALARY')
+    cheap_dsts= df[df['POS']=='DST'].nsmallest(10, 'SALARY')
+
+    rbs = pd.concat([rbs, cheap_rbs]).drop_duplicates()
+    wrs = pd.concat([wrs, cheap_wrs]).drop_duplicates()
+    tes = pd.concat([tes, cheap_tes]).drop_duplicates()
+    dsts= pd.concat([dsts, cheap_dsts]).drop_duplicates()
+
+    best_score = -1.0
+    best = []
+
+    for qb_i in qbs.index:
+        qb_team = df.loc[qb_i, 'TEAM']
+        # Stack candidates or just best WR/TEs if stacking off
+        if enforce_stack and qb_team != "UNK":
+            stack_pool = df[(df['TEAM'] == qb_team) & (df['POS'].isin(['WR','TE']))].nlargest(8, 'adj_proj')
+        else:
+            stack_pool = pd.concat([wrs, tes]).nlargest(8, 'adj_proj')
+
+        stack_sizes = [min_stack_receivers] if enforce_stack and min_stack_receivers > 0 else [0]
+        for req_stack in stack_sizes:
+            stacks = [tuple()] if req_stack == 0 else itertools.combinations(stack_pool.index, min(req_stack, len(stack_pool)))
+
+            for stack in stacks:
+                chosen = set([qb_i, *stack])
+                if _total_salary(df, chosen) > salary_cap:
+                    continue
+
+                # Try a few DSTs across both strong & cheap
+                for dst_i in dsts.index[:6]:
+                    if dst_i in chosen:
                         continue
-                    
-                    # Add WRs (need total of 3-4 WR/TE)
-                    wr_te_have = sum(1 for idx in stack_indices if df.loc[idx, 'POS'] in ['WR', 'TE'])
-                    wr_need = max(3 - wr_te_have, 0)
-                    
-                    available_wrs = wrs[~wrs.index.isin(used_indices | set(rb_combo))]
-                    if len(available_wrs) < wr_need:
+                    s1 = chosen | {dst_i}
+                    if _total_salary(df, s1) > salary_cap:
                         continue
-                    
-                    for wr_combo in itertools.combinations(available_wrs.index, wr_need):
-                        # Add TE if needed
-                        te_have = sum(1 for idx in stack_indices if df.loc[idx, 'POS'] == 'TE')
-                        if te_have == 0:
-                            available_tes = tes[~tes.index.isin(used_indices | set(rb_combo) | set(wr_combo))]
-                            if len(available_tes) == 0:
+
+                    # RBs: try 2 first
+                    rb_pool = [i for i in rbs.index if i not in s1]
+                    for rb_combo in itertools.combinations(rb_pool[:16], 2):
+                        s2 = s1 | set(rb_combo)
+                        if _total_salary(df, s2) > salary_cap:
+                            continue
+
+                        # Ensure >=3 WR total
+                        wr_pool = [i for i in wrs.index if i not in s2]
+                        have_wr = sum(df.loc[list(s2), 'POS'].eq('WR'))
+                        wr_needed = max(3 - have_wr, 0)
+                        if wr_needed > 3:
+                            wr_needed = 3
+                        wr_sets = [tuple()] if wr_needed == 0 else itertools.combinations(wr_pool[:20], wr_needed)
+
+                        for wr_combo in wr_sets:
+                            s3 = s2 | set(wr_combo)
+                            if _total_salary(df, s3) > salary_cap:
                                 continue
-                            te_idx = available_tes.index[0]
-                        else:
-                            te_idx = None
-                        
-                        # Add DST
-                        available_dsts = dsts[~dsts.index.isin(used_indices)]
-                        if len(available_dsts) == 0:
-                            continue
-                        dst_idx = available_dsts.index[0]
-                        
-                        # Build complete lineup
-                        test_lineup = list(used_indices) + list(rb_combo) + list(wr_combo)
-                        if te_idx is not None:
-                            test_lineup.append(te_idx)
-                        test_lineup.append(dst_idx)
-                        
-                        # Add FLEX if needed (should have 9 total)
-                        if len(test_lineup) < 9:
-                            flex_candidates = df[df['POS'].isin(['RB', 'WR', 'TE']) & 
-                                               ~df.index.isin(test_lineup)]
-                            if len(flex_candidates) > 0:
-                                flex_idx = flex_candidates.nlargest(1, 'adj_proj').index[0]
-                                test_lineup.append(flex_idx)
-                        
-                        # Check constraints
-                        if len(test_lineup) != 9:
-                            continue
-                        
-                        total_salary = sum(df.loc[idx, 'SALARY'] for idx in test_lineup)
-                        if total_salary > salary_cap:
-                            continue
-                        
-                        # Check if all locked players are included
-                        if not lock_indices.issubset(set(test_lineup)):
-                            continue
-                        
-                        # Calculate score
-                        score = sum(df.loc[idx, 'adj_proj'] for idx in test_lineup)
-                        if score > best_score:
-                            best_score = score
-                            best_lineup = test_lineup
-    
-    return best_lineup
+
+                            # ensure at least 1 TE
+                            have_te = any(df.loc[list(s3), 'POS'].eq('TE'))
+                            s4 = set(s3)
+                            if not have_te:
+                                te_pool = [i for i in tes.index if i not in s3]
+                                if not te_pool:
+                                    continue
+                                s4.add(te_pool[0])
+                                if _total_salary(df, s4) > salary_cap:
+                                    continue
+
+                            # Fill to 9 with a FLEX
+                            current = set(s4)
+                            if len(current) < 9:
+                                flex_pool = df[(df['POS'].isin(['RB','WR','TE'])) & (~df.index.isin(current))]
+                                # try value-first then proj-first
+                                flex_try = pd.concat([
+                                    flex_pool.nlargest(30, 'value'),
+                                    flex_pool.nsmallest(30, 'SALARY'),
+                                    flex_pool.nlargest(30, 'adj_proj')
+                                ]).drop_duplicates()
+                                added = False
+                                for f in flex_try.index:
+                                    if len(current) >= 9:
+                                        break
+                                    if _total_salary(df, current | {f}) <= salary_cap:
+                                        current.add(f)
+                                        added = True
+                                        break
+                                if not added or len(current) != 9:
+                                    continue
+
+                            # lock check
+                            if not lock_indices.issubset(current):
+                                continue
+
+                            score = _total_adjproj(df, current)
+                            if score > best_score:
+                                best_score = score
+                                best = list(current)
+
+    return best
+
+
+def _cheapest_valid_lineup(df: pd.DataFrame) -> List[int]:
+    """
+    Build the absolute cheapest lineup that satisfies roster constraints.
+    Useful to diagnose impossible caps.
+    """
+    df = df.reset_index(drop=True)
+    picks: Set[int] = set()
+
+    def pick_n(pos, n):
+        nonlocal picks
+        pool = df[(df['POS'] == pos) & (~df.index.isin(picks))].nsmallest(max(1,n), 'SALARY').index.tolist()
+        for i in pool[:n]:
+            picks.add(i)
+
+    # Required slots
+    pick_n('QB', 1)
+    pick_n('DST', 1)
+    pick_n('RB', 2)
+    pick_n('WR', 3)
+    pick_n('TE', 1)
+
+    # One more as FLEX from cheapest across RB/WR/TE
+    flex_pool = df[(df['POS'].isin(['RB','WR','TE'])) & (~df.index.isin(picks))].nsmallest(50, 'SALARY').index
+    for f in flex_pool:
+        if len(picks) >= 9:
+            break
+        picks.add(f)
+
+    return list(picks) if len(picks) == 9 else []
+
+
+def _total_salary(df: pd.DataFrame, ids: Set[int]) -> int:
+    return int(df.loc[list(ids), 'SALARY'].sum())
+
+
+def _total_adjproj(df: pd.DataFrame, ids: Set[int]) -> float:
+    return float(df.loc[list(ids), 'adj_proj'].sum())
