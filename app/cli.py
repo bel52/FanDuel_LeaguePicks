@@ -1,104 +1,254 @@
-import argparse
+import os
+import json
+import requests
 import pandas as pd
-from . import data_ingestion, optimization, analysis, openai_utils
-from .formatting import build_text_report
-from .player_match import match_names_to_indices
+from dateutil import parser as dateparser
+import pytz
+
+# Make imports work whether run as `python -m app.cli` or `python app/cli.py`
+try:
+    from app import data_ingestion
+    from app import optimization
+    from app.formatting import build_text_report
+    from app.kickoff_times import load_last_lineup, save_last_lineup
+except Exception:
+    import sys
+    from pathlib import Path
+    sys.path.append(str(Path(__file__).resolve().parent.parent))
+    from app import data_ingestion
+    from app import optimization
+    from app.formatting import build_text_report
+    from app.kickoff_times import load_last_lineup, save_last_lineup
+
+
+def _check_openai_key():
+    """
+    Non-fatal verification for OPENAI_API_KEY.
+    Compatible with openai>=1.0.0. If verification fails, we proceed without AI.
+    """
+    key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not key:
+        print("WARNING: OPENAI_API_KEY not set. AI analysis disabled.")
+        return None
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=key)
+        _ = client.models.list()  # lightweight call; may still fail offline
+        return key
+    except Exception as e:
+        print(f"WARNING: Could not verify OpenAI key ({e}). Proceeding without AI.")
+        return None
+
+
+def _load_strategy_weights():
+    cfg_path = os.path.join(os.path.dirname(__file__), "strategy_weights.json")
+    default_cfg = {
+        "h2h":   {"projection_weight": 0.3, "leverage_weight": 0.7},
+        "league":{"projection_weight": 0.7, "leverage_weight": 0.3}
+    }
+    try:
+        with open(cfg_path, "r") as f:
+            cfg = json.load(f)
+        for k in ["h2h","league"]:
+            if k not in cfg:
+                cfg[k] = default_cfg[k]
+        return cfg
+    except FileNotFoundError:
+        print("NOTE: strategy_weights.json not found. Using defaults.")
+        return default_cfg
+    except Exception as e:
+        print(f"WARNING: Failed to load strategy_weights.json: {e}. Using defaults.")
+        return default_cfg
+
+
+def _fetch_games():
+    """
+    Returns list like:
+      [{'teams': None, 'label': 'All Games (Full Slate)'},
+       {'teams': ['AWY','HOM'], 'label': 'AWY vs HOM - Sun 01:00 PM ET'}, ...]
+    with index 0 = Full Slate.
+    """
+    options = [{"teams": None, "label": "All Games (Full Slate)"}]
+    try:
+        r = requests.get(
+            "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard",
+            timeout=10
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        print(f"WARNING: Could not retrieve ESPN games: {e}. Defaulting to Full Slate only.")
+        return options
+
+    eastern = pytz.timezone("America/New_York")
+    for ev in data.get("events", []):
+        comps = ev.get("competitions", [])
+        if not comps:
+            continue
+        comp = comps[0]
+        teams = []
+        for c in comp.get("competitors", []):
+            abbr = c.get("team", {}).get("abbreviation") or ""
+            side = c.get("homeAway", "")
+            teams.append((side, abbr))
+        if not teams:
+            continue
+        away = next((a for s,a in teams if s == "away"), teams[0][1] if len(teams)>=1 else "TBD")
+        home = next((a for s,a in teams if s == "home"), teams[-1][1] if len(teams)>=1 else "TBD")
+
+        dt_str = comp.get("date")
+        label_time = "TBA"
+        if dt_str:
+            try:
+                dt = dateparser.parse(dt_str)
+                dt_et = dt.astimezone(eastern)
+                label_time = dt_et.strftime("%a %I:%M %p ET")
+            except Exception:
+                pass
+        options.append({"teams":[away, home], "label": f"{away} vs {home} - {label_time}"})
+    return options
+
+
+def _prompt_select(options):
+    print("\nSelect a game/slate:")
+    for i, opt in enumerate(options):
+        print(f"{i}. {opt['label']}")
+    while True:
+        choice = input("Enter number (or 'q' to quit): ").strip().lower()
+        if choice == 'q':
+            return None
+        if choice.isdigit():
+            idx = int(choice)
+            if 0 <= idx < len(options):
+                return options[idx]
+        print("Invalid selection.")
+
+
+def _prompt_mode():
+    while True:
+        m = input("Choose game type - (L)eague or (H)ead-to-Head: ").strip().lower()
+        if m in ("l","league"):
+            return "league"
+        if m in ("h","h2h","head"):
+            return "h2h"
+        print("Please enter L or H.")
+
 
 def main():
-    ap = argparse.ArgumentParser(description="FanDuel DFS Optimizer (Readable CLI Output)")
-    ap.add_argument("--salary-cap", type=int, default=60000)
-    ap.add_argument("--enforce-stack", action="store_true", help="Require QB to have >= min-stack-receivers WR/TE from same team")
-    ap.add_argument("--min-stack-receivers", type=int, default=1)
-    ap.add_argument("--width", type=int, default=100, help="Output width (70-160)")
-    ap.add_argument("--lock", action="append", default=[], help='Lock a player by name (can repeat). Example: --lock "Ja\'Marr Chase"')
-    ap.add_argument("--ban",  action="append", default=[], help='Ban a player by name (can repeat). Example: --ban "Trey McBride"')
-    args = ap.parse_args()
+    # 1) AI key check (non-fatal)
+    _check_openai_key()
 
-    df = data_ingestion.load_weekly_data()
+    # 2) Load player data + warnings
+    df, data_warnings = data_ingestion.load_weekly_data_with_warnings()
+    if data_warnings:
+        for w in data_warnings:
+            print(w)
+
     if df is None or df.empty:
-        print("ERROR: No data available for optimization")
+        print("ERROR: No player data loaded. Ensure CSVs exist under data/input/.")
         return 2
 
-    lock_idx, lock_nf = match_names_to_indices(args.lock, df)
-    ban_idx,  ban_nf  = match_names_to_indices(args.ban,  df)
+    required_positions = ["QB","RB","WR","TE","DST"]
+    missing = [p for p in required_positions if p not in set(df["POS"].unique())]
+    if missing:
+        for p in missing:
+            print(f"ERROR: Missing {p} data (no rows found). Confirm data/input/{p.lower()}.csv exists.")
+        return 2
 
-    lineup = optimization.optimize_lineup(
-        df,
-        salary_cap=args.salary_cap,
-        enforce_stack=args.enforce_stack,
-        min_stack_receivers=args.min_stack_receivers,
-        lock_indices=lock_idx,
-        ban_indices=ban_idx
+    # 3) Prompt for game/slate
+    options = _fetch_games()
+    selected = _prompt_select(options)
+    if selected is None:
+        print("Exiting.")
+        return 0
+
+    # 4) Prompt for mode
+    game_type = _prompt_mode()
+
+    # 5) Filter by teams if single game chosen
+    teams = selected["teams"]
+    if teams:
+        df2 = df[df["TEAM"].isin(teams)].copy()
+        if df2.empty:
+            print(f"WARNING: No data for teams {teams}. Using full slate instead.")
+            df2 = df.copy()
+    else:
+        df2 = df.copy()
+
+    # 6) Load strategy weights
+    strat = _load_strategy_weights()
+    leverage_weight = strat[game_type]["leverage_weight"]
+
+    # 7) Optimize
+    lineup_idxs = optimization.optimize_lineup(
+        df2,
+        salary_cap=60000,
+        enforce_stack=True,
+        min_stack_receivers=1,
+        lock_indices=[],
+        ban_indices=[],
+        leverage_weight=leverage_weight
     )
-    if not lineup:
-        print("ERROR: No feasible lineup found with given constraints")
-        if args.lock or args.ban:
-            print(f"Locks: {', '.join(args.lock)}")
-            print(f"Bans: {', '.join(args.ban)}")
-            nf = list(set(lock_nf + ban_nf))
-            if nf:
-                print(f"Not found: {', '.join(nf)}")
+    if not lineup_idxs:
+        print("ERROR: No feasible lineup found.")
         return 3
 
-    # Monte Carlo
-    sim = analysis.MonteCarloSimulator(num_simulations=10000)
-    pdata = {}
-    for pid in lineup:
-        proj = float(df.loc[pid, 'PROJ PTS'])
-        pdata[pid] = {'projected_points': proj, 'historical_std_dev': max(proj * 0.15, 1.0)}
-    sim_results = sim.simulate_lineup_performance(lineup, pdata)
-
-    # AI analysis (best-effort; cached)
-    try:
-        prompt = analysis.build_lineup_analysis_prompt(lineup, df, sim_results)
-        ai_text = openai_utils.analyze_prompt_with_gpt(prompt)
-    except Exception:
-        ai_text = "Analysis not available"
-
-    total_proj = 0.0
+    # 8) Build lineup dict
+    lineup = []
     total_salary = 0
-    lineup_players = []
-    for pid in lineup:
-        r = df.loc[pid]
-        total_proj += float(r['PROJ PTS'])
-        total_salary += int(r['SALARY'])
-        own_pct = None
-        if 'OWN_PCT' in r and not pd.isna(r['OWN_PCT']):
-            own_pct = float(r['OWN_PCT'])
-        lineup_players.append({
-            'name': r['PLAYER NAME'],
-            'position': r['POS'],
-            'team': r['TEAM'],
-            'opponent': r.get('OPP', ''),
-            'proj_points': float(r['PROJ PTS']),
-            'salary': int(r['SALARY']),
-            'proj_roster_pct_raw': r.get('PROJ ROSTER %', None),
-            'own_pct': own_pct,
+    for idx in lineup_idxs:
+        row = df2.loc[idx]
+        total_salary += int(row["SALARY"])
+        own = None
+        if "OWN_PCT" in row and pd.notna(row["OWN_PCT"]):
+            own = float(row["OWN_PCT"])
+        lineup.append({
+            "name": row["PLAYER NAME"],
+            "position": row["POS"],
+            "team": row["TEAM"],
+            "opponent": row.get("OPP","N/A"),
+            "proj_points": float(row["PROJ PTS"]),
+            "salary": int(row["SALARY"]),
+            "own_pct": own
         })
 
     result = {
-        "params": {
-            "salary_cap": args.salary_cap,
-            "enforce_stack": args.enforce_stack,
-            "min_stack_receivers": args.min_stack_receivers
-        },
-        "constraints": {
-            "locks": [df.loc[i,'PLAYER NAME'] for i in lock_idx],
-            "bans":  [df.loc[i,'PLAYER NAME'] for i in ban_idx],
-            "not_found": list(set(lock_nf + ban_nf))
-        },
-        "cap_usage": {
-            "total_salary": total_salary,
-            "remaining": args.salary_cap - total_salary
-        },
-        "lineup": lineup_players,
-        "total_projected_points": round(total_proj, 2),
-        "simulation": sim_results,
-        "analysis": ai_text
+        "game_type": f"{game_type}" + (f" ({' vs '.join(teams)})" if teams else ""),
+        "lineup": lineup,
+        "cap_usage": {"total_salary": total_salary, "remaining": 60000 - total_salary}
     }
 
-    print(build_text_report(result, width=max(70, min(160, args.width))))
+    # 9) League compare/save
+    if game_type == "league":
+        print("\n*** League Mode Selected ***")
+        prev = load_last_lineup()
+        if prev:
+            print("Current Saved League Lineup:")
+            for p in prev:
+                print(f" - {p['position']}: {p['name']} ({p['team']} vs {p.get('opponent','N/A')}) – {p.get('proj_points',0):.1f} pts")
+        else:
+            print("No saved league lineup yet.")
+
+        if prev:
+            prev_names = {p["name"] for p in prev}
+            new_names  = {p["name"] for p in lineup}
+            out = [p for p in prev if p["name"] not in new_names]
+            inn = [p for p in lineup if p["name"] not in prev_names]
+            if not out and not inn:
+                print("\nNo lineup changes recommended.")
+            else:
+                print("\nRecommended Changes:")
+                for p in out:
+                    print(f" - Remove {p['name']} ({p['position']}, {p['team']})")
+                for p in inn:
+                    print(f" + Add {p['name']} ({p['position']}, {p['team']})")
+        save_last_lineup(lineup)
+
+    # 10) Print report
+    print("\nOptimized Lineup:")
+    print(build_text_report(result, width=100))
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

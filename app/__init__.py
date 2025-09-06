@@ -1,23 +1,6 @@
 """
-Enhanced FanDuel NFL DFS Optimizer
-Version: 3.0.0
+Marks the 'app' directory as a Python package.
+Enables:
+  - python3 -m app.cli
+  - python3 app/cli.py
 """
-
-__version__ = "3.0.0"
-
-# Make package imports cleaner
-from .config import settings
-from .enhanced_optimizer import EnhancedDFSOptimizer
-from .ai_integration import AIAnalyzer
-from .data_monitor import RealTimeDataMonitor
-from .auto_swap_system import AutoSwapSystem
-from .cache_manager import CacheManager
-
-__all__ = [
-    'settings',
-    'EnhancedDFSOptimizer',
-    'AIAnalyzer', 
-    'RealTimeDataMonitor',
-    'AutoSwapSystem',
-    'CacheManager'
-]
