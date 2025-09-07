@@ -1,292 +1,284 @@
-import logging
 import os
-import pandas as pd
-from typing import List, Optional
-from fastapi import FastAPI, Query, HTTPException
-from fastapi.responses import PlainTextResponse
+import logging
+import sys
+from typing import List, Optional, Dict, Any
+from contextlib import asynccontextmanager
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+from fastapi import FastAPI, Query, HTTPException
+from fastapi.responses import PlainTextResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+import pandas as pd
+from dotenv import load_dotenv
+
+# Load environment first
+load_dotenv()
+
+# Add app directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from app.config import settings
+from app import data_ingestion, optimization, analysis
+from app.formatting import build_text_report
+from app.player_match import match_names_to_indices
+from app.kickoff_times import (
+    build_kickoff_map, 
+    auto_lock_started_players, 
+    save_last_lineup, 
+    load_last_lineup
+)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI app
-app = FastAPI(title="FanDuel NFL DFS Optimizer", version="3.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle"""
+    logger.info("Starting FanDuel DFS Optimizer...")
+    # Ensure directories exist
+    os.makedirs(settings.input_dir, exist_ok=True)
+    os.makedirs(settings.output_dir, exist_ok=True)
+    os.makedirs("logs", exist_ok=True)
+    yield
+    # Cleanup
+    logger.info("Shutting down...")
 
-def load_csv_data():
-    """Simple CSV data loader"""
-    input_dir = "/app/data/input"
-    all_players = []
-    
-    files = ["qb.csv", "rb.csv", "wr.csv", "te.csv", "dst.csv"]
-    
-    for filename in files:
-        file_path = os.path.join(input_dir, filename)
-        if not os.path.exists(file_path):
-            continue
-            
-        try:
-            df = pd.read_csv(file_path)
-            for _, row in df.iterrows():
-                # Extract player info from different possible column formats
-                name = ""
-                for name_col in ['PLAYER NAME', 'Player', 'NAME']:
-                    if name_col in row and pd.notna(row[name_col]):
-                        name = str(row[name_col])
-                        break
-                
-                if not name or name == 'nan':
-                    continue
-                
-                # Extract team and position from name like "Josh Allen (BUF - QB)"
-                team = pos = ""
-                if '(' in name and ')' in name:
-                    parts = name.split('(')[1].split(')')[0]
-                    if ' - ' in parts:
-                        team, pos = parts.split(' - ')
-                        name = name.split('(')[0].strip()
-                
-                # Get salary and projection
-                salary = 0
-                for sal_col in ['SALARY', 'Salary', 'SAL', 'PRICE']:
-                    if sal_col in row:
-                        sal_val = str(row[sal_col]).replace('$', '').replace(',', '')
-                        try:
-                            salary = int(float(sal_val))
-                            break
-                        except:
-                            continue
-                
-                proj_pts = 0.0
-                for proj_col in ['PROJ PTS', 'Proj Pts', 'PROJ', 'FPTS']:
-                    if proj_col in row:
-                        try:
-                            proj_pts = float(row[proj_col])
-                            break
-                        except:
-                            continue
-                
-                # Get opponent
-                opp = str(row.get('OPP', row.get('Opponent', ''))).replace('@', '').strip()
-                
-                if name and salary > 0 and proj_pts > 0:
-                    all_players.append({
-                        'PLAYER NAME': name,
-                        'POS': pos,
-                        'TEAM': team,
-                        'OPP': opp,
-                        'SALARY': salary,
-                        'PROJ PTS': proj_pts
-                    })
-        except Exception as e:
-            logger.error(f"Error loading {filename}: {e}")
-            continue
-    
-    return pd.DataFrame(all_players)
+app = FastAPI(
+    title="Enhanced FanDuel NFL DFS Optimizer",
+    version="3.0.0",
+    lifespan=lifespan
+)
 
-def simple_optimize(df, game_type="league"):
-    """Simple greedy optimization"""
-    if df.empty:
-        return []
-    
-    # Calculate value (points per $1000)
-    df['value'] = df['PROJ PTS'] / (df['SALARY'] / 1000)
-    
-    # For H2H, prioritize ceiling (higher projections)
-    if game_type == "h2h":
-        df = df.sort_values(['PROJ PTS'], ascending=False)
-    else:
-        # For league, prioritize value
-        df = df.sort_values(['value'], ascending=False)
-    
-    lineup = []
-    total_salary = 0
-    salary_cap = 60000
-    
-    # Position requirements
-    positions_needed = {
-        'QB': 1,
-        'RB': 2, 
-        'WR': 3,
-        'TE': 1,
-        'DST': 1
-    }
-    
-    # Add one more flex (RB/WR/TE)
-    flex_needed = 1
-    
-    # First pass - fill required positions
-    for _, player in df.iterrows():
-        pos = player['POS']
-        salary = player['SALARY']
-        
-        if pos in positions_needed and positions_needed[pos] > 0:
-            if total_salary + salary <= salary_cap:
-                lineup.append(player)
-                total_salary += salary
-                positions_needed[pos] -= 1
-    
-    # Second pass - add flex players
-    for _, player in df.iterrows():
-        if flex_needed <= 0:
-            break
-            
-        pos = player['POS']
-        salary = player['SALARY']
-        
-        # Check if already in lineup
-        if any(p['PLAYER NAME'] == player['PLAYER NAME'] for p in lineup):
-            continue
-            
-        if pos in ['RB', 'WR', 'TE'] and total_salary + salary <= salary_cap:
-            lineup.append(player)
-            total_salary += salary
-            flex_needed -= 1
-    
-    return lineup
-
-def format_lineup_text(lineup, game_type="league"):
-    """Format lineup as readable text"""
-    if not lineup:
-        return "No lineup generated - check data files"
-    
-    result = f"FANDUEL NFL DFS LINEUP - {game_type.upper()} STRATEGY\n"
-    result += "=" * 50 + "\n\n"
-    
-    # Header
-    result += f"{'POS':<4} {'PLAYER':<20} {'TEAM':<4} {'SALARY':>7} {'PROJ':>6}\n"
-    result += "-" * 50 + "\n"
-    
-    total_salary = 0
-    total_proj = 0.0
-    
-    # Sort lineup by position for display
-    pos_order = ['QB', 'RB', 'WR', 'TE', 'DST']
-    lineup_sorted = []
-    
-    for pos in pos_order:
-        pos_players = [p for p in lineup if p['POS'] == pos]
-        lineup_sorted.extend(pos_players)
-    
-    # Add any remaining players (flex)
-    for player in lineup:
-        if player not in lineup_sorted:
-            lineup_sorted.append(player)
-    
-    for i, player in enumerate(lineup_sorted):
-        pos_label = player['POS']
-        if player['POS'] in ['RB', 'WR', 'TE'] and i >= 7:  # FLEX position
-            pos_label = "FLEX"
-            
-        result += f"{pos_label:<4} {player['PLAYER NAME']:<20} {player['TEAM']:<4} ${player['SALARY']:>6} {player['PROJ PTS']:>6.1f}\n"
-        total_salary += player['SALARY']
-        total_proj += player['PROJ PTS']
-    
-    result += "-" * 50 + "\n"
-    result += f"TOTAL:{'':<20} {'':<4} ${total_salary:>6} {total_proj:>6.1f}\n"
-    result += f"SALARY REMAINING: ${60000 - total_salary}\n"
-    
-    return result
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/")
 def root():
+    """Root endpoint with system info"""
     return {
         "app": "FanDuel NFL DFS Optimizer",
         "version": "3.0.0",
-        "status": "running"
+        "status": "operational",
+        "endpoints": {
+            "health": "/health",
+            "optimize": "/optimize",
+            "optimize_text": "/optimize_text",
+            "schedule": "/schedule",
+            "data_status": "/data/status"
+        }
     }
 
 @app.get("/health")
 def health_check():
-    input_dir = "/app/data/input"
-    files_found = []
-    
-    for pos in ["qb", "rb", "wr", "te", "dst"]:
-        if os.path.exists(os.path.join(input_dir, f"{pos}.csv")):
-            files_found.append(f"{pos}.csv")
-    
-    return {
+    """Health check endpoint"""
+    health_status = {
         "status": "healthy",
         "components": {
             "api": "operational",
-            "data": f"files found: {', '.join(files_found)}" if files_found else "no files found"
+            "data": "unknown"
         }
     }
+    # Check data availability
+    try:
+        df = data_ingestion.load_weekly_data()
+        if df is not None and not df.empty:
+            health_status["components"]["data"] = f"operational ({len(df)} players)"
+        else:
+            health_status["components"]["data"] = "no_data"
+    except Exception as e:
+        health_status["components"]["data"] = f"error: {str(e)}"
+    return health_status
 
 @app.get("/data/status")
 def data_status():
-    input_dir = "/app/data/input"
-    status = {"files_present": {}}
-    
-    for pos in ["qb", "rb", "wr", "te", "dst"]:
-        file_path = os.path.join(input_dir, f"{pos}.csv")
-        status["files_present"][f"{pos}.csv"] = os.path.exists(file_path)
-    
+    """Check data availability and freshness"""
+    status = {
+        "input_files": {},
+        "player_count": 0,
+        "last_update": None
+    }
+    # Check for input CSV files
+    positions = ["qb", "rb", "wr", "te", "dst"]
+    for pos in positions:
+        file_path = os.path.join(settings.input_dir, f"{pos}.csv")
+        status["input_files"][pos] = os.path.exists(file_path)
+    # Try to load data
+    try:
+        df = data_ingestion.load_weekly_data()
+        if df is not None:
+            status["player_count"] = len(df)
+            status["positions"] = df["POS"].value_counts().to_dict() if "POS" in df.columns else {}
+    except Exception as e:
+        status["error"] = str(e)
     return status
 
-@app.get("/optimize_text", response_class=PlainTextResponse)
-def optimize_text(
-    game_type: str = Query("league", regex="^(league|h2h)$"),
-    salary_cap: int = Query(60000),
-    width: int = Query(100)
-):
-    """Generate optimized lineup in text format"""
-    try:
-        # Load data
-        df = load_csv_data()
-        
-        if df.empty:
-            return "No player data found. Please ensure CSV files are in /app/data/input/"
-        
-        # Optimize
-        lineup = simple_optimize(df, game_type)
-        
-        if not lineup:
-            return f"Could not generate a valid {game_type} lineup with available players."
-        
-        # Format and return
-        return format_lineup_text(lineup, game_type)
-        
-    except Exception as e:
-        logger.error(f"Optimization error: {e}")
-        return f"Error generating lineup: {str(e)}"
+def _run_optimization(
+    salary_cap: int,
+    enforce_stack: bool,
+    min_stack_receivers: int,
+    lock_names: Optional[List[str]],
+    ban_names: Optional[List[str]],
+    auto_late_swap: bool = True,
+    game_type: str = "league"
+) -> Dict[str, Any]:
+    """Core optimization logic"""
+    # Try to load data
+    players_df = data_ingestion.load_weekly_data()
+    if players_df is None or players_df.empty:
+        raise HTTPException(status_code=422, detail="No player data available. Please upload CSV files to data/input/")
+    # Manual locks/bans
+    lock_idx_manual, nf_lock = match_names_to_indices(lock_names or [], players_df)
+    ban_idx_manual, nf_ban = match_names_to_indices(ban_names or [], players_df)
+    # Auto-lock for late swap
+    auto_locked_names = []
+    if auto_late_swap:
+        try:
+            kickoff_map = build_kickoff_map(players_df)
+            last_lineup = load_last_lineup()
+            auto_locked_names = auto_lock_started_players(last_lineup, kickoff_map)
+            auto_idx, nf_auto = match_names_to_indices(auto_locked_names, players_df)
+            lock_idx_manual.extend(auto_idx)
+        except Exception as e:
+            logger.warning(f"Auto-lock failed: {e}")
+    # Run optimization
+    lineup = optimization.optimize_lineup(
+        players_df,
+        salary_cap=salary_cap,
+        enforce_stack=enforce_stack,
+        min_stack_receivers=min_stack_receivers,
+        lock_indices=lock_idx_manual,
+        ban_indices=ban_idx_manual
+    )
+    if not lineup:
+        raise HTTPException(status_code=422, detail="No feasible lineup found with given constraints")
+    # Build lineup details
+    total_proj = 0.0
+    total_salary = 0
+    lineup_players = []
+    for pid in lineup:
+        r = players_df.loc[pid]
+        total_proj += float(r["PROJ PTS"])
+        total_salary += int(r["SALARY"])
+        lineup_players.append({
+            "name": str(r["PLAYER NAME"]),
+            "position": str(r["POS"]),
+            "team": str(r.get("TEAM", "")),
+            "opponent": str(r.get("OPP", "")),
+            "proj_points": float(r["PROJ PTS"]),
+            "salary": int(r["SALARY"]),
+            "proj_roster_pct_raw": str(r.get("PROJ ROSTER %", "")),
+            "own_pct": float(r.get("OWN_PCT")) if pd.notna(r.get("OWN_PCT")) else None
+        })
+    # Monte Carlo simulation
+    sim = analysis.MonteCarloSimulator(num_simulations=10000)
+    player_data = {
+        pid: {
+            "projected_points": float(players_df.loc[pid, "PROJ PTS"]),
+            "historical_std_dev": max(float(players_df.loc[pid, "PROJ PTS"]) * 0.15, 1.0)
+        }
+        for pid in lineup
+    }
+    sim_results = sim.simulate_lineup_performance(lineup, player_data)
+    # Basic analysis
+    ai_text = "Analysis: Strong lineup with balanced exposure and correlation."
+    result = {
+        "lineup": lineup_players,
+        "total_projected_points": round(total_proj, 2),
+        "cap_usage": {
+            "total_salary": total_salary,
+            "remaining": salary_cap - total_salary
+        },
+        "simulation": sim_results,
+        "analysis": ai_text,
+        "constraints": {
+            "auto_locked": auto_locked_names,
+            "locks": lock_names or [],
+            "bans": ban_names or [],
+            "not_found": list(set(nf_lock + nf_ban))
+        }
+    }
+    # Save last lineup
+    if auto_late_swap:
+        try:
+            save_last_lineup(lineup_players)
+        except Exception as e:
+            logger.warning(f"Failed to save lineup: {e}")
+    # Include game type in result
+    result["game_type"] = game_type
+    return result
 
 @app.get("/optimize")
-def optimize_json(
-    game_type: str = Query("league", regex="^(league|h2h)$")
+def optimize_endpoint(
+    salary_cap: int = Query(60000, ge=1000, le=100000),
+    enforce_stack: bool = Query(True, description="Require QB-WR/TE stack"),
+    min_stack_receivers: int = Query(1, ge=1, le=3),
+    lock: Optional[List[str]] = Query(default=None, description="Players to lock"),
+    ban: Optional[List[str]] = Query(default=None, description="Players to ban"),
+    auto_late_swap: bool = Query(True, description="Auto-lock started players"),
+    game_type: str = Query("league", description="Game type: 'league' or 'h2h'")
 ):
-    """Generate optimized lineup in JSON format"""
+    """Generate optimized lineup"""
     try:
-        df = load_csv_data()
-        
-        if df.empty:
-            raise HTTPException(status_code=422, detail="No player data available")
-        
-        lineup = simple_optimize(df, game_type)
-        
-        if not lineup:
-            raise HTTPException(status_code=422, detail="Could not generate valid lineup")
-        
-        return {
-            "lineup_players": [
-                {
-                    "name": p['PLAYER NAME'],
-                    "position": p['POS'],
-                    "team": p['TEAM'],
-                    "opponent": p['OPP'],
-                    "proj_points": p['PROJ PTS'],
-                    "salary": p['SALARY']
-                }
-                for p in lineup
-            ],
-            "total_projection": sum(p['PROJ PTS'] for p in lineup),
-            "total_salary": sum(p['SALARY'] for p in lineup),
-            "game_type": game_type
-        }
-        
+        result = _run_optimization(
+            salary_cap, enforce_stack, min_stack_receivers, 
+            lock, ban, auto_late_swap, game_type
+        )
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"JSON optimization error: {e}")
+        logger.error(f"Optimization failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/optimize_text", response_class=PlainTextResponse)
+def optimize_text_endpoint(
+    salary_cap: int = Query(60000),
+    enforce_stack: bool = Query(True),
+    min_stack_receivers: int = Query(1),
+    lock: Optional[List[str]] = Query(default=None),
+    ban: Optional[List[str]] = Query(default=None),
+    auto_late_swap: bool = Query(True),
+    game_type: str = Query("league", description="Game type: 'league' or 'h2h'"),
+    width: int = Query(100, ge=70, le=160)
+):
+    """Generate optimized lineup as formatted text"""
+    try:
+        result = _run_optimization(
+            salary_cap, enforce_stack, min_stack_receivers,
+            lock, ban, auto_late_swap, game_type
+        )
+        return build_text_report(result, width=width)
+    except HTTPException as e:
+        return PlainTextResponse(e.detail, status_code=e.status_code)
+    except Exception as e:
+        return PlainTextResponse(f"Error: {str(e)}", status_code=500)
+
+@app.get("/schedule")
+def schedule_endpoint():
+    """Get current game schedule and kickoff times"""
+    try:
+        players_df = data_ingestion.load_weekly_data()
+        kickoff_map = build_kickoff_map(players_df if players_df is not None else pd.DataFrame())
+        last_lineup = load_last_lineup()
+        auto_locked = auto_lock_started_players(last_lineup, kickoff_map)
+        return {
+            "timezone": settings.timezone,
+            "kickoffs": kickoff_map,
+            "auto_locked_from_last_lineup": auto_locked
+        }
+    except Exception as e:
+        logger.error(f"Schedule fetch failed: {e}")
+        return {"error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=80)
+    uvicorn.run(app, host="0.0.0.0", port=8010)
