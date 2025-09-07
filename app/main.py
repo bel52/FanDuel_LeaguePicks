@@ -1,6 +1,6 @@
 import logging
 import os
-import sys
+import pandas as pd
 from typing import List, Optional
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -12,245 +12,281 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI app
 app = FastAPI(title="FanDuel NFL DFS Optimizer", version="3.0.0")
 
-@app.on_event("startup")
-async def startup_event():
-    """Log startup"""
-    logger.info("FanDuel DFS Optimizer starting up...")
+def load_csv_data():
+    """Simple CSV data loader"""
+    input_dir = "/app/data/input"
+    all_players = []
+    
+    files = ["qb.csv", "rb.csv", "wr.csv", "te.csv", "dst.csv"]
+    
+    for filename in files:
+        file_path = os.path.join(input_dir, filename)
+        if not os.path.exists(file_path):
+            continue
+            
+        try:
+            df = pd.read_csv(file_path)
+            for _, row in df.iterrows():
+                # Extract player info from different possible column formats
+                name = ""
+                for name_col in ['PLAYER NAME', 'Player', 'NAME']:
+                    if name_col in row and pd.notna(row[name_col]):
+                        name = str(row[name_col])
+                        break
+                
+                if not name or name == 'nan':
+                    continue
+                
+                # Extract team and position from name like "Josh Allen (BUF - QB)"
+                team = pos = ""
+                if '(' in name and ')' in name:
+                    parts = name.split('(')[1].split(')')[0]
+                    if ' - ' in parts:
+                        team, pos = parts.split(' - ')
+                        name = name.split('(')[0].strip()
+                
+                # Get salary and projection
+                salary = 0
+                for sal_col in ['SALARY', 'Salary', 'SAL', 'PRICE']:
+                    if sal_col in row:
+                        sal_val = str(row[sal_col]).replace('$', '').replace(',', '')
+                        try:
+                            salary = int(float(sal_val))
+                            break
+                        except:
+                            continue
+                
+                proj_pts = 0.0
+                for proj_col in ['PROJ PTS', 'Proj Pts', 'PROJ', 'FPTS']:
+                    if proj_col in row:
+                        try:
+                            proj_pts = float(row[proj_col])
+                            break
+                        except:
+                            continue
+                
+                # Get opponent
+                opp = str(row.get('OPP', row.get('Opponent', ''))).replace('@', '').strip()
+                
+                if name and salary > 0 and proj_pts > 0:
+                    all_players.append({
+                        'PLAYER NAME': name,
+                        'POS': pos,
+                        'TEAM': team,
+                        'OPP': opp,
+                        'SALARY': salary,
+                        'PROJ PTS': proj_pts
+                    })
+        except Exception as e:
+            logger.error(f"Error loading {filename}: {e}")
+            continue
+    
+    return pd.DataFrame(all_players)
+
+def simple_optimize(df, game_type="league"):
+    """Simple greedy optimization"""
+    if df.empty:
+        return []
+    
+    # Calculate value (points per $1000)
+    df['value'] = df['PROJ PTS'] / (df['SALARY'] / 1000)
+    
+    # For H2H, prioritize ceiling (higher projections)
+    if game_type == "h2h":
+        df = df.sort_values(['PROJ PTS'], ascending=False)
+    else:
+        # For league, prioritize value
+        df = df.sort_values(['value'], ascending=False)
+    
+    lineup = []
+    total_salary = 0
+    salary_cap = 60000
+    
+    # Position requirements
+    positions_needed = {
+        'QB': 1,
+        'RB': 2, 
+        'WR': 3,
+        'TE': 1,
+        'DST': 1
+    }
+    
+    # Add one more flex (RB/WR/TE)
+    flex_needed = 1
+    
+    # First pass - fill required positions
+    for _, player in df.iterrows():
+        pos = player['POS']
+        salary = player['SALARY']
+        
+        if pos in positions_needed and positions_needed[pos] > 0:
+            if total_salary + salary <= salary_cap:
+                lineup.append(player)
+                total_salary += salary
+                positions_needed[pos] -= 1
+    
+    # Second pass - add flex players
+    for _, player in df.iterrows():
+        if flex_needed <= 0:
+            break
+            
+        pos = player['POS']
+        salary = player['SALARY']
+        
+        # Check if already in lineup
+        if any(p['PLAYER NAME'] == player['PLAYER NAME'] for p in lineup):
+            continue
+            
+        if pos in ['RB', 'WR', 'TE'] and total_salary + salary <= salary_cap:
+            lineup.append(player)
+            total_salary += salary
+            flex_needed -= 1
+    
+    return lineup
+
+def format_lineup_text(lineup, game_type="league"):
+    """Format lineup as readable text"""
+    if not lineup:
+        return "No lineup generated - check data files"
+    
+    result = f"FANDUEL NFL DFS LINEUP - {game_type.upper()} STRATEGY\n"
+    result += "=" * 50 + "\n\n"
+    
+    # Header
+    result += f"{'POS':<4} {'PLAYER':<20} {'TEAM':<4} {'SALARY':>7} {'PROJ':>6}\n"
+    result += "-" * 50 + "\n"
+    
+    total_salary = 0
+    total_proj = 0.0
+    
+    # Sort lineup by position for display
+    pos_order = ['QB', 'RB', 'WR', 'TE', 'DST']
+    lineup_sorted = []
+    
+    for pos in pos_order:
+        pos_players = [p for p in lineup if p['POS'] == pos]
+        lineup_sorted.extend(pos_players)
+    
+    # Add any remaining players (flex)
+    for player in lineup:
+        if player not in lineup_sorted:
+            lineup_sorted.append(player)
+    
+    for i, player in enumerate(lineup_sorted):
+        pos_label = player['POS']
+        if player['POS'] in ['RB', 'WR', 'TE'] and i >= 7:  # FLEX position
+            pos_label = "FLEX"
+            
+        result += f"{pos_label:<4} {player['PLAYER NAME']:<20} {player['TEAM']:<4} ${player['SALARY']:>6} {player['PROJ PTS']:>6.1f}\n"
+        total_salary += player['SALARY']
+        total_proj += player['PROJ PTS']
+    
+    result += "-" * 50 + "\n"
+    result += f"TOTAL:{'':<20} {'':<4} ${total_salary:>6} {total_proj:>6.1f}\n"
+    result += f"SALARY REMAINING: ${60000 - total_salary}\n"
+    
+    return result
 
 @app.get("/")
 def root():
-    """Root endpoint providing basic info"""
     return {
         "app": "FanDuel NFL DFS Optimizer",
         "version": "3.0.0",
-        "status": "running",
-        "endpoints": {
-            "health": "/health",
-            "optimize": "/optimize",
-            "optimize_text": "/optimize_text",
-            "data_status": "/data/status"
-        }
+        "status": "running"
     }
 
 @app.get("/health")
 def health_check():
-    """Health check endpoint"""
-    health_status = {
+    input_dir = "/app/data/input"
+    files_found = []
+    
+    for pos in ["qb", "rb", "wr", "te", "dst"]:
+        if os.path.exists(os.path.join(input_dir, f"{pos}.csv")):
+            files_found.append(f"{pos}.csv")
+    
+    return {
         "status": "healthy",
         "components": {
             "api": "operational",
-            "data": "unknown"
+            "data": f"files found: {', '.join(files_found)}" if files_found else "no files found"
         }
     }
-    
-    # Check data availability
-    try:
-        input_dir = "/app/data/input"
-        if os.path.exists(input_dir):
-            files_found = []
-            for pos in ["qb", "rb", "wr", "te", "dst"]:
-                file_path = os.path.join(input_dir, f"{pos}.csv")
-                if os.path.exists(file_path):
-                    files_found.append(f"{pos}.csv")
-            
-            if files_found:
-                health_status["components"]["data"] = f"files found: {', '.join(files_found)}"
-            else:
-                health_status["components"]["data"] = "no CSV files found"
-        else:
-            health_status["components"]["data"] = "input directory not found"
-    except Exception as e:
-        health_status["components"]["data"] = f"error: {str(e)}"
-    
-    return health_status
 
 @app.get("/data/status")
 def data_status():
-    """Check data availability and basic stats"""
-    status = {
-        "files_present": {},
-        "total_players": 0,
-        "input_directory": "/app/data/input",
-        "directories_exist": {}
-    }
-    
-    # Check directories
-    dirs_to_check = ["/app/data", "/app/data/input", "/app/data/output"]
-    for dir_path in dirs_to_check:
-        status["directories_exist"][dir_path] = os.path.exists(dir_path)
-    
-    # Check for CSV files
     input_dir = "/app/data/input"
-    if os.path.exists(input_dir):
-        for pos in ["qb", "rb", "wr", "te", "dst"]:
-            file_path = os.path.join(input_dir, f"{pos}.csv")
-            status["files_present"][f"{pos}.csv"] = os.path.exists(file_path)
-            
-            # Try to count lines if file exists
-            if os.path.exists(file_path):
-                try:
-                    with open(file_path, 'r') as f:
-                        lines = len(f.readlines()) - 1  # Subtract header
-                        status[f"{pos}_players"] = max(0, lines)
-                        status["total_players"] += max(0, lines)
-                except Exception as e:
-                    status[f"{pos}_error"] = str(e)
+    status = {"files_present": {}}
+    
+    for pos in ["qb", "rb", "wr", "te", "dst"]:
+        file_path = os.path.join(input_dir, f"{pos}.csv")
+        status["files_present"][f"{pos}.csv"] = os.path.exists(file_path)
     
     return status
 
-@app.get("/optimize")
-async def optimize_endpoint(
-    game_type: str = Query("league", regex="^(league|h2h)$"),
-    salary_cap: int = Query(60000, ge=1000, le=100000),
-    enforce_stack: bool = Query(True, description="Require QB-WR/TE stack"),
-    min_stack_receivers: int = Query(1, ge=1, le=3),
-    lock: Optional[List[str]] = Query(default=None, description="Player names to lock"),
-    ban: Optional[List[str]] = Query(default=None, description="Player names to ban")
-):
-    """Generate optimal lineup (JSON format)"""
-    
-    # Try to import and run optimization
-    try:
-        # Import data ingestion
-        from app.data_ingestion import load_data_from_input_dir
-        
-        # Load data
-        df, warnings = load_data_from_input_dir()
-        if df is None or df.empty:
-            raise HTTPException(
-                status_code=422, 
-                detail="No player data available. Please upload FantasyPros CSVs to data/input/"
-            )
-        
-        # Try to import optimizer
-        try:
-            from app.enhanced_optimizer import EnhancedDFSOptimizer
-            optimizer = EnhancedDFSOptimizer()
-            
-            # Convert lock/ban names to indices (simplified)
-            lock_indices = []
-            ban_indices = []
-            
-            if lock:
-                for name in lock:
-                    matches = df.index[df['PLAYER NAME'].str.lower() == name.lower()].tolist()
-                    lock_indices.extend(matches)
-            
-            if ban:
-                for name in ban:
-                    matches = df.index[df['PLAYER NAME'].str.lower() == name.lower()].tolist()
-                    ban_indices.extend(matches)
-            
-            # Run optimization
-            lineup_indices, metadata = await optimizer.optimize_lineup(
-                df=df,
-                game_type=game_type,
-                salary_cap=salary_cap,
-                enforce_stack=enforce_stack,
-                min_stack_receivers=min_stack_receivers,
-                lock_indices=lock_indices if lock_indices else None,
-                ban_indices=ban_indices if ban_indices else None
-            )
-            
-            if not lineup_indices:
-                raise HTTPException(
-                    status_code=422, 
-                    detail="No feasible lineup found with the given constraints"
-                )
-            
-            return metadata
-            
-        except ImportError as e:
-            # Fallback to basic optimization
-            logger.warning(f"Enhanced optimizer not available: {e}")
-            from app.optimization import optimize_lineup
-            
-            lineup_indices, metadata = optimize_lineup(
-                df, game_type, salary_cap, enforce_stack, 
-                min_stack_receivers, lock_indices, ban_indices
-            )
-            
-            if not lineup_indices:
-                raise HTTPException(
-                    status_code=422,
-                    detail="No feasible lineup found"
-                )
-            
-            return metadata
-            
-    except ImportError as e:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Optimization engine not available: {str(e)}"
-        )
-    except Exception as e:
-        logger.error(f"Optimization failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Optimization error: {str(e)}")
-
 @app.get("/optimize_text", response_class=PlainTextResponse)
-async def optimize_text_endpoint(
+def optimize_text(
     game_type: str = Query("league", regex="^(league|h2h)$"),
     salary_cap: int = Query(60000),
-    enforce_stack: bool = Query(True),
-    min_stack_receivers: int = Query(1),
-    lock: Optional[List[str]] = Query(default=None),
-    ban: Optional[List[str]] = Query(default=None),
-    width: int = Query(100, ge=70, le=160)
+    width: int = Query(100)
 ):
-    """Generate optimal lineup (plain text format)"""
-    
+    """Generate optimized lineup in text format"""
     try:
-        # Try to use the JSON endpoint and format as text
-        result = await optimize_endpoint(
-            game_type=game_type,
-            salary_cap=salary_cap,
-            enforce_stack=enforce_stack,
-            min_stack_receivers=min_stack_receivers,
-            lock=lock,
-            ban=ban
-        )
+        # Load data
+        df = load_csv_data()
         
-        # Format as text
-        from app.formatting import build_text_report
+        if df.empty:
+            return "No player data found. Please ensure CSV files are in /app/data/input/"
         
-        # Convert result to expected format for text report
-        lineup_players = result.get("lineup_players", [])
-        if lineup_players:
-            text_result = {
-                "game_type": game_type,
-                "lineup": [],
-                "cap_usage": {},
-                "total_projected_points": result.get("total_projection", 0)
-            }
-            
-            total_salary = 0
-            for p in lineup_players:
-                text_result["lineup"].append({
-                    "POS": p.get("position", ""),
-                    "PLAYER NAME": p.get("name", ""),
-                    "TEAM": p.get("team", ""),
-                    "OPP": p.get("opponent", ""),
-                    "SALARY": int(p.get("salary", 0)),
-                    "PROJ PTS": float(p.get("proj_points", 0.0)),
-                    "OWN_PCT": p.get("own_pct", None)
-                })
-                total_salary += int(p.get("salary", 0))
-            
-            text_result["cap_usage"] = {
-                "total_salary": total_salary,
-                "remaining": salary_cap - total_salary
-            }
-            
-            return build_text_report(text_result, width=width)
-        else:
-            return f"No lineup generated for {game_type} strategy."
-            
-    except HTTPException as e:
-        return f"Error: {e.detail}"
+        # Optimize
+        lineup = simple_optimize(df, game_type)
+        
+        if not lineup:
+            return f"Could not generate a valid {game_type} lineup with available players."
+        
+        # Format and return
+        return format_lineup_text(lineup, game_type)
+        
     except Exception as e:
-        return f"Optimization failed: {str(e)}"
+        logger.error(f"Optimization error: {e}")
+        return f"Error generating lineup: {str(e)}"
+
+@app.get("/optimize")
+def optimize_json(
+    game_type: str = Query("league", regex="^(league|h2h)$")
+):
+    """Generate optimized lineup in JSON format"""
+    try:
+        df = load_csv_data()
+        
+        if df.empty:
+            raise HTTPException(status_code=422, detail="No player data available")
+        
+        lineup = simple_optimize(df, game_type)
+        
+        if not lineup:
+            raise HTTPException(status_code=422, detail="Could not generate valid lineup")
+        
+        return {
+            "lineup_players": [
+                {
+                    "name": p['PLAYER NAME'],
+                    "position": p['POS'],
+                    "team": p['TEAM'],
+                    "opponent": p['OPP'],
+                    "proj_points": p['PROJ PTS'],
+                    "salary": p['SALARY']
+                }
+                for p in lineup
+            ],
+            "total_projection": sum(p['PROJ PTS'] for p in lineup),
+            "total_salary": sum(p['SALARY'] for p in lineup),
+            "game_type": game_type
+        }
+        
+    except Exception as e:
+        logger.error(f"JSON optimization error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=80)
-
