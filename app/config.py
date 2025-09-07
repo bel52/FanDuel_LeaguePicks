@@ -42,3 +42,20 @@ settings = get_settings()
 # Ensure directories exist at runtime (safe if already exist)
 for p in (INPUT_DIR, OUTPUT_DIR, TARGETS_DIR, DATA_DIR):
     p.mkdir(parents=True, exist_ok=True)
+class Settings:
+    def __init__(self):
+        self.openai_api_key = os.getenv("OPENAI_API_KEY")
+        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+        self.gpt_model = os.getenv("GPT_MODEL", "gpt-4o")
+        self.claude_model = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20240620")
+        self.max_ai_calls_per_hour = int(os.getenv("MAX_AI_CALLS_PER_HOUR", "100"))
+        self.ai_cache_ttl = int(os.getenv("AI_CACHE_TTL", "1800"))
+        # fall back to REDIS_HOST/PORT if REDIS_URL is not set
+        self.redis_url = os.getenv("REDIS_URL") or f"redis://{REDIS_HOST}:{REDIS_PORT}/0"
+        self.env = os.getenv("ENV", "production")
+        self.data_dir = DATA_DIR
+        self.input_dir = INPUT_DIR
+        self.log_dir = LOG_DIR
+
+settings = Settings()
+
