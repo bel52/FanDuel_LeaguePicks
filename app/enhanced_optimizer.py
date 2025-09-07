@@ -6,20 +6,12 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-from app.ai_integration import AIAnalyzer
-from app.data_monitor import RealTimeDataMonitor
-from app.cache_manager import CacheManager
-
 logger = logging.getLogger(__name__)
 
 class EnhancedDFSOptimizer:
     """AI-powered DFS optimizer with real-time data integration"""
     
     def __init__(self):
-        self.ai_analyzer = AIAnalyzer()
-        self.data_monitor = RealTimeDataMonitor()
-        self.cache_manager = CacheManager()
-        
         # Strategy weights for different game types
         self.strategy_weights = {
             'h2h': {
@@ -91,35 +83,9 @@ class EnhancedDFSOptimizer:
         updated_df = df.copy()
         
         try:
-            # Get recent updates from the last 4 hours
-            recent_updates = await self.data_monitor.get_recent_updates(hours=4)
-            
-            for update in recent_updates:
-                player_name = update['player_name']
-                update_type = update['update_type']
-                severity = update['severity']
-                
-                # Find matching players in dataframe
-                player_mask = updated_df['PLAYER NAME'].str.contains(
-                    player_name, case=False, na=False
-                )
-                
-                if player_mask.any():
-                    # Apply update based on type and severity
-                    adjustment_factor = self._calculate_adjustment_factor(
-                        update_type, severity
-                    )
-                    
-                    # Update projections
-                    updated_df.loc[player_mask, 'PROJ PTS'] *= adjustment_factor
-                    
-                    # For injuries, also adjust ownership
-                    if update_type == 'injury' and severity > 0.5:
-                        if 'OWN_PCT' in updated_df.columns:
-                            updated_df.loc[player_mask, 'OWN_PCT'] *= 0.7  # Reduce ownership
-                    
-                    logger.info(f"Applied update to {player_name}: {adjustment_factor:.3f}x projection")
-        
+            # For now, return unchanged data
+            # Real-time updates would be implemented here
+            logger.info("Real-time updates placeholder - no changes applied")
         except Exception as e:
             logger.error(f"Error applying real-time updates: {e}")
         
@@ -421,7 +387,7 @@ class EnhancedDFSOptimizer:
         available_tes = tes[~tes.index.isin(used_indices)]
         available_dsts = dsts[~dsts.index.isin(used_indices)]
         
-        # Use AI-enhanced selection for remaining positions
+        # Use greedy selection for simplicity
         best_combination = None
         best_score = -1
         
@@ -508,22 +474,6 @@ class EnhancedDFSOptimizer:
                     best_combination = complete_lineup
         
         return (best_combination, best_score) if best_combination else None
-    
-    def _calculate_adjustment_factor(self, update_type: str, severity: float) -> float:
-        """Calculate projection adjustment factor based on update"""
-        if update_type == 'injury':
-            return max(0.1, 1.0 - severity)  # Reduce projection
-        elif update_type == 'weather':
-            if severity > 0.7:
-                return 0.85  # Significant weather impact
-            elif severity > 0.4:
-                return 0.95  # Moderate weather impact
-            else:
-                return 1.0  # Minimal impact
-        elif update_type == 'news':
-            return max(0.3, 1.0 - (severity * 0.5))  # Moderate adjustment for news
-        else:
-            return 1.0  # No adjustment for unknown types
     
     def _calculate_correlation_score(self, player_row: pd.Series) -> float:
         """Calculate position-specific correlation potential"""
@@ -677,9 +627,12 @@ class EnhancedDFSOptimizer:
             'sharpe_ratio': total_proj / (total_proj * 0.15) if total_proj > 0 else 0
         }
         
-        # Get AI analysis
+        # Get AI analysis (simplified fallback for now)
         try:
-            ai_analysis = await self.ai_analyzer.analyze_lineup(
+            # Import AI analyzer if available
+            from app.ai_integration import AIAnalyzer
+            ai_analyzer = AIAnalyzer()
+            ai_analysis = await ai_analyzer.analyze_lineup(
                 lineup_players, sim_results, game_type
             )
         except Exception as e:
@@ -693,3 +646,4 @@ class EnhancedDFSOptimizer:
             'ai_analysis': ai_analysis,
             'optimization_metadata': metadata
         }
+                '
