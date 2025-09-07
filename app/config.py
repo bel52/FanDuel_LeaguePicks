@@ -1,27 +1,31 @@
-import os
-from dotenv import load_dotenv
+from __future__ import annotations
+from functools import lru_cache
+from pydantic import BaseSettings, Field
 
-# Load environment variables from a .env file if it exists
-load_dotenv()
+class Settings(BaseSettings):
+    # AI keys (read from env or .env)
+    openai_api_key: str | None = Field(default=None, env="OPENAI_API_KEY")
+    anthropic_api_key: str | None = Field(default=None, env="ANTHROPIC_API_KEY")
 
-# --- Base Directory ---
-# This determines the root of our application inside the container, which is /app
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(APP_DIR)
+    # Models / knobs
+    gpt_model: str = Field(default="gpt-4o", env="GPT_MODEL")
+    claude_model: str = Field(default="claude-3-5-sonnet-20240620", env="CLAUDE_MODEL")
+    max_ai_calls_per_hour: int = Field(default=120, env="MAX_AI_CALLS_PER_HOUR")
+    ai_cache_ttl: int = Field(default=1800, env="AI_CACHE_TTL")
 
-# --- Core Directory Paths ---
-# All other paths are built from these base paths
-DATA_DIR = os.path.join(ROOT_DIR, 'data')
-LOG_DIR = os.path.join(ROOT_DIR, 'logs')
-INPUT_DIR = os.path.join(DATA_DIR, 'input') # This is the correct path for your CSVs
+    # Caching
+    redis_url: str | None = Field(default=None, env="REDIS_URL")
 
-# --- API Keys & Configuration ---
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+    # Misc
+    env: str = Field(default="production", env="ENV")
 
-# --- DFS Settings ---
-SALARY_CAP = 60000
+    class Config:
+        env_file = ".env"
+        extra = "ignore"
 
-# --- Ensure log directory exists on startup ---
-os.makedirs(LOG_DIR, exist_ok=True)
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+# Singleton for easy import
+settings = get_settings()
