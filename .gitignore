@@ -2,6 +2,8 @@
 .env
 fantasypros_auth.json
 .env.old
+.env.old.0907
+
 # Data
 data/input/*
 data/output/*
