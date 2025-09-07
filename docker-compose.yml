@@ -24,6 +24,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+    depends_on:
+      - redis
 
   redis:
     image: redis:7-alpine
