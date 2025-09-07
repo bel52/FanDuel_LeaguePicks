@@ -5,17 +5,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: dfs-web-enhanced
+    container_name: fanduel-web
     ports:
-      - "8010:8010"    # Expose port 8010 instead of 8000
+      - "8010:8010"
     env_file:
       - .env
-    depends_on:
-      - redis
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
-      - ./app:/app/app  # For development hot-reload
+      - ./app:/app/app
     restart: unless-stopped
     environment:
       - PYTHONPATH=/app
@@ -26,38 +24,20 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-          cpus: "1.0"
-        reservations:
-          memory: 512M
-          cpus: "0.25"
-    networks:
-      - dfs-network
 
   redis:
     image: redis:7-alpine
-    container_name: dfs-redis-enhanced
+    container_name: fanduel-redis
     restart: unless-stopped
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
-    # ports:
-    #   - "6379:6379"  # (Optional) external Redis access
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - dfs-network
 
 volumes:
   redis_data:
     driver: local
-
-networks:
-  dfs-network:
-    driver: bridge

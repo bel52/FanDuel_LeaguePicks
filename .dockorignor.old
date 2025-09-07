@@ -11,6 +11,6 @@ venv/
 .pytest_cache
 .coverage
 .DS_Store
-*.log
-data/
-output/
+#*.log
+#data/
+#output/
