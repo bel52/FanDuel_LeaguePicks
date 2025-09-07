@@ -1,0 +1,100 @@
+{
+  "saved_at": "2025-09-05T18:03:02.277223-04:00",
+  "lineup": [
+    {
+      "name": "Lamar Jackson (BAL - QB)",
+      "position": "QB",
+      "team": "BAL",
+      "opponent": "@BUF",
+      "proj_points": 23.7,
+      "salary": 8600,
+      "proj_roster_pct_raw": "0%-",
+      "own_pct": 0.0
+    },
+    {
+      "name": "Ja'Marr Chase (CIN - WR)",
+      "position": "WR",
+      "team": "CIN",
+      "opponent": "@CLE",
+      "proj_points": 17.8,
+      "salary": 9200,
+      "proj_roster_pct_raw": "20-30%-",
+      "own_pct": 25.0
+    },
+    {
+      "name": "Christian McCaffrey (SF - RB) Q",
+      "position": "RB",
+      "team": "SF",
+      "opponent": "@SEA",
+      "proj_points": 17.2,
+      "salary": 8100,
+      "proj_roster_pct_raw": "0%",
+      "own_pct": 0.0
+    },
+    {
+      "name": "Chase Brown (CIN - RB)",
+      "position": "RB",
+      "team": "CIN",
+      "opponent": "@CLE",
+      "proj_points": 16.0,
+      "salary": 6900,
+      "proj_roster_pct_raw": "20-30%-",
+      "own_pct": 25.0
+    },
+    {
+      "name": "Drake London (ATL - WR)",
+      "position": "WR",
+      "team": "ATL",
+      "opponent": "TB",
+      "proj_points": 14.1,
+      "salary": 7000,
+      "proj_roster_pct_raw": "5-10%-",
+      "own_pct": 7.5
+    },
+    {
+      "name": "Tetairoa McMillan (CAR - WR)",
+      "position": "WR",
+      "team": "CAR",
+      "opponent": "@JAC",
+      "proj_points": 11.8,
+      "salary": 5600,
+      "proj_roster_pct_raw": "0%-",
+      "own_pct": 0.0
+    },
+    {
+      "name": "Trey McBride (ARI - TE)",
+      "position": "TE",
+      "team": "ARI",
+      "opponent": "@NO",
+      "proj_points": 11.7,
+      "salary": 6300,
+      "proj_roster_pct_raw": "0%-",
+      "own_pct": 0.0
+    },
+    {
+      "name": "TreVeyon Henderson (NE - RB)",
+      "position": "RB",
+      "team": "NE",
+      "opponent": "LV",
+      "proj_points": 11.7,
+      "salary": 4700,
+      "proj_roster_pct_raw": "40+%-",
+      "own_pct": 40.0
+    },
+    {
+      "name": "New York Jets (NYJ - DST)",
+      "position": "DST",
+      "team": "NYJ",
+      "opponent": "PIT",
+      "proj_points": 7.2,
+      "salary": 3600,
+      "proj_roster_pct_raw": "0%",
+      "own_pct": 0.0
+    }
+  ],
+  "meta": {
+    "salary_cap": 60000,
+    "enforce_stack": false,
+    "min_stack_receivers": 1
+  }
+}

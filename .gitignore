@@ -5,8 +5,8 @@ fantasypros_auth.json
 .env.old.0907
 
 # Data
-data/input/*
-data/output/*
+#data/input/*
+#data/output/*
 !data/.gitkeep
 
 # Python
@@ -20,5 +20,5 @@ __pycache__/
 
 # Mac
 .DS_Store
-data/weekly/*
-logs/*
+#data/weekly/*
+#logs/*
