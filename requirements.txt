@@ -1,17 +1,7 @@
-# Core Web Framework
-fastapi==0.111.0
-uvicorn[standard]==0.29.0
-
-# Data Processing
-pandas==2.2.2
-
-# AI & News - Using latest stable versions to resolve dependency issues
-openai==1.35.10
-feedparser==6.0.11
-python-dotenv==1.0.1
-
-# Optimization
-pulp==2.8.0
-
-# Caching
-redis==5.0.7
+pandas
+requests
+beautifulsoup4
+pulp
+openai>=1.0.0
+aiohttp
+click

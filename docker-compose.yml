@@ -1,62 +1,30 @@
-version: "3.9"
-
 services:
   web:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile
-    container_name: dfs-web-enhanced
-    ports:
-      - "8010:8000"
+    # The command is correctly commented out, allowing the Dockerfile's CMD to run.
+    # command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     env_file:
       - .env
-    depends_on:
-      - redis
     volumes:
+      - ./app:/app/app
       - ./data:/app/data
       - ./logs:/app/logs
-      - ./app:/app/app  # For development hot-reload
-    restart: unless-stopped
-    environment:
-      - PYTHONPATH=/app
-      - TZ=America/New_York
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-          cpus: "1.0"
-        reservations:
-          memory: 512M
-          cpus: "0.25"
+    depends_on:
+      - redis
     networks:
       - dfs-network
 
   redis:
     image: redis:7-alpine
-    container_name: dfs-redis-enhanced
-    restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
-    # ports:  # Removed this line entirely since port is commented out
-    #   - "6379:6379"  # Uncomment if you need external Redis access
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
     networks:
       - dfs-network
 
 volumes:
   redis_data:
-    driver: local
 
 networks:
   dfs-network:

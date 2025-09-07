@@ -15,7 +15,9 @@ AI_CLIENT = None
 try:
     if OPENAI_API_KEY:
         # Fixed: Use proper OpenAI client initialization
-        AI_CLIENT = openai.OpenAI(api_key=OPENAI_API_KEY)
+        # By setting http_client=None, we ensure it uses its default
+        # configuration, which can prevent unexpected argument errors.
+        AI_CLIENT = openai.OpenAI(api_key=OPENAI_API_KEY, http_client=None)
         # Test connection
         AI_CLIENT.models.list()
         logger.info("OpenAI client initialized successfully.")
@@ -243,7 +245,7 @@ def get_game_script_predictions(games: List[Dict]) -> Dict[str, Dict]:
             response = AI_CLIENT.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": user_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 response_format={"type": "json_object"},
