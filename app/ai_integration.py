@@ -1,4 +1,3 @@
-# cat app/ai_integration.py
 import os
 import logging
 import json
@@ -7,7 +6,6 @@ from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime, timedelta
 from functools import lru_cache
 import aiohttp
-from aiolimiter import AsyncLimiter
 
 from app.config import settings
 from app.cache_manager import CacheManager
@@ -21,10 +19,15 @@ class AIAnalyzer:
         self.openai_client = None
         self.anthropic_client = None
         self.cache_manager = CacheManager()
-        # Rate limiter for AI calls (calls per hour)
-        self.ai_limiter = AsyncLimiter(max_rate=int(os.getenv("MAX_AI_CALLS_PER_HOUR", "100")), time_period=3600)
+        
+        # Rate limiter for AI calls (simple implementation without aiolimiter)
+        self.ai_calls_made = 0
+        self.ai_reset_time = datetime.now()
+        self.max_calls_per_hour = int(os.getenv("MAX_AI_CALLS_PER_HOUR", "100"))
+        
         # Initialize AI API clients
         self._initialize_clients()
+        
         # Cost tracking for reporting
         self.daily_cost = 0.0
         self.call_count = 0
@@ -34,19 +37,30 @@ class AIAnalyzer:
         if settings.openai_api_key:
             try:
                 import openai
-                openai.api_key = settings.openai_api_key
-                self.openai_client = openai  # use openai module directly for async calls
-                logger.info("OpenAI client initialized (using model GPT-4 or specified).")
+                self.openai_client = openai.OpenAI(api_key=settings.openai_api_key)
+                logger.info("OpenAI client initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize OpenAI client: {e}")
+        
         if settings.anthropic_api_key:
             try:
                 import anthropic
-                from anthropic import AsyncAnthropic, HUMAN_PROMPT, AI_PROMPT
-                self.anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-                logger.info("Anthropic client initialized (Claude API).")
+                self.anthropic_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+                logger.info("Anthropic client initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize Anthropic client: {e}")
+
+    async def _check_rate_limit(self):
+        """Simple rate limiting check"""
+        now = datetime.now()
+        if (now - self.ai_reset_time).total_seconds() > 3600:  # Reset every hour
+            self.ai_calls_made = 0
+            self.ai_reset_time = now
+        
+        if self.ai_calls_made >= self.max_calls_per_hour:
+            raise Exception("AI rate limit exceeded")
+        
+        self.ai_calls_made += 1
 
     async def analyze_lineup(
         self,
@@ -57,43 +71,25 @@ class AIAnalyzer:
         weather_context: Optional[Dict] = None
     ) -> str:
         """Generate a comprehensive AI analysis for the lineup, with caching and cost control."""
-        # Check cache first to avoid redundant API calls
+        
+        # Check cache first
         cache_key = self._generate_cache_key(lineup_players, game_type)
         cached_analysis = await self.cache_manager.get(cache_key)
         if cached_analysis:
             logger.info("Using cached AI analysis for lineup.")
             return cached_analysis
 
-        async with self.ai_limiter:
-            analysis = None
-            try:
-                # Primary analysis using OpenAI GPT
-                analysis = await self._generate_analysis(lineup_players, sim_results, game_type, news_context, weather_context)
-            except Exception as e:
-                logger.error(f"OpenAI analysis failed: {e}")
-                # Fallback to Claude (Anthropic) if available
-                if self.anthropic_client:
-                    try:
-                        prompt = self._build_analysis_prompt(lineup_players, sim_results, game_type, news_context, weather_context)
-                        # Prepend an expert role description to prompt
-                        anthro_prompt = "You are an expert DFS analyst specializing in NFL strategy optimization.\n" + prompt
-                        from anthropic import HUMAN_PROMPT, AI_PROMPT
-                        completion = await self.anthropic_client.completions.create(
-                            model=os.getenv("CLAUDE_MODEL", "claude-2.1"),
-                            max_tokens_to_sample=300,
-                            prompt=f"{HUMAN_PROMPT}{anthro_prompt}{AI_PROMPT}"
-                        )
-                        analysis = completion.completion.strip()
-                        logger.info("AI analysis generated using Anthropic Claude as fallback.")
-                    except Exception as e2:
-                        logger.error(f"Anthropic analysis failed: {e2}")
-                        analysis = None
-                if analysis is None:
-                    # Final fallback to a basic non-AI analysis
-                    analysis = self._generate_fallback_analysis(lineup_players, sim_results, game_type)
-            # Cache the analysis result for a short duration to reuse if needed
-            await self.cache_manager.set(cache_key, analysis, ttl=int(os.getenv("AI_CACHE_TTL", "1800")))
-            return analysis
+        try:
+            await self._check_rate_limit()
+            analysis = await self._generate_analysis(lineup_players, sim_results, game_type, news_context, weather_context)
+        except Exception as e:
+            logger.error(f"AI analysis failed: {e}")
+            # Fallback to basic analysis
+            analysis = self._generate_fallback_analysis(lineup_players, sim_results, game_type)
+
+        # Cache the analysis result
+        await self.cache_manager.set(cache_key, analysis, ttl=int(os.getenv("AI_CACHE_TTL", "1800")))
+        return analysis
 
     async def analyze_player_news_impact(
         self,
@@ -104,10 +100,12 @@ class AIAnalyzer:
         """Analyze how recent news might impact a player's projection."""
         if not news_items:
             return current_projection, "No significant news"
+        
         # Build a concise news summary prompt
         news_text = "\n".join([
             f"- {item.get('title', '')}: {item.get('summary', '')}" for item in news_items[:3]
         ])
+        
         prompt = f"""
         Analyze the impact of recent news on {player_name}'s DFS projection:
 
@@ -122,21 +120,24 @@ class AIAnalyzer:
 
         Format: "PROJECTION: X.X | REASONING: <short explanation>"
         """
+        
         try:
-            async with self.ai_limiter:
-                response = await self._call_openai(prompt, max_tokens=100)
-                # Parse the response for expected format
-                if "PROJECTION:" in response and "REASONING:" in response:
-                    parts = response.split("|")
-                    proj_part = parts[0].replace("PROJECTION:", "").strip()
-                    reason_part = parts[1].replace("REASONING:", "").strip()
-                    try:
-                        new_projection = float(proj_part)
-                        return new_projection, reason_part
-                    except ValueError:
-                        pass
+            await self._check_rate_limit()
+            response = await self._call_openai(prompt, max_tokens=100)
+            
+            # Parse the response for expected format
+            if "PROJECTION:" in response and "REASONING:" in response:
+                parts = response.split("|")
+                proj_part = parts[0].replace("PROJECTION:", "").strip()
+                reason_part = parts[1].replace("REASONING:", "").strip()
+                try:
+                    new_projection = float(proj_part)
+                    return new_projection, reason_part
+                except ValueError:
+                    pass
         except Exception as e:
             logger.error(f"News impact analysis failed for {player_name}: {e}")
+        
         # If parsing or API fails, return original projection
         return current_projection, "Analysis unavailable"
 
@@ -149,6 +150,7 @@ class AIAnalyzer:
     ) -> List[Dict]:
         """Suggest up to 3 optimal player swaps using AI given the current lineup and game situation."""
         strategy = "ceiling" if game_status.upper() == "BEHIND" else "balanced" if game_status.upper() == "EVEN" else "floor"
+        
         prompt = f"""
         Current DFS situation: {game_status}
         Strategy needed: {strategy}
@@ -163,10 +165,11 @@ class AIAnalyzer:
         Format each suggestion as:
         "OUT: [Player] ($X) | IN: [Player] ($Y) | REASON: <brief explanation>"
         """
+        
         try:
-            async with self.ai_limiter:
-                response = await self._call_openai(prompt, max_tokens=200)
-                return self._parse_swap_suggestions(response)
+            await self._check_rate_limit()
+            response = await self._call_openai(prompt, max_tokens=200)
+            return self._parse_swap_suggestions(response)
         except Exception as e:
             logger.error(f"Swap suggestion analysis failed: {e}")
             return []
@@ -191,24 +194,46 @@ class AIAnalyzer:
     ) -> str:
         """Use OpenAI to generate the lineup analysis text."""
         prompt = self._build_analysis_prompt(lineup_players, sim_results, game_type, news_context, weather_context)
-        # Track estimated cost for this call (GPT-4o-mini pricing as reference)
+        
+        # Track estimated cost for this call
         input_tokens = len(prompt) // 4  # rough estimate
         output_tokens = 300
         estimated_cost = (input_tokens * 0.15 + output_tokens * 0.60) / 1_000_000
         self.daily_cost += estimated_cost
         self.call_count += 1
-        # Make the API call to OpenAI (ChatCompletion)
-        response = await self.openai_client.ChatCompletion.acreate(
-            model=os.getenv("GPT_MODEL", "gpt-4"),
-            messages=[
-                {"role": "system", "content": "You are an expert DFS analyst specializing in NFL strategy optimization."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=300,
-            temperature=0.7
-        )
-        logger.info(f"AI call #{self.call_count} to OpenAI, estimated cost ${estimated_cost:.6f}")
-        return response.choices[0].message.content.strip()
+        
+        if self.openai_client:
+            try:
+                response = self.openai_client.chat.completions.create(
+                    model=os.getenv("GPT_MODEL", "gpt-4o-mini"),
+                    messages=[
+                        {"role": "system", "content": "You are an expert DFS analyst specializing in NFL strategy optimization."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=300,
+                    temperature=0.7
+                )
+                logger.info(f"AI call #{self.call_count} to OpenAI, estimated cost ${estimated_cost:.6f}")
+                return response.choices[0].message.content.strip()
+            except Exception as e:
+                logger.error(f"OpenAI call failed: {e}")
+                raise
+        
+        # Fallback to Anthropic if OpenAI unavailable
+        if self.anthropic_client:
+            try:
+                response = self.anthropic_client.messages.create(
+                    model=os.getenv("CLAUDE_MODEL", "claude-3-sonnet-20240229"),
+                    max_tokens=300,
+                    messages=[{"role": "user", "content": prompt}],
+                    system="You are an expert DFS analyst specializing in NFL strategy optimization."
+                )
+                return response.content[0].text.strip()
+            except Exception as e:
+                logger.error(f"Anthropic call failed: {e}")
+                raise
+        
+        raise Exception("No AI clients available")
 
     def _build_analysis_prompt(
         self,
@@ -218,9 +243,10 @@ class AIAnalyzer:
         news_context: Optional[Dict],
         weather_context: Optional[Dict]
     ) -> str:
-        """Construct the prompt for AI lineup analysis, incorporating simulation results and context."""
+        """Construct the prompt for AI lineup analysis."""
         # Basic lineup summary
         lineup_desc = "; ".join([f"{p['name']} ({p['position']})" for p in lineup_players])
+        
         prompt = (
             f"Provide a DFS analysis for the following {game_type} lineup:\n"
             f"LINEUP: {lineup_desc}\n\n"
@@ -228,11 +254,13 @@ class AIAnalyzer:
             f"90th percentile: {sim_results.get('percentiles', {}).get('90th', 0):.2f}, "
             f"Sharpe ratio: {sim_results.get('sharpe_ratio', 0):.3f}.\n"
         )
-        # Add any news or weather context if available
+        
+        # Add context if available
         if news_context:
             prompt += f"Recent News: {news_context}\n"
         if weather_context:
             prompt += f"Weather Factors: {weather_context}\n"
+        
         # Guidance for analysis content
         prompt += (
             "Analyze the lineup with focus on:\n"
@@ -242,6 +270,7 @@ class AIAnalyzer:
             "4. Key concerns (injuries, weather, or roster construction)\n"
             "Keep the analysis under 250 words, and provide actionable insights.\n"
         )
+        
         return prompt
 
     def _generate_fallback_analysis(
@@ -250,25 +279,31 @@ class AIAnalyzer:
         sim_results: Dict,
         game_type: str
     ) -> str:
-        """Generate a basic analysis if AI calls fail (no external API)."""
+        """Generate a basic analysis if AI calls fail."""
         # Simple stats from simulation results
         mean_score = sim_results.get('mean_score', 0)
         p90 = sim_results.get('percentiles', {}).get('90th', 0)
         sharpe = sim_results.get('sharpe_ratio', 0)
+        
         # Identify primary QB and count stacks
         qb = next((p for p in lineup_players if p.get("position") == "QB"), None)
         stack_count = sum(1 for p in lineup_players if qb and p.get("team") == qb.get("team") and p.get("position") in ["WR", "TE"])
+        
         high_own = [p for p in lineup_players if (p.get("own_pct") or 0) > 20]
         low_own = [p for p in lineup_players if 0 < (p.get("own_pct") or 0) < 10]
+        
         strategy_note = "prioritize ceiling plays for maximum upside" if game_type == "h2h" else "balance floor and ceiling for consistency"
+        
         analysis_lines = []
         analysis_lines.append(f"CORRELATION: {'Strong' if stack_count >= 2 else 'Standard'} stack around {qb['name'] if qb else 'the QB'} with {stack_count} pass-catcher(s).")
         analysis_lines.append(f"LEVERAGE: " + ("Has contrarian picks (e.g., " + ", ".join(p['name'] for p in low_own[:2]) + ")" if low_own else "Lineup is fairly chalky") + ".")
         analysis_lines.append(f"RISK/UPSIDE: 90th percentile outcome is {p90:.1f} points (Sharpe ratio {sharpe:.2f}), indicating " + ("high upside." if sharpe >= 1.5 else "some volatility."))
+        
         if high_own:
             analysis_lines.append(f"KEY CONCERNS: High ownership on {high_own[0]['name']} – consider a pivot if news breaks.")
         else:
             analysis_lines.append(f"KEY CONCERNS: No major ownership risks identified; {strategy_note}.")
+        
         return " ".join(analysis_lines)
 
     def _format_lineup_summary(self, lineup: List[Dict]) -> str:
@@ -297,14 +332,16 @@ class AIAnalyzer:
         return suggestions[:3]  # up to 3 suggestions
 
     async def _call_openai(self, prompt: str, max_tokens: int = 300) -> str:
-        """Low-level helper to call OpenAI completion API asynchronously."""
+        """Low-level helper to call OpenAI completion API."""
         if not self.openai_client:
             raise ValueError("OpenAI client not initialized")
-        # (Note: This uses the OpenAI library's async interface if available)
-        response = await self.openai_client.Completion.acreate(
-            engine="text-davinci-003",
-            prompt=prompt,
+        
+        response = self.openai_client.chat.completions.create(
+            model=os.getenv("GPT_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
             max_tokens=max_tokens,
             temperature=0.7
         )
-        return response.choices[0].text.strip()
+        return response.choices[0].message.content.strip()
