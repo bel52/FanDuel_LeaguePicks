@@ -1,35 +1,33 @@
-# cat Dockerfile
-# Use Python 3.11 slim base image
+# Dockerfile - Production optimized
 FROM python:3.11-slim
 
-# Set working directory
+# Prevent Python from writing pyc files and buffering stdout/stderr
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
+
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y gcc g++ curl && rm -rf /var/lib/apt/lists/*
+# Install system dependencies  
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install
+# Copy and install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
-# Copy application code and data
+# Copy application code
 COPY app/ ./app/
-COPY data/ ./data/
 
-# Ensure necessary directories exist
-RUN mkdir -p data/input data/output data/targets data/fantasypros logs
+# Create __init__.py files if missing
+RUN find ./app -type d -exec touch {}/__init__.py \;
 
-# Environment variables
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
-ENV TZ=America/New_York
-
-# Health check endpoint
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:80/health || exit 1
 
-# Expose port
-EXPOSE 8000
-
-# Start the application using Uvicorn
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run application  
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "80"]
