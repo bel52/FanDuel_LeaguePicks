@@ -1,239 +1,299 @@
+"""
+Configuration management for DFS optimization system.
+Provides both 'settings' and 'Config' exports for compatibility.
+"""
+
 import os
-from typing import Optional, Dict, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 @dataclass
 class Settings:
-    """Centralized application settings"""
+    """Application settings with proper dataclass defaults."""
     
-    # Server settings
-    host: str = os.getenv("HOST", "0.0.0.0")
-    port: int = int(os.getenv("PORT", "8010"))
+    # API Configuration
+    openai_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
     
-    # Data directories
-    data_dir: str = os.getenv("DATA_DIR", "data")
-    input_dir: str = os.getenv("INPUT_DIR", "data/input")
-    output_dir: str = os.getenv("OUTPUT_DIR", "data/output")
-    targets_dir: str = os.getenv("TARGETS_DIR", "data/targets")
-    logs_dir: str = os.getenv("LOGS_DIR", "logs")
+    # Database Configuration  
+    database_url: str = "sqlite:///./app/data/dfs.db"
+    redis_url: str = "redis://localhost:6379"
     
-    # API keys
-    openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
-    anthropic_api_key: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
-    odds_api_key: Optional[str] = os.getenv("ODDS_API_KEY")
-    news_api_key: Optional[str] = os.getenv("NEWS_API_KEY")
+    # DFS Configuration
+    default_salary_cap: int = 50000
+    optimization_timeout: int = 30
+    max_lineups_per_request: int = 150
     
-    # AI settings
-    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    anthropic_model: str = os.getenv("ANTHROPIC_MODEL", "claude-3-sonnet-20240229")
-    max_ai_calls_per_hour: int = int(os.getenv("MAX_AI_CALLS_PER_HOUR", "100"))
-    ai_cache_ttl: int = int(os.getenv("AI_CACHE_TTL", "1800"))  # 30 minutes
+    # Position requirements for FanDuel NFL
+    position_requirements: Dict[str, int] = field(default_factory=lambda: {
+        'QB': 1,
+        'RB': 2, 
+        'WR': 3,
+        'TE': 1,
+        'K': 1,
+        'DST': 1
+    })
     
-    # Optimization settings
-    salary_cap: int = int(os.getenv("SALARY_CAP", "60000"))
-    min_value_threshold: float = float(os.getenv("MIN_VALUE_THRESHOLD", "2.5"))
-    max_optimization_time: int = int(os.getenv("MAX_OPTIMIZATION_TIME", "60"))
+    # Maximum players per position for roster construction
+    max_players_per_position: Dict[str, int] = field(default_factory=lambda: {
+        'QB': 1,
+        'RB': 3,
+        'WR': 4, 
+        'TE': 2,
+        'K': 1,
+        'DST': 1
+    })
     
-    # Stacking rules
-    enforce_qb_stack: bool = os.getenv("ENFORCE_QB_STACK", "true").lower() == "true"
-    min_stack_receivers: int = int(os.getenv("MIN_STACK_RECEIVERS", "1"))
-    max_team_exposure: int = int(os.getenv("MAX_TEAM_EXPOSURE", "4"))
+    # API Rate Limiting
+    api_rate_limit: int = 100
+    weather_rate_limit: int = 1000
+    espn_rate_limit: int = 60
     
-    # Game type weights
-    h2h_ceiling_weight: float = float(os.getenv("H2H_CEILING_WEIGHT", "0.7"))
-    h2h_floor_weight: float = float(os.getenv("H2H_FLOOR_WEIGHT", "0.3"))
-    league_ceiling_weight: float = float(os.getenv("LEAGUE_CEILING_WEIGHT", "0.5"))
-    league_floor_weight: float = float(os.getenv("LEAGUE_FLOOR_WEIGHT", "0.5"))
+    # System Configuration
+    debug: bool = True
+    log_level: str = "INFO"
+    max_workers: int = 4
     
-    # Real-time monitoring
-    enable_real_time_monitoring: bool = os.getenv("ENABLE_REAL_TIME_MONITORING", "true").lower() == "true"
-    monitoring_interval: int = int(os.getenv("MONITORING_INTERVAL", "300"))  # 5 minutes
-    weather_update_interval: int = int(os.getenv("WEATHER_UPDATE_INTERVAL", "3600"))  # 1 hour
-    news_update_interval: int = int(os.getenv("NEWS_UPDATE_INTERVAL", "600"))  # 10 minutes
+    # Cache Configuration
+    cache_ttl_minutes: int = 15
+    player_cache_ttl: int = 300  # 5 minutes
+    weather_cache_ttl: int = 3600  # 1 hour
     
-    # Auto-swap system
-    enable_auto_swap: bool = os.getenv("ENABLE_AUTO_SWAP", "true").lower() == "true"
-    max_swaps_per_day: int = int(os.getenv("MAX_SWAPS_PER_DAY", "3"))
-    swap_severity_threshold: float = float(os.getenv("SWAP_SEVERITY_THRESHOLD", "0.6"))
-    min_projection_change: float = float(os.getenv("MIN_PROJECTION_CHANGE", "2.0"))
+    # Optimization Parameters
+    correlation_threshold: float = 0.5
+    diversification_factor: float = 0.1
+    max_exposure_per_player: float = 0.3
     
-    # Cache settings
-    redis_url: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
-    cache_ttl: int = int(os.getenv("CACHE_TTL", "300"))  # 5 minutes
-    enable_cache_warming: bool = os.getenv("ENABLE_CACHE_WARMING", "true").lower() == "true"
-    
-    # Performance settings
-    max_concurrent_optimizations: int = int(os.getenv("MAX_CONCURRENT_OPTIMIZATIONS", "5"))
-    optimization_timeout: int = int(os.getenv("OPTIMIZATION_TIMEOUT", "120"))  # 2 minutes
-    
-    # Weather settings
-    weather_api_timeout: int = int(os.getenv("WEATHER_API_TIMEOUT", "10"))
-    weather_impact_threshold: float = float(os.getenv("WEATHER_IMPACT_THRESHOLD", "0.1"))
-    
-    # Logging
-    log_level: str = os.getenv("LOG_LEVEL", "INFO")
-    enable_debug_logging: bool = os.getenv("ENABLE_DEBUG_LOGGING", "false").lower() == "true"
-    
-    # Safety limits
-    max_lineup_generation_attempts: int = int(os.getenv("MAX_LINEUP_GENERATION_ATTEMPTS", "1000"))
-    max_players_per_position: Dict[str, int] = {
-        "QB": 1,
-        "RB": 3,  # 2 starters + 1 flex
-        "WR": 4,  # 3 starters + 1 flex
-        "TE": 2,  # 1 starter + 1 flex
-        "DST": 1
-    }
-    
-    # Position requirements (FanDuel format)
-    position_requirements: Dict[str, Dict[str, int]] = {
-        "QB": {"min": 1, "max": 1},
-        "RB": {"min": 2, "max": 3},
-        "WR": {"min": 3, "max": 4},
-        "TE": {"min": 1, "max": 2},
-        "DST": {"min": 1, "max": 1},
-        "FLEX": {"min": 1, "max": 1}  # Can be RB, WR, or TE
-    }
-    
-    # URLs and endpoints
-    espn_api_base: str = "https://site.api.espn.com"
-    weather_gov_api_base: str = "https://api.weather.gov"
-    odds_api_base: str = "https://api.the-odds-api.com/v4"
+    # Data Source URLs
+    espn_base_url: str = "https://site.api.espn.com"
+    sleeper_base_url: str = "https://api.sleeper.app/v1"
+    weather_gov_url: str = "https://api.weather.gov"
     
     def __post_init__(self):
-        """Validate settings after initialization"""
-        # Create directories
-        for directory in [self.data_dir, self.input_dir, self.output_dir, self.targets_dir, self.logs_dir]:
-            os.makedirs(directory, exist_ok=True)
+        """Load configuration from environment variables."""
         
-        # Validate weights
-        if abs((self.h2h_ceiling_weight + self.h2h_floor_weight) - 1.0) > 0.01:
-            raise ValueError("H2H weights must sum to 1.0")
+        # API Keys
+        self.openai_api_key = os.getenv('OPENAI_API_KEY', self.openai_api_key)
+        self.anthropic_api_key = os.getenv('ANTHROPIC_API_KEY', self.anthropic_api_key)
         
-        if abs((self.league_ceiling_weight + self.league_floor_weight) - 1.0) > 0.01:
-            raise ValueError("League weights must sum to 1.0")
+        # Database
+        self.database_url = os.getenv('DATABASE_URL', self.database_url)
+        self.redis_url = os.getenv('REDIS_URL', self.redis_url)
         
-        # Validate thresholds
-        if self.min_value_threshold <= 0:
-            raise ValueError("Min value threshold must be positive")
+        # DFS Settings
+        self.default_salary_cap = int(os.getenv('DEFAULT_SALARY_CAP', self.default_salary_cap))
+        self.optimization_timeout = int(os.getenv('OPTIMIZATION_TIMEOUT', self.optimization_timeout))
+        self.max_lineups_per_request = int(os.getenv('MAX_LINEUPS_PER_REQUEST', self.max_lineups_per_request))
         
-        if self.swap_severity_threshold < 0 or self.swap_severity_threshold > 1:
-            raise ValueError("Swap severity threshold must be between 0 and 1")
+        # Rate Limits
+        self.api_rate_limit = int(os.getenv('API_RATE_LIMIT', self.api_rate_limit))
+        self.weather_rate_limit = int(os.getenv('WEATHER_RATE_LIMIT', self.weather_rate_limit))
+        
+        # System
+        self.debug = os.getenv('DEBUG', 'True').lower() == 'true'
+        self.log_level = os.getenv('LOG_LEVEL', self.log_level)
+        self.max_workers = int(os.getenv('MAX_WORKERS', self.max_workers))
+        
+        # Directory paths
+        self.input_dir = os.getenv('INPUT_DIR', self.input_dir)
+        self.output_dir = os.getenv('OUTPUT_DIR', self.output_dir)
+        self.data_dir = os.getenv('DATA_DIR', self.data_dir)
+        
+        # Add missing attributes for compatibility
+        self.salary_cap = self.default_salary_cap  # For optimization engine
+        self.max_ai_calls_per_hour = int(os.getenv('MAX_AI_CALLS_PER_HOUR', '100'))  # For AI analyzer
+        
+        # Optimization engine specific settings (from grep results)
+        self.cache_ttl = self.cache_ttl_minutes * 60  # Convert minutes to seconds
+        self.enforce_qb_stack = os.getenv('ENFORCE_QB_STACK', 'true').lower() == 'true'
+        self.min_stack_receivers = int(os.getenv('MIN_STACK_RECEIVERS', '1'))
+        self.max_team_exposure = int(os.getenv('MAX_TEAM_EXPOSURE', '4'))
+        self.min_value_threshold = float(os.getenv('MIN_VALUE_THRESHOLD', '2.5'))
+        self.max_optimization_time = int(os.getenv('MAX_OPTIMIZATION_TIME', '60'))
+        
+        # Strategy weights method
     
-    @property
-    def has_ai_enabled(self) -> bool:
-        """Check if any AI service is configured"""
-        return bool(self.openai_api_key or self.anthropic_api_key)
-    
-    @property
-    def has_odds_api(self) -> bool:
-        """Check if odds API is configured"""
-        return bool(self.odds_api_key)
-    
-    @property
-    def has_news_api(self) -> bool:
-        """Check if news API is configured"""
-        return bool(self.news_api_key)
-    
-    def get_strategy_weights(self, game_type: str) -> Dict[str, float]:
-        """Get strategy weights for a game type"""
-        if game_type.lower() == "h2h":
+    def get_strategy_weights(self, game_type='league'):
+        """Get strategy weights for different game types."""
+        if game_type == 'h2h':
             return {
-                "ceiling_weight": self.h2h_ceiling_weight,
-                "floor_weight": self.h2h_floor_weight,
-                "leverage_weight": 0.4,
-                "correlation_weight": 0.6
+                'ceiling_weight': float(os.getenv('H2H_CEILING_WEIGHT', '0.3')),
+                'floor_weight': float(os.getenv('H2H_FLOOR_WEIGHT', '0.7')),
+                'correlation_weight': float(os.getenv('H2H_CORRELATION_WEIGHT', '0.4'))
             }
-        else:  # league
+        else:  # league/tournament
             return {
-                "ceiling_weight": self.league_ceiling_weight,
-                "floor_weight": self.league_floor_weight,
-                "leverage_weight": 0.3,
-                "correlation_weight": 0.7
+                'ceiling_weight': float(os.getenv('LEAGUE_CEILING_WEIGHT', '0.7')),
+                'floor_weight': float(os.getenv('LEAGUE_FLOOR_WEIGHT', '0.3')),
+                'correlation_weight': float(os.getenv('LEAGUE_CORRELATION_WEIGHT', '0.6'))
             }
-    
-    def get_required_files(self) -> list:
-        """Get list of required CSV files"""
-        return ["qb.csv", "rb.csv", "wr.csv", "te.csv", "dst.csv"]
-    
-    def get_lineup_rules(self) -> Dict[str, Any]:
-        """Get lineup construction rules"""
-        return {
-            "salary_cap": self.salary_cap,
-            "total_players": 9,
-            "position_requirements": self.position_requirements,
-            "enforce_stack": self.enforce_qb_stack,
-            "min_stack_receivers": self.min_stack_receivers,
-            "max_team_exposure": self.max_team_exposure,
-            "min_value_threshold": self.min_value_threshold
-        }
 
-# Global settings instance
-settings = Settings()
+    def validate(self) -> List[str]:
+        """Validate configuration and return list of issues."""
+        issues = []
+        
+        # Check required API keys
+        if not self.openai_api_key or self.openai_api_key == 'your_openai_api_key_here':
+            issues.append("OpenAI API key not configured")
+        
+        # Validate salary cap
+        if self.default_salary_cap < 10000 or self.default_salary_cap > 100000:
+            issues.append(f"Invalid salary cap: {self.default_salary_cap}")
+        
+        # Validate timeouts
+        if self.optimization_timeout < 5 or self.optimization_timeout > 300:
+            issues.append(f"Invalid optimization timeout: {self.optimization_timeout}")
+        
+        # Validate position requirements
+        required_positions = {'QB', 'RB', 'WR', 'TE', 'K', 'DST'}
+        if not all(pos in self.position_requirements for pos in required_positions):
+            issues.append("Missing required positions in configuration")
+        
+        # Validate lineup size
+        total_positions = sum(self.position_requirements.values())
+        if total_positions != 9:  # FanDuel NFL requires 9 players
+            issues.append(f"Invalid lineup size: {total_positions} (should be 9)")
+        
+        return issues
 
-# Stadium coordinates for weather monitoring
-NFL_STADIUMS = {
-    'ARI': {'lat': 33.5276, 'lon': -112.2626, 'dome': True, 'name': 'State Farm Stadium'},
-    'ATL': {'lat': 33.7553, 'lon': -84.4006, 'dome': True, 'name': 'Mercedes-Benz Stadium'},
-    'BAL': {'lat': 39.2780, 'lon': -76.6227, 'dome': False, 'name': 'M&T Bank Stadium'},
-    'BUF': {'lat': 42.7738, 'lon': -78.7870, 'dome': False, 'name': 'Highmark Stadium'},
-    'CAR': {'lat': 35.2271, 'lon': -80.8526, 'dome': False, 'name': 'Bank of America Stadium'},
-    'CHI': {'lat': 41.8623, 'lon': -87.6167, 'dome': False, 'name': 'Soldier Field'},
-    'CIN': {'lat': 39.0955, 'lon': -84.5161, 'dome': False, 'name': 'Paycor Stadium'},
-    'CLE': {'lat': 41.5061, 'lon': -81.6995, 'dome': False, 'name': 'Cleveland Browns Stadium'},
-    'DAL': {'lat': 32.7473, 'lon': -97.0945, 'dome': True, 'name': 'AT&T Stadium'},
-    'DEN': {'lat': 39.7439, 'lon': -105.0201, 'dome': False, 'name': 'Empower Field at Mile High'},
-    'DET': {'lat': 42.3400, 'lon': -83.0456, 'dome': True, 'name': 'Ford Field'},
-    'GB': {'lat': 44.5013, 'lon': -88.0622, 'dome': False, 'name': 'Lambeau Field'},
-    'HOU': {'lat': 29.6847, 'lon': -95.4107, 'dome': True, 'name': 'NRG Stadium'},
-    'IND': {'lat': 39.7601, 'lon': -86.1639, 'dome': True, 'name': 'Lucas Oil Stadium'},
-    'JAX': {'lat': 30.3240, 'lon': -81.6373, 'dome': False, 'name': 'TIAA Bank Field'},
-    'KC': {'lat': 39.0489, 'lon': -94.4839, 'dome': False, 'name': 'Arrowhead Stadium'},
-    'LAC': {'lat': 33.8644, 'lon': -118.2610, 'dome': False, 'name': 'SoFi Stadium'},
-    'LAR': {'lat': 34.0141, 'lon': -118.2879, 'dome': True, 'name': 'SoFi Stadium'},
-    'LV': {'lat': 36.0909, 'lon': -115.1833, 'dome': True, 'name': 'Allegiant Stadium'},
-    'MIA': {'lat': 25.9580, 'lon': -80.2389, 'dome': False, 'name': 'Hard Rock Stadium'},
-    'MIN': {'lat': 44.9737, 'lon': -93.2581, 'dome': True, 'name': 'U.S. Bank Stadium'},
-    'NE': {'lat': 42.0909, 'lon': -71.2643, 'dome': False, 'name': 'Gillette Stadium'},
-    'NO': {'lat': 29.9511, 'lon': -90.0812, 'dome': True, 'name': 'Caesars Superdome'},
-    'NYG': {'lat': 40.8135, 'lon': -74.0745, 'dome': False, 'name': 'MetLife Stadium'},
-    'NYJ': {'lat': 40.8135, 'lon': -74.0745, 'dome': False, 'name': 'MetLife Stadium'},
-    'PHI': {'lat': 39.9008, 'lon': -75.1675, 'dome': False, 'name': 'Lincoln Financial Field'},
-    'PIT': {'lat': 40.4469, 'lon': -80.0158, 'dome': False, 'name': 'Acrisure Stadium'},
-    'SF': {'lat': 37.4032, 'lon': -121.9698, 'dome': False, 'name': "Levi's Stadium"},
-    'SEA': {'lat': 47.5952, 'lon': -122.3316, 'dome': False, 'name': 'Lumen Field'},
-    'TB': {'lat': 27.9759, 'lon': -82.5034, 'dome': False, 'name': 'Raymond James Stadium'},
-    'TEN': {'lat': 36.1665, 'lon': -86.7713, 'dome': False, 'name': 'Nissan Stadium'},
-    'WAS': {'lat': 38.9077, 'lon': -76.8644, 'dome': False, 'name': 'FedExField'},
-}
+    @property
+    def is_production(self) -> bool:
+        """Check if running in production mode."""
+        return not self.debug
 
-# Position mappings
+    @property
+    def has_openai_key(self) -> bool:
+        """Check if OpenAI API key is configured."""
+        return bool(self.openai_api_key and self.openai_api_key != 'your_openai_api_key_here')
+
+    @property
+    def has_anthropic_key(self) -> bool:
+        """Check if Anthropic API key is configured."""
+        return bool(self.anthropic_api_key and self.anthropic_api_key != 'your_anthropic_api_key_here')
+
+# Create global instance
+_settings_instance = None
+
+def get_settings() -> Settings:
+    """Get global settings instance (singleton pattern)."""
+    global _settings_instance
+    if _settings_instance is None:
+        _settings_instance = Settings()
+    return _settings_instance
+
+# Export for different import patterns
+settings = get_settings()  # For: from app.config import settings
+Config = get_settings       # For: from app.config import Config (function)
+
+# Also export the settings instance directly as Config for compatibility
+def Config():
+    """Compatibility function that returns settings instance."""
+    return get_settings()
+
+# Position and team mappings for data processing
 POSITION_MAPPINGS = {
-    'QUARTERBACK': 'QB',
-    'RUNNING BACK': 'RB',
-    'WIDE RECEIVER': 'WR',
-    'TIGHT END': 'TE',
-    'DEFENSE': 'DST',
-    'D/ST': 'DST',
-    'DEF': 'DST'
+    'QB': 'QB',
+    'RB': 'RB', 
+    'WR': 'WR',
+    'TE': 'TE',
+    'K': 'K',
+    'DST': 'DST',
+    'DEF': 'DST',  # Alternative defense notation
+    'D/ST': 'DST'  # Yahoo format
 }
 
-# Team name mappings for consistency
 TEAM_MAPPINGS = {
-    'JAC': 'JAX',
-    'JAGS': 'JAX',
-    'JAGUARS': 'JAX',
-    'WFT': 'WAS',
-    'WASHINGTON': 'WAS',
-    'COMMANDERS': 'WAS',
-    'REDSKINS': 'WAS',
-    'CARDS': 'ARI',
-    'CARDINALS': 'ARI',
-    'NINERS': 'SF',
-    '49ERS': 'SF',
-    'PATS': 'NE',
-    'PATRIOTS': 'NE',
-    'BUCS': 'TB',
-    'BUCCANEERS': 'TB',
-    'PACK': 'GB',
-    'PACKERS': 'GB'
+    'ARI': 'Arizona Cardinals',
+    'ATL': 'Atlanta Falcons', 
+    'BAL': 'Baltimore Ravens',
+    'BUF': 'Buffalo Bills',
+    'CAR': 'Carolina Panthers',
+    'CHI': 'Chicago Bears',
+    'CIN': 'Cincinnati Bengals',
+    'CLE': 'Cleveland Browns',
+    'DAL': 'Dallas Cowboys',
+    'DEN': 'Denver Broncos',
+    'DET': 'Detroit Lions',
+    'GB': 'Green Bay Packers',
+    'HOU': 'Houston Texans',
+    'IND': 'Indianapolis Colts',
+    'JAX': 'Jacksonville Jaguars',
+    'KC': 'Kansas City Chiefs',
+    'LV': 'Las Vegas Raiders',
+    'LAC': 'Los Angeles Chargers',
+    'LAR': 'Los Angeles Rams',
+    'MIA': 'Miami Dolphins',
+    'MIN': 'Minnesota Vikings',
+    'NE': 'New England Patriots',
+    'NO': 'New Orleans Saints',
+    'NYG': 'New York Giants',
+    'NYJ': 'New York Jets',
+    'PHI': 'Philadelphia Eagles',
+    'PIT': 'Pittsburgh Steelers',
+    'SF': 'San Francisco 49ers',
+    'SEA': 'Seattle Seahawks',
+    'TB': 'Tampa Bay Buccaneers',
+    'TEN': 'Tennessee Titans',
+    'WAS': 'Washington Commanders'
 }
+
+# Direct exports for compatibility with existing imports
+SALARY_CAP = 50000  # Will be updated from settings
+
+def _update_salary_cap():
+    """Update SALARY_CAP from settings."""
+    global SALARY_CAP
+    SALARY_CAP = get_settings().default_salary_cap
+
+# Update SALARY_CAP when module loads
+_update_salary_cap()
+
+# Export commonly used functions
+def get_salary_cap() -> int:
+    """Get default salary cap."""
+    return get_settings().default_salary_cap
+
+def get_position_requirements() -> Dict[str, int]:
+    """Get position requirements for lineup construction."""
+    return get_settings().position_requirements.copy()
+
+def is_debug_mode() -> bool:
+    """Check if debug mode is enabled."""
+    return get_settings().debug
+
+def validate_config() -> List[str]:
+    """Validate current configuration."""
+    return get_settings().validate()
+
+# Configuration validation for startup
+def ensure_valid_config():
+    """Ensure configuration is valid, raise exception if not."""
+    issues = validate_config()
+    if issues:
+        raise ValueError(f"Configuration validation failed: {'; '.join(issues)}")
+
+if __name__ == "__main__":
+    # Test configuration loading
+    config = get_settings()
+    print("Configuration loaded successfully!")
+    print(f"Debug mode: {config.debug}")
+    print(f"Salary cap: ${config.default_salary_cap:,}")
+    print(f"OpenAI key configured: {config.has_openai_key}")
+    
+    # Test different import patterns
+    print("\nTesting import compatibility:")
+    print(f"settings.debug: {settings.debug}")
+    print(f"Config().debug: {Config().debug}")
+    
+    # Validate configuration
+    issues = config.validate()
+    if issues:
+        print("\nConfiguration issues:")
+        for issue in issues:
+            print(f"  - {issue}")
+    else:
+        print("\nConfiguration is valid!")
