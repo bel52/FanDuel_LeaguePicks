@@ -27,3 +27,4 @@ __pycache__/
 *.bak
 *.bak*
 venv/
+venv/
