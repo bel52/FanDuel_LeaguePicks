@@ -1,457 +1,360 @@
 import os
 import logging
 from contextlib import asynccontextmanager
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List
 import pandas as pd
-import traceback
+import asyncio
+from datetime import datetime
 
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 # Local imports
-from app.data_ingestion import load_weekly_data
-from app.optimization import optimize_lineup
-from app.formatting import build_text_report
-from app.kickoff_times import (
-    get_schedule,
-    build_kickoff_map,
-    auto_lock_started_players,
-    persist_kickoffs,
-    _weekly_csv_path,
-    _snapshot_weekly_csv,
-)
-
-class Settings:
-    def __init__(self) -> None:
-        self.host: str = os.getenv("HOST", "0.0.0.0")
-        self.port: int = int(os.getenv("PORT", "8010"))
-        self.data_dir: str = os.getenv("DATA_DIR", "data")
-        self.input_dir: str = os.path.join(self.data_dir, "input")
-        self.output_dir: str = os.path.join(self.data_dir, "output")
-        self.weekly_dir: str = os.path.join(self.data_dir, "weekly")
-        self.log_dir: str = os.getenv("LOG_DIR", "logs")
-        self.kickoff_api_url: Optional[str] = os.getenv("KICKOFF_API_URL")
-
-settings = Settings()
+from app.config import settings
+from app.data_ingestion import DataIngestion
+from app.optimization_engine import OptimizationEngine
+from app.ai_analyzer import AIAnalyzer
+from app.cache_manager import CacheManager
+from app.data_monitor import DataMonitor
+from app.auto_swap_system import AutoSwapSystem
+from app.formatting import TextFormatter
+from app.kickoff_manager import KickoffManager
 
 # Setup logging
-os.makedirs(settings.log_dir, exist_ok=True)
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.FileHandler("logs/app.log"),
+        logging.StreamHandler()
+    ]
 )
-log = logging.getLogger("app.main")
+logger = logging.getLogger(__name__)
 
-_REQUIRED_INPUTS = ("qb.csv", "rb.csv", "wr.csv", "te.csv", "dst.csv")
-
-def _data_is_present() -> bool:
-    """Check if required CSV files are present"""
-    try:
-        if not os.path.isdir(settings.input_dir):
-            return False
-        return all(os.path.isfile(os.path.join(settings.input_dir, f)) for f in _REQUIRED_INPUTS)
-    except Exception:
-        return False
-
-def _get_player_data() -> Optional[pd.DataFrame]:
-    """Load player data and return DataFrame"""
-    try:
-        df = load_weekly_data(settings.input_dir)
-        return df
-    except Exception as e:
-        log.error(f"Error loading player data: {e}")
-        return None
+# Global components
+data_ingestion = None
+optimization_engine = None
+ai_analyzer = None
+cache_manager = None
+data_monitor = None
+auto_swap_system = None
+text_formatter = None
+kickoff_manager = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan context manager"""
-    log.info("Starting FanDuel DFS Optimizer...")
-
+    global data_ingestion, optimization_engine, ai_analyzer, cache_manager, data_monitor, auto_swap_system, text_formatter, kickoff_manager
+    
+    logger.info("Starting FanDuel DFS Optimizer v3.0...")
+    
     # Create required directories
-    for d in (settings.data_dir, settings.input_dir, settings.output_dir, 
-              settings.weekly_dir, settings.log_dir):
-        os.makedirs(d, exist_ok=True)
-
-    # Warm kickoff cache
-    try:
-        team_map = build_kickoff_map(settings.kickoff_api_url)
-        if team_map:
-            persist_kickoffs(team_map, output_path=os.path.join(settings.output_dir, "kickoffs.json"))
-            csv_path = _weekly_csv_path()
-            if not os.path.exists(csv_path):
-                _snapshot_weekly_csv(team_map=team_map)
-        else:
-            log.warning("No kickoff data available at startup")
-    except Exception as e:
-        log.error("Failed to warm kickoff data: %s", e)
-
+    os.makedirs("data/input", exist_ok=True)
+    os.makedirs("data/output", exist_ok=True)
+    os.makedirs("data/targets", exist_ok=True)
+    os.makedirs("logs", exist_ok=True)
+    
+    # Initialize components
+    cache_manager = CacheManager()
+    data_ingestion = DataIngestion()
+    optimization_engine = OptimizationEngine(cache_manager)
+    ai_analyzer = AIAnalyzer(cache_manager)
+    data_monitor = DataMonitor(cache_manager, ai_analyzer)
+    auto_swap_system = AutoSwapSystem(cache_manager, ai_analyzer, optimization_engine)
+    text_formatter = TextFormatter()
+    kickoff_manager = KickoffManager()
+    
+    # Start background tasks
+    if settings.enable_real_time_monitoring:
+        asyncio.create_task(data_monitor.start_monitoring())
+    
+    if settings.enable_auto_swap:
+        asyncio.create_task(auto_swap_system.start_monitoring())
+    
+    logger.info("FanDuel DFS Optimizer started successfully")
+    
     yield
-    log.info("Shutting down FanDuel DFS Optimizer...")
+    
+    logger.info("Shutting down FanDuel DFS Optimizer...")
 
 # Create FastAPI app
 app = FastAPI(
     title="FanDuel DFS Optimizer",
-    description="AI-powered NFL DFS lineup optimization",
+    description="AI-powered NFL DFS lineup optimization with real-time monitoring",
     version="3.0.0",
     lifespan=lifespan
 )
 
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 @app.get("/health")
-def health() -> JSONResponse:
-    """Health check endpoint"""
-    data_status = "operational" if _data_is_present() else "no_data"
-    
+async def health_check():
+    """Comprehensive health check"""
     try:
-        sched = get_schedule(settings.kickoff_api_url)
-        kickoff_status = "operational" if sched else "no_kickoffs"
+        # Check data availability
+        data_status = await data_ingestion.check_data_availability()
+        
+        # Check optimization engine
+        opt_status = optimization_engine.health_check()
+        
+        # Check AI availability
+        ai_status = ai_analyzer.health_check()
+        
+        # Check cache
+        cache_status = await cache_manager.health_check()
+        
+        # Check monitoring systems
+        monitor_status = data_monitor.health_check() if data_monitor else "disabled"
+        swap_status = auto_swap_system.health_check() if auto_swap_system else "disabled"
+        
+        return JSONResponse({
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "components": {
+                "data_ingestion": data_status,
+                "optimization_engine": opt_status,
+                "ai_analyzer": ai_status,
+                "cache_manager": cache_status,
+                "data_monitor": monitor_status,
+                "auto_swap_system": swap_status
+            },
+            "version": "3.0.0"
+        })
     except Exception as e:
-        kickoff_status = f"error: {e}"
-
-    # Check if we can load player data
-    try:
-        df = _get_player_data()
-        data_load_status = "operational" if df is not None else "load_failed"
-        player_count = len(df) if df is not None else 0
-    except Exception as e:
-        data_load_status = f"error: {e}"
-        player_count = 0
-
-    body: Dict[str, Any] = {
-        "status": "healthy",
-        "components": {
-            "api": "operational",
-            "data_files": data_status,
-            "data_loading": data_load_status,
-            "kickoffs": kickoff_status
-        },
-        "player_count": player_count,
-        "timestamp": pd.Timestamp.now().isoformat()
-    }
-    return JSONResponse(body)
+        logger.error(f"Health check failed: {e}")
+        return JSONResponse(
+            {"status": "unhealthy", "error": str(e)},
+            status_code=503
+        )
 
 @app.get("/schedule")
-def schedule() -> JSONResponse:
+async def get_schedule():
     """Get NFL game schedule with kickoff times"""
     try:
-        games = get_schedule(settings.kickoff_api_url) or []
-        
-        # Persist normalized kickoffs.json and ensure weekly CSV exists
-        if games:
-            team_map: Dict[str, str] = {}
-            for g in games:
-                iso = str(g.get("kickoff"))
-                for t in g.get("teams", []):
-                    team_map[str(t).upper()] = iso
-            persist_kickoffs(team_map, output_path=os.path.join(settings.output_dir, "kickoffs.json"))
-            csv_path = _weekly_csv_path()
-            if not os.path.exists(csv_path):
-                _snapshot_weekly_csv(games=games)
-        
-        return JSONResponse(games)
+        schedule = await kickoff_manager.get_schedule()
+        return JSONResponse(schedule)
     except Exception as e:
-        log.error("Schedule fetch failed: %s", e)
-        return JSONResponse([])
+        logger.error(f"Schedule fetch failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 @app.get("/optimize")
-def optimize(
+async def optimize_lineup(
     game_type: str = Query("league", description="Game type: league or h2h"),
     salary_cap: int = Query(60000, description="Salary cap"),
     lock: Optional[str] = Query(None, description="Player name to lock"),
     ban: Optional[str] = Query(None, description="Player name to ban"),
-    enforce_stack: bool = Query(True, description="Enforce QB stacking")
-) -> JSONResponse:
+    enforce_stack: bool = Query(True, description="Enforce QB stacking"),
+    use_ai: bool = Query(True, description="Use AI enhancements")
+):
     """Generate optimized lineup (JSON format)"""
-    
-    if not _data_is_present():
-        raise HTTPException(
-            status_code=400, 
-            detail="No player data available. Please place CSV files in data/input/"
-        )
     
     try:
         # Load player data
-        df = _get_player_data()
-        if df is None or df.empty:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to load player data or no players available"
-            )
+        player_data = await data_ingestion.load_weekly_data()
+        if player_data is None or player_data.empty:
+            raise HTTPException(status_code=400, detail="No player data available")
         
-        # Handle lock/ban players
-        lock_indices = []
-        ban_indices = []
-        
-        if lock:
-            lock_mask = df['PLAYER NAME'].str.contains(lock, case=False, na=False)
-            lock_indices = df[lock_mask].index.tolist()
-            if not lock_indices:
-                log.warning(f"Lock player '{lock}' not found")
-        
-        if ban:
-            ban_mask = df['PLAYER NAME'].str.contains(ban, case=False, na=False)
-            ban_indices = df[ban_mask].index.tolist()
-            if not ban_indices:
-                log.warning(f"Ban player '{ban}' not found")
-        
-        # Run optimization
-        lineup_indices, metadata = optimize_lineup(
-            df,
-            game_type=game_type,
-            salary_cap=salary_cap,
-            enforce_stack=enforce_stack,
-            lock_indices=lock_indices,
-            ban_indices=ban_indices
-        )
-        
-        if not lineup_indices:
-            error_msg = metadata.get('error', 'Optimization failed to produce a lineup')
-            raise HTTPException(status_code=500, detail=error_msg)
-        
-        # Build response
-        lineup_data = []
-        total_salary = 0
-        total_projection = 0.0
-        
-        for idx in lineup_indices:
-            player = df.loc[idx]
-            lineup_data.append({
-                'player_name': player['PLAYER NAME'],
-                'position': player['POS'],
-                'team': player['TEAM'],
-                'opponent': player.get('OPP', ''),
-                'salary': int(player['SALARY']),
-                'projection': float(player['PROJ PTS']),
-                'ownership': float(player.get('OWN_PCT', 0)) if pd.notna(player.get('OWN_PCT')) else None
-            })
-            total_salary += int(player['SALARY'])
-            total_projection += float(player['PROJ PTS'])
-        
-        # Get locked players info
-        locked_players = []
-        if lock_indices:
-            for idx in lock_indices:
-                if idx in lineup_indices:
-                    locked_players.append(df.loc[idx]['PLAYER NAME'])
-        
-        response = {
-            "success": True,
+        # Prepare optimization parameters
+        optimization_params = {
             "game_type": game_type,
-            "lineup": lineup_data,
-            "summary": {
-                "total_salary": total_salary,
-                "salary_remaining": salary_cap - total_salary,
-                "total_projection": round(total_projection, 2),
-                "average_projection": round(total_projection / len(lineup_data), 2)
-            },
-            "constraints": {
-                "salary_cap": salary_cap,
-                "enforce_stack": enforce_stack,
-                "locked_players": locked_players,
-                "banned_players": [ban] if ban else []
-            },
-            "metadata": metadata,
-            "timestamp": pd.Timestamp.now().isoformat()
+            "salary_cap": salary_cap,
+            "enforce_stack": enforce_stack,
+            "lock_players": [lock] if lock else [],
+            "ban_players": [ban] if ban else [],
+            "use_ai": use_ai
         }
         
-        return JSONResponse(response)
+        # Run optimization
+        result = await optimization_engine.optimize_lineup(player_data, **optimization_params)
+        
+        if not result:
+            raise HTTPException(status_code=500, detail="Optimization failed")
+        
+        return JSONResponse(result)
         
     except HTTPException:
         raise
     except Exception as e:
-        log.error(f"Optimization error: {e}")
-        log.error(traceback.format_exc())
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal optimization error: {str(e)}"
-        )
+        logger.error(f"Optimization error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
 @app.get("/optimize_text")
-def optimize_text(
+async def optimize_lineup_text(
     width: int = Query(110, ge=40, le=160),
     game_type: str = Query("league", description="Game type: league or h2h"),
     salary_cap: int = Query(60000, description="Salary cap"),
     lock: Optional[str] = Query(None, description="Player name to lock"),
-    ban: Optional[str] = Query(None, description="Player name to ban")
-) -> PlainTextResponse:
+    ban: Optional[str] = Query(None, description="Player name to ban"),
+    use_ai: bool = Query(True, description="Use AI enhancements")
+):
     """Generate optimized lineup (formatted text)"""
-    
-    if not _data_is_present():
-        return PlainTextResponse("No player data available. Please place CSV files under data/input/")
     
     try:
         # Load player data
-        df = _get_player_data()
-        if df is None or df.empty:
-            return PlainTextResponse("Failed to load player data or no players available")
+        player_data = await data_ingestion.load_weekly_data()
+        if player_data is None or player_data.empty:
+            return PlainTextResponse("No player data available")
         
-        # Handle lock/ban players
-        lock_indices = []
-        ban_indices = []
-        
-        if lock:
-            lock_mask = df['PLAYER NAME'].str.contains(lock, case=False, na=False)
-            lock_indices = df[lock_mask].index.tolist()
-        
-        if ban:
-            ban_mask = df['PLAYER NAME'].str.contains(ban, case=False, na=False)
-            ban_indices = df[ban_mask].index.tolist()
+        # Prepare optimization parameters
+        optimization_params = {
+            "game_type": game_type,
+            "salary_cap": salary_cap,
+            "enforce_stack": True,
+            "lock_players": [lock] if lock else [],
+            "ban_players": [ban] if ban else [],
+            "use_ai": use_ai
+        }
         
         # Run optimization
-        lineup_indices, metadata = optimize_lineup(
-            df,
-            game_type=game_type,
-            salary_cap=salary_cap,
-            enforce_stack=True,
-            lock_indices=lock_indices,
-            ban_indices=ban_indices
-        )
+        result = await optimization_engine.optimize_lineup(player_data, **optimization_params)
         
-        if not lineup_indices:
-            error_msg = metadata.get('error', 'Optimization failed')
-            return PlainTextResponse(f"Optimization failed: {error_msg}")
+        if not result:
+            return PlainTextResponse("Optimization failed")
         
-        # Build lineup data for formatting
-        lineup_data = []
-        total_salary = 0
-        total_projection = 0.0
+        # Format as text
+        formatted_text = text_formatter.format_lineup(result, width=width)
         
-        for idx in lineup_indices:
-            player = df.loc[idx].to_dict()
-            lineup_data.append(player)
-            total_salary += int(player['SALARY'])
-            total_projection += float(player['PROJ PTS'])
-        
-        # Create result object for text formatter
-        result = {
-            "game_type": game_type,
-            "lineup": lineup_data,
-            "total_projected_points": round(total_projection, 2),
-            "cap_usage": {
-                "total_salary": total_salary,
-                "remaining": salary_cap - total_salary
-            }
-        }
-        
-        # Generate formatted text
-        formatted_text = build_text_report(result, width=width)
-        
-        # Add metadata footer
-        footer_lines = [
-            "",
-            f"Optimization Method: {metadata.get('method', 'unknown')}",
-            f"Game Type: {game_type.upper()}",
-            f"Players Evaluated: {len(df)}",
-        ]
-        
-        if lock:
-            footer_lines.append(f"Locked: {lock}")
-        if ban:
-            footer_lines.append(f"Banned: {ban}")
-            
-        footer_lines.append(f"Generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        full_text = formatted_text + "\n" + "\n".join(footer_lines)
-        
-        return PlainTextResponse(full_text)
+        return PlainTextResponse(formatted_text)
         
     except Exception as e:
-        log.error(f"Text optimization error: {e}")
-        return PlainTextResponse(f"Error generating lineup: {str(e)}")
+        logger.error(f"Text optimization error: {e}")
+        return PlainTextResponse(f"Error: {str(e)}")
 
-@app.get("/data/status")
-def data_status() -> JSONResponse:
-    """Get detailed data status information"""
+@app.get("/lineup/analyze/{lineup_id}")
+async def analyze_lineup(lineup_id: str):
+    """Get AI analysis for a specific lineup"""
     try:
-        status = {
-            "data_directory": settings.input_dir,
-            "files_present": {},
-            "player_counts": {},
-            "total_players": 0,
-            "data_loaded": False,
-            "errors": []
-        }
+        lineup_data = await cache_manager.get(f"lineup:{lineup_id}")
+        if not lineup_data:
+            raise HTTPException(status_code=404, detail="Lineup not found")
         
-        # Check file presence
-        for file in _REQUIRED_INPUTS:
-            file_path = os.path.join(settings.input_dir, file)
-            status["files_present"][file] = os.path.isfile(file_path)
+        analysis = await ai_analyzer.analyze_lineup(lineup_data)
+        return JSONResponse(analysis)
         
-        # Try to load data
-        try:
-            df = _get_player_data()
-            if df is not None:
-                status["data_loaded"] = True
-                status["total_players"] = len(df)
-                
-                # Count by position
-                if 'POS' in df.columns:
-                    pos_counts = df['POS'].value_counts().to_dict()
-                    status["player_counts"] = pos_counts
-                
-                # Check for required columns
-                required_cols = ['PLAYER NAME', 'POS', 'TEAM', 'SALARY', 'PROJ PTS']
-                missing_cols = [col for col in required_cols if col not in df.columns]
-                if missing_cols:
-                    status["errors"].append(f"Missing required columns: {missing_cols}")
-                
-                # Check for data quality issues
-                if df['SALARY'].isna().any():
-                    status["errors"].append("Some players have missing salary data")
-                if df['PROJ PTS'].isna().any():
-                    status["errors"].append("Some players have missing projection data")
-                    
-        except Exception as e:
-            status["errors"].append(f"Failed to load data: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Lineup analysis error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/monitoring/status")
+async def monitoring_status():
+    """Get real-time monitoring status"""
+    try:
+        if not data_monitor:
+            return JSONResponse({"status": "disabled"})
         
+        status = await data_monitor.get_status()
         return JSONResponse(status)
         
     except Exception as e:
-        log.error(f"Data status error: {e}")
+        logger.error(f"Monitoring status error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
-@app.post("/kickoffs/snapshot")
-def kickoffs_snapshot(week: Optional[str] = None) -> JSONResponse:
-    """Force-create the weekly kickoff CSV and refresh kickoffs.json"""
+@app.get("/swaps/summary")
+async def swap_summary():
+    """Get auto-swap system summary"""
     try:
-        games = get_schedule(settings.kickoff_api_url)
-        if not games:
-            return JSONResponse(
-                {"saved": False, "reason": "no schedule available from API/CSV/JSON"}, 
-                status_code=400
-            )
-
-        # Persist JSON + CSV
-        team_map: Dict[str, str] = {}
-        for g in games:
-            iso = str(g.get("kickoff"))
-            for t in g.get("teams", []):
-                team_map[str(t).upper()] = iso
+        if not auto_swap_system:
+            return JSONResponse({"status": "disabled"})
         
-        persist_kickoffs(team_map, output_path=os.path.join(settings.output_dir, "kickoffs.json"))
-        saved_to = _snapshot_weekly_csv(games=games, week_id=week)
-
-        return JSONResponse({"saved": True, "csv_path": saved_to, "games": len(games)})
-    
+        summary = await auto_swap_system.get_summary()
+        return JSONResponse(summary)
+        
     except Exception as e:
-        log.error(f"Kickoffs snapshot error: {e}")
+        logger.error(f"Swap summary error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.post("/swaps/manual")
+async def manual_swap(
+    player_out: str = Query(..., description="Player to remove"),
+    player_in: str = Query(..., description="Player to add"),
+    reason: str = Query("Manual swap", description="Reason for swap")
+):
+    """Execute a manual player swap"""
+    try:
+        if not auto_swap_system:
+            raise HTTPException(status_code=503, detail="Auto-swap system not available")
+        
+        result = await auto_swap_system.manual_swap(player_out, player_in, reason)
+        
+        if result["success"]:
+            return JSONResponse(result)
+        else:
+            raise HTTPException(status_code=400, detail=result["error"])
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Manual swap error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/data/status")
+async def data_status():
+    """Get detailed data status information"""
+    try:
+        status = await data_ingestion.get_detailed_status()
+        return JSONResponse(status)
+        
+    except Exception as e:
+        logger.error(f"Data status error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.post("/admin/refresh_data")
+async def refresh_data(background_tasks: BackgroundTasks):
+    """Refresh player data from sources"""
+    try:
+        background_tasks.add_task(data_ingestion.refresh_data)
+        return JSONResponse({"message": "Data refresh initiated"})
+        
+    except Exception as e:
+        logger.error(f"Data refresh error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.get("/ai/cost_summary")
+async def ai_cost_summary():
+    """Get AI usage and cost summary"""
+    try:
+        summary = ai_analyzer.get_cost_summary()
+        return JSONResponse(summary)
+        
+    except Exception as e:
+        logger.error(f"AI cost summary error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 @app.get("/")
-def root() -> JSONResponse:
-    """Root endpoint"""
+async def root():
+    """Root endpoint with API information"""
     return JSONResponse({
-        "message": "FanDuel DFS Optimizer API",
-        "version": "3.0.0",
+        "message": "FanDuel DFS Optimizer API v3.0",
         "status": "operational",
+        "features": [
+            "AI-powered lineup optimization",
+            "Real-time data monitoring",
+            "Automated player swapping",
+            "Advanced correlation analysis",
+            "Weather impact modeling",
+            "Multi-strategy optimization"
+        ],
         "endpoints": {
             "health": "/health",
-            "schedule": "/schedule", 
-            "optimize_json": "/optimize",
+            "schedule": "/schedule",
+            "optimize": "/optimize",
             "optimize_text": "/optimize_text",
+            "monitoring": "/monitoring/status",
+            "swaps": "/swaps/summary",
             "data_status": "/data/status"
         }
     })
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host=settings.host, port=settings.port)
+    uvicorn.run(app, host="0.0.0.0", port=settings.port)
