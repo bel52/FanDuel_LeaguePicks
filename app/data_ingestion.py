@@ -1,317 +1,394 @@
 # app/data_ingestion.py
+import os
 import pandas as pd
 import numpy as np
-import asyncio
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
 import logging
-import random
-from faker import Faker
+from typing import Tuple, Optional, List, Dict, Any
+from datetime import datetime
+import glob
 
 logger = logging.getLogger(__name__)
-fake = Faker()
 
-class DataIngestionError(Exception):
-    pass
+def load_weekly_data() -> Optional[pd.DataFrame]:
+    """Load and combine weekly player data from input directory"""
+    try:
+        data_dir = "data/input"
+        all_data = []
+        
+        # Load each position file
+        for pos in ["qb", "rb", "wr", "te", "dst"]:
+            file_path = os.path.join(data_dir, f"{pos}.csv")
+            if os.path.exists(file_path):
+                df = pd.read_csv(file_path)
+                # Add position hint if not in data
+                if 'POS' not in df.columns:
+                    df['POS'] = pos.upper() if pos != 'dst' else 'DST'
+                all_data.append(df)
+                logger.info(f"Loaded {len(df)} players from {pos}.csv")
+        
+        if not all_data:
+            logger.warning("No data files found in data/input/")
+            return None
+        
+        # Combine all dataframes
+        combined_df = pd.concat(all_data, ignore_index=True)
+        
+        # Normalize column names
+        combined_df = normalize_columns(combined_df)
+        
+        # Clean and validate data
+        combined_df = clean_player_data(combined_df)
+        
+        logger.info(f"Loaded total of {len(combined_df)} players")
+        return combined_df
+        
+    except Exception as e:
+        logger.error(f"Error loading weekly data: {e}")
+        return None
 
-class DataIngestionService:
-    def __init__(self):
-        self.current_data: Optional[pd.DataFrame] = None
-        self.last_update: Optional[datetime] = None
-        self.nfl_teams = [
-            'KC', 'BAL', 'BUF', 'CIN', 'CLE', 'DEN', 'HOU', 'IND', 'JAX', 'LVR',
-            'LAC', 'MIA', 'NE', 'NYJ', 'PIT', 'TEN', 'DAL', 'NYG', 'PHI', 'WAS',
-            'ARI', 'ATL', 'CAR', 'CHI', 'DET', 'GB', 'MIN', 'NO', 'SEA', 'SF',
-            'LAR', 'TB'
+def load_data_from_input_dir() -> Tuple[Optional[pd.DataFrame], List[str]]:
+    """Load player data from input directory with warnings"""
+    warnings = []
+    
+    try:
+        # Try to load weekly data
+        df = load_weekly_data()
+        
+        if df is None or df.empty:
+            warnings.append("No player data found in data/input/")
+            # Try to create sample data as fallback
+            df = create_sample_data()
+            if df is not None:
+                warnings.append("Using sample data - place real CSV files in data/input/")
+        
+        # Validate data
+        if df is not None:
+            validation_warnings = validate_player_data(df)
+            warnings.extend(validation_warnings)
+        
+        return df, warnings
+        
+    except Exception as e:
+        logger.error(f"Error loading data: {e}")
+        warnings.append(f"Error loading data: {str(e)}")
+        return None, warnings
+
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize column names to expected format"""
+    column_mappings = {
+        'Player': 'PLAYER NAME',
+        'Name': 'PLAYER NAME',
+        'Player Name': 'PLAYER NAME',
+        'Position': 'POS',
+        'Pos': 'POS',
+        'Team': 'TEAM',
+        'Tm': 'TEAM',
+        'Opponent': 'OPP',
+        'Opp': 'OPP',
+        'Salary': 'SALARY',
+        'FD Salary': 'SALARY',
+        'FanDuel Salary': 'SALARY',
+        'Projected Points': 'PROJ PTS',
+        'Proj Pts': 'PROJ PTS',
+        'Proj. Pts': 'PROJ PTS',
+        'FPTS': 'PROJ PTS',
+        'Projected Pts': 'PROJ PTS',
+        'Ownership': 'OWN_PCT',
+        'Own %': 'OWN_PCT',
+        'Proj Roster %': 'OWN_PCT',
+        'Projected Ownership %': 'OWN_PCT'
+    }
+    
+    # Apply mappings
+    df = df.rename(columns=column_mappings)
+    
+    # Ensure critical columns exist
+    if 'PLAYER NAME' not in df.columns and 'PLAYER' in df.columns:
+        df['PLAYER NAME'] = df['PLAYER']
+    
+    return df
+
+def clean_player_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Clean and standardize player data"""
+    
+    # Remove rows with missing critical data
+    required_cols = ['PLAYER NAME', 'SALARY', 'PROJ PTS']
+    for col in required_cols:
+        if col in df.columns:
+            df = df[df[col].notna()]
+    
+    # Clean salary column
+    if 'SALARY' in df.columns:
+        df['SALARY'] = df['SALARY'].astype(str).str.replace('$', '').str.replace(',', '')
+        df['SALARY'] = pd.to_numeric(df['SALARY'], errors='coerce').fillna(0).astype(int)
+        # Filter out invalid salaries
+        df = df[(df['SALARY'] >= 3000) & (df['SALARY'] <= 15000)]
+    
+    # Clean projections
+    if 'PROJ PTS' in df.columns:
+        df['PROJ PTS'] = pd.to_numeric(df['PROJ PTS'], errors='coerce').fillna(0)
+        # Filter out zero projections
+        df = df[df['PROJ PTS'] > 0]
+    
+    # Clean ownership if present
+    if 'OWN_PCT' in df.columns:
+        # Handle ranges like "15-20%"
+        df['OWN_PCT'] = df['OWN_PCT'].astype(str).str.replace('%', '')
+        
+        def parse_ownership(val):
+            if pd.isna(val) or val == 'nan':
+                return 0
+            val = str(val)
+            if '-' in val:
+                parts = val.split('-')
+                try:
+                    return (float(parts[0]) + float(parts[1])) / 2
+                except:
+                    return 0
+            try:
+                return float(val)
+            except:
+                return 0
+        
+        df['OWN_PCT'] = df['OWN_PCT'].apply(parse_ownership)
+    
+    # Extract position from player name if needed
+    if 'POS' not in df.columns and 'PLAYER NAME' in df.columns:
+        # Try to extract from name format like "Josh Allen (BUF - QB)"
+        import re
+        
+        def extract_position(name):
+            match = re.search(r'\(.*?-\s*([A-Z/]+)\)', str(name))
+            if match:
+                return match.group(1)
+            return None
+        
+        df['POS'] = df['PLAYER NAME'].apply(extract_position)
+    
+    # Clean position values
+    if 'POS' in df.columns:
+        position_map = {
+            'DEF': 'DST',
+            'D/ST': 'DST',
+            'D': 'DST'
+        }
+        df['POS'] = df['POS'].replace(position_map)
+        
+        # Filter to valid positions only
+        valid_positions = ['QB', 'RB', 'WR', 'TE', 'DST', 'K']
+        df = df[df['POS'].isin(valid_positions)]
+# Extract team from player name if needed
+    if 'TEAM' not in df.columns and 'PLAYER NAME' in df.columns:
+        def extract_team(name):
+            import re
+            match = re.search(r'\(([A-Z]{2,3})', str(name))
+            if match:
+                return match.group(1)
+            return None
+        
+        df['TEAM'] = df['PLAYER NAME'].apply(extract_team)
+    
+    # Clean player names (remove position/team info if in name)
+    if 'PLAYER NAME' in df.columns:
+        df['PLAYER NAME'] = df['PLAYER NAME'].str.split('(').str[0].str.strip()
+    
+    # Add calculated columns
+    if 'SALARY' in df.columns and 'PROJ PTS' in df.columns:
+        df['VALUE'] = df['PROJ PTS'] / (df['SALARY'] / 1000)
+        df['VALUE'] = df['VALUE'].round(2)
+    
+    # Add ceiling and floor estimates if not present
+    if 'CEILING' not in df.columns and 'PROJ PTS' in df.columns:
+        df['CEILING'] = df['PROJ PTS'] * 1.4
+        df['FLOOR'] = df['PROJ PTS'] * 0.6
+    
+    return df
+
+def validate_player_data(df: pd.DataFrame) -> List[str]:
+    """Validate player data and return warnings"""
+    warnings = []
+    
+    # Check for required columns
+    required_cols = ['PLAYER NAME', 'POS', 'SALARY', 'PROJ PTS']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        warnings.append(f"Missing required columns: {missing_cols}")
+    
+    # Check position distribution
+    if 'POS' in df.columns:
+        pos_counts = df['POS'].value_counts()
+        
+        min_requirements = {
+            'QB': 5,
+            'RB': 10,
+            'WR': 15,
+            'TE': 5,
+            'DST': 5
+        }
+        
+        for pos, min_count in min_requirements.items():
+            if pos not in pos_counts or pos_counts[pos] < min_count:
+                warnings.append(f"Insufficient {pos} players: {pos_counts.get(pos, 0)} (need at least {min_count})")
+    
+    # Check salary distribution
+    if 'SALARY' in df.columns:
+        avg_salary = df['SALARY'].mean()
+        if avg_salary < 5000 or avg_salary > 8000:
+            warnings.append(f"Unusual average salary: ${avg_salary:.0f}")
+    
+    # Check for duplicates
+    if 'PLAYER NAME' in df.columns:
+        duplicates = df['PLAYER NAME'].duplicated().sum()
+        if duplicates > 0:
+            warnings.append(f"Found {duplicates} duplicate player names")
+    
+    return warnings
+
+def create_sample_data() -> pd.DataFrame:
+    """Create sample player data for testing"""
+    logger.info("Creating sample player data...")
+    
+    sample_data = {
+        'PLAYER NAME': [
+            # QBs
+            'Josh Allen', 'Patrick Mahomes', 'Jalen Hurts', 'Lamar Jackson', 'Dak Prescott',
+            'Joe Burrow', 'Justin Herbert', 'Tua Tagovailoa',
+            # RBs
+            'Christian McCaffrey', 'Austin Ekeler', 'Derrick Henry', 'Saquon Barkley',
+            'Jonathan Taylor', 'Josh Jacobs', 'Tony Pollard', 'Najee Harris',
+            'Kenneth Walker', 'Breece Hall', 'James Cook', 'Aaron Jones',
+            # WRs
+            'Tyreek Hill', 'Stefon Diggs', 'Justin Jefferson', 'Ja\'Marr Chase',
+            'CeeDee Lamb', 'A.J. Brown', 'Davante Adams', 'Cooper Kupp',
+            'Amon-Ra St. Brown', 'Chris Olave', 'DK Metcalf', 'Mike Evans',
+            'DeVonta Smith', 'Jaylen Waddle', 'Calvin Ridley', 'Tee Higgins',
+            'Amari Cooper', 'Terry McLaurin', 'Michael Pittman', 'Chris Godwin',
+            # TEs
+            'Travis Kelce', 'Mark Andrews', 'T.J. Hockenson', 'George Kittle',
+            'Dallas Goedert', 'Darren Waller', 'Kyle Pitts', 'Evan Engram',
+            # DSTs
+            'Buffalo', 'San Francisco', 'Dallas', 'New England', 'Baltimore',
+            'Philadelphia', 'Denver', 'Cincinnati'
+        ],
+        'POS': [
+            # QBs
+            'QB', 'QB', 'QB', 'QB', 'QB', 'QB', 'QB', 'QB',
+            # RBs
+            'RB', 'RB', 'RB', 'RB', 'RB', 'RB', 'RB', 'RB', 'RB', 'RB', 'RB', 'RB',
+            # WRs
+            'WR', 'WR', 'WR', 'WR', 'WR', 'WR', 'WR', 'WR', 'WR', 'WR', 'WR', 'WR',
+            'WR', 'WR', 'WR', 'WR', 'WR', 'WR', 'WR', 'WR',
+            # TEs
+            'TE', 'TE', 'TE', 'TE', 'TE', 'TE', 'TE', 'TE',
+            # DSTs
+            'DST', 'DST', 'DST', 'DST', 'DST', 'DST', 'DST', 'DST'
+        ],
+        'TEAM': [
+            # QBs
+            'BUF', 'KC', 'PHI', 'BAL', 'DAL', 'CIN', 'LAC', 'MIA',
+            # RBs
+            'SF', 'LAC', 'TEN', 'NYG', 'IND', 'LV', 'DAL', 'PIT', 'SEA', 'NYJ', 'BUF', 'GB',
+            # WRs
+            'MIA', 'BUF', 'MIN', 'CIN', 'DAL', 'PHI', 'LV', 'LAR', 'DET', 'NO', 'SEA', 'TB',
+            'PHI', 'MIA', 'JAX', 'CIN', 'CLE', 'WAS', 'IND', 'TB',
+            # TEs
+            'KC', 'BAL', 'MIN', 'SF', 'PHI', 'NYG', 'ATL', 'JAX',
+            # DSTs
+            'BUF', 'SF', 'DAL', 'NE', 'BAL', 'PHI', 'DEN', 'CIN'
+        ],
+        'OPP': [
+            # QBs
+            'MIA', 'LV', 'WAS', 'CLE', 'NYG', 'PIT', 'TEN', 'BUF',
+            # RBs
+            'ARI', 'TEN', 'HOU', 'DAL', 'JAX', 'GB', 'NYG', 'CLE', 'LAR', 'NE', 'MIA', 'DET',
+            # WRs
+            'BUF', 'MIA', 'GB', 'PIT', 'NYG', 'WAS', 'GB', 'SEA', 'CHI', 'TB', 'LAR', 'NO',
+            'WAS', 'BUF', 'IND', 'PIT', 'BAL', 'PHI', 'JAX', 'NO',
+            # TEs
+            'LV', 'CLE', 'GB', 'ARI', 'WAS', 'DAL', 'CAR', 'IND',
+            # DSTs
+            'MIA', 'ARI', 'NYG', 'NYJ', 'CLE', 'WAS', 'KC', 'PIT'
+        ],
+        'SALARY': [
+            # QBs
+            8500, 8300, 8200, 8000, 7700, 7900, 7600, 7300,
+            # RBs
+            9000, 8400, 6800, 8200, 7900, 7500, 6600, 6200, 6900, 6700, 6400, 6100,
+            # WRs
+            8800, 8600, 8900, 8700, 8400, 8200, 8000, 7800, 7600, 7200, 7000, 7400,
+            6800, 6600, 6400, 6200, 5800, 5600, 5400, 6000,
+            # TEs
+            7000, 6500, 5900, 6200, 5600, 5400, 5200, 5000,
+            # DSTs
+            4800, 4600, 4400, 4200, 4000, 3800, 3600, 3400
+        ],
+        'PROJ PTS': [
+            # QBs
+            22.5, 21.8, 21.2, 20.5, 19.8, 20.2, 19.5, 18.8,
+            # RBs
+            18.5, 17.2, 16.8, 16.2, 15.8, 15.2, 14.5, 13.8, 14.2, 13.5, 12.8, 12.2,
+            # WRs
+            17.5, 16.8, 17.2, 16.5, 15.8, 15.2, 14.8, 14.2, 13.8, 13.2, 12.8, 13.5,
+            12.2, 11.8, 11.2, 10.8, 10.2, 9.8, 9.5, 10.5,
+            # TEs
+            12.5, 11.8, 10.5, 10.2, 9.5, 8.8, 8.2, 7.8,
+            # DSTs
+            9.2, 8.8, 8.5, 8.2, 7.8, 7.5, 7.2, 6.8
         ]
-        
-    async def initialize(self):
-        """Initialize the data service with sample data"""
-        try:
-            logger.info("Initializing data ingestion service...")
-            await self.create_sample_data()
-            logger.info("Data ingestion service initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize data service: {e}")
-            raise DataIngestionError(f"Initialization failed: {e}")
+    }
+    
+    df = pd.DataFrame(sample_data)
+    
+    # Add ownership percentages
+    np.random.seed(42)
+    df['OWN_PCT'] = np.random.uniform(2, 30, len(df)).round(1)
+    
+    # Add calculated columns
+    df['VALUE'] = (df['PROJ PTS'] / (df['SALARY'] / 1000)).round(2)
+    df['CEILING'] = (df['PROJ PTS'] * 1.4).round(1)
+    df['FLOOR'] = (df['PROJ PTS'] * 0.6).round(1)
+    
+    return df
 
-    async def create_sample_data(self, num_players: int = 400) -> pd.DataFrame:
-        """Create realistic sample NFL DFS player data"""
-        try:
-            logger.info(f"Generating {num_players} sample players...")
-            
-            players = []
-            player_id = 1
-            
-            # Position distribution (realistic for NFL DFS)
-            position_distribution = {
-                'QB': int(num_players * 0.08),   # ~32 QBs
-                'RB': int(num_players * 0.25),   # ~100 RBs  
-                'WR': int(num_players * 0.40),   # ~160 WRs
-                'TE': int(num_players * 0.12),   # ~48 TEs
-                'K': int(num_players * 0.08),    # ~32 Ks
-                'DST': int(num_players * 0.07),  # ~28 DSTs
-            }
-            
-            for position, count in position_distribution.items():
-                for _ in range(count):
-                    player = await self._generate_single_player(player_id, position)
-                    players.append(player)
-                    player_id += 1
-            
-            # Create DataFrame and validate
-            players_df = pd.DataFrame(players)
-            self._validate_sample_data(players_df)
-            
-            # Store the data
-            self.current_data = players_df
-            self.last_update = datetime.now()
-            
-            logger.info(f"Generated {len(players_df)} players across {len(players_df['Position'].unique())} positions")
-            return players_df
-            
-        except Exception as e:
-            logger.error(f"Failed to create sample data: {e}")
-            raise DataIngestionError(f"Sample data creation failed: {e}")
-
-    async def _generate_single_player(self, player_id: int, position: str) -> Dict[str, Any]:
-        """Generate a single realistic NFL player"""
-        team = random.choice(self.nfl_teams)
-        opponent = random.choice([t for t in self.nfl_teams if t != team])
+class DataIngestion:
+    """Legacy class for backward compatibility"""
+    
+    def __init__(self):
+        self.last_update = None
+    
+    def create_sample_data(self) -> pd.DataFrame:
+        """Create sample data (wrapper for function)"""
+        return create_sample_data()
+    
+    def load_weekly_data(self) -> Optional[pd.DataFrame]:
+        """Load weekly data (wrapper for function)"""
+        return load_weekly_data()
+    
+    async def check_data_availability(self) -> str:
+        """Check if data is available"""
+        df = load_weekly_data()
+        if df is not None and not df.empty:
+            return "available"
+        return "unavailable"
+    
+    async def get_detailed_status(self) -> Dict[str, Any]:
+        """Get detailed data status"""
+        df, warnings = load_data_from_input_dir()
         
-        # Generate position-specific projections
-        projections = self._generate_projections(position)
-        
-        # Calculate salary based on projections (realistic FanDuel pricing)
-        salary = self._calculate_realistic_salary(projections['ProjectedPoints'], position)
-        
-        player = {
-            'PlayerID': player_id,
-            'Name': self._generate_realistic_name(position),
-            'Position': position,
-            'Team': team,
-            'Opponent': opponent,
-            'Salary': salary,
-            'ProjectedPoints': projections['ProjectedPoints'],
-            'HomeOrAway': random.choice(['HOME', 'AWAY']),
-            'GameID': f"2024_W1_{team}_{opponent}",
-            'Week': 1,
-            'Season': 2024,
-            'InjuryStatus': random.choices(
-                ['', 'Q', 'D'], 
-                weights=[0.85, 0.10, 0.05], 
-                k=1
-            )[0],
-            **projections
+        status = {
+            "available": df is not None and not df.empty,
+            "row_count": len(df) if df is not None else 0,
+            "warnings": warnings
         }
         
-        return player
-
-    def _generate_projections(self, position: str) -> Dict[str, float]:
-        """Generate realistic statistical projections by position"""
-        projections = {}
+        if df is not None and not df.empty:
+            status["positions"] = df['POS'].value_counts().to_dict() if 'POS' in df.columns else {}
+            status["avg_salary"] = df['SALARY'].mean() if 'SALARY' in df.columns else 0
+            status["avg_projection"] = df['PROJ PTS'].mean() if 'PROJ PTS' in df.columns else 0
         
-        if position == 'QB':
-            passing_yards = np.random.normal(250, 80)
-            passing_tds = np.random.gamma(2, 1)
-            interceptions = np.random.poisson(1.2)
-            rushing_yards = np.random.gamma(2, 8)
-            rushing_tds = np.random.poisson(0.3)
-            
-            # FanDuel scoring: 0.04 per pass yard, 4 per pass TD, -2 per INT
-            # 0.1 per rush yard, 6 per rush TD
-            fantasy_points = (
-                passing_yards * 0.04 + 
-                passing_tds * 4 - 
-                interceptions * 2 +
-                rushing_yards * 0.1 + 
-                rushing_tds * 6
-            )
-            
-            projections.update({
-                'PassingYards': max(0, round(passing_yards, 1)),
-                'PassingTDs': max(0, int(passing_tds)),
-                'Interceptions': max(0, int(interceptions)),
-                'RushingYards': max(0, round(rushing_yards, 1)),
-                'RushingTDs': max(0, int(rushing_tds)),
-                'ProjectedPoints': max(4, round(fantasy_points, 1))
-            })
-            
-        elif position == 'RB':
-            rushing_yards = np.random.gamma(3, 25)
-            rushing_tds = np.random.poisson(0.8)
-            receptions = np.random.poisson(3)
-            receiving_yards = receptions * np.random.gamma(2, 8)
-            receiving_tds = np.random.poisson(0.15)
-            
-            fantasy_points = (
-                rushing_yards * 0.1 + 
-                rushing_tds * 6 +
-                receiving_yards * 0.1 + 
-                receptions * 0.5 +  # Half PPR
-                receiving_tds * 6
-            )
-            
-            projections.update({
-                'RushingYards': max(0, round(rushing_yards, 1)),
-                'RushingTDs': max(0, int(rushing_tds)),
-                'Receptions': max(0, int(receptions)),
-                'ReceivingYards': max(0, round(receiving_yards, 1)),
-                'ReceivingTDs': max(0, int(receiving_tds)),
-                'ProjectedPoints': max(2, round(fantasy_points, 1))
-            })
-            
-        elif position in ['WR', 'TE']:
-            if position == 'WR':
-                receptions = np.random.gamma(2, 2.5)
-                yards_per_reception = np.random.normal(12, 3)
-            else:  # TE
-                receptions = np.random.gamma(2, 2)
-                yards_per_reception = np.random.normal(10, 2.5)
-                
-            receiving_yards = receptions * yards_per_reception
-            receiving_tds = np.random.poisson(0.4 if position == 'WR' else 0.35)
-            
-            fantasy_points = (
-                receiving_yards * 0.1 + 
-                receptions * 0.5 +  # Half PPR
-                receiving_tds * 6
-            )
-            
-            projections.update({
-                'Receptions': max(0, int(receptions)),
-                'ReceivingYards': max(0, round(receiving_yards, 1)),
-                'ReceivingTDs': max(0, int(receiving_tds)),
-                'ProjectedPoints': max(2, round(fantasy_points, 1))
-            })
-            
-        elif position == 'K':
-            # Kickers: Field goals and extra points
-            field_goals = np.random.poisson(1.8)
-            extra_points = np.random.poisson(2.2)
-            fantasy_points = field_goals * 3 + extra_points * 1
-            
-            projections.update({
-                'FieldGoals': max(0, int(field_goals)),
-                'ExtraPoints': max(0, int(extra_points)),
-                'ProjectedPoints': max(2, round(fantasy_points, 1))
-            })
-            
-        else:  # DST
-            # Defense: Points allowed, sacks, turnovers
-            sacks = np.random.poisson(2.5)
-            interceptions = np.random.poisson(1)
-            fumble_recoveries = np.random.poisson(0.8)
-            defensive_tds = np.random.poisson(0.2)
-            points_allowed = np.random.normal(21, 7)
-            
-            # FanDuel DST scoring
-            fantasy_points = sacks * 1 + interceptions * 2 + fumble_recoveries * 2 + defensive_tds * 6
-            
-            # Points allowed adjustment
-            if points_allowed <= 6:
-                fantasy_points += 5
-            elif points_allowed <= 13:
-                fantasy_points += 3
-            elif points_allowed <= 20:
-                fantasy_points += 1
-            elif points_allowed >= 35:
-                fantasy_points -= 3
-                
-            projections.update({
-                'Sacks': max(0, int(sacks)),
-                'Interceptions': max(0, int(interceptions)),
-                'FumbleRecoveries': max(0, int(fumble_recoveries)),
-                'DefensiveTDs': max(0, int(defensive_tds)),
-                'PointsAllowed': max(0, round(points_allowed, 1)),
-                'ProjectedPoints': max(1, round(fantasy_points, 1))
-            })
-        
-        return projections
-
-    def _calculate_realistic_salary(self, projected_points: float, position: str) -> int:
-        """Calculate realistic FanDuel salaries based on projections"""
-        # Base salary ranges by position (FanDuel typical ranges)
-        base_salaries = {
-            'QB': {'min': 6500, 'max': 9000, 'avg': 7500},
-            'RB': {'min': 4500, 'max': 9500, 'avg': 6800},
-            'WR': {'min': 4500, 'max': 9000, 'avg': 6200},
-            'TE': {'min': 4000, 'max': 7500, 'avg': 5500},
-            'K': {'min': 4600, 'max': 5200, 'avg': 4900},
-            'DST': {'min': 4200, 'max': 5500, 'avg': 4800}
-        }
-        
-        salary_info = base_salaries.get(position, {'min': 4000, 'max': 8000, 'avg': 6000})
-        
-        # Calculate salary based on projected points with some randomness
-        avg_points = {'QB': 18, 'RB': 12, 'WR': 10, 'TE': 8, 'K': 7, 'DST': 6}
-        expected_points = avg_points.get(position, 10)
-        
-        multiplier = projected_points / expected_points
-        base_salary = salary_info['avg'] * multiplier
-        
-        # Add randomness and round to nearest 100
-        variance = random.uniform(0.85, 1.15)
-        final_salary = int(base_salary * variance / 100) * 100
-        
-        # Enforce min/max bounds
-        final_salary = max(salary_info['min'], min(final_salary, salary_info['max']))
-        
-        return final_salary
-
-    def _generate_realistic_name(self, position: str) -> str:
-        """Generate realistic player names"""
-        if position == 'DST':
-            # Defense names
-            city_names = [
-                'Kansas City', 'Baltimore', 'Buffalo', 'Cincinnati', 'Cleveland',
-                'Denver', 'Houston', 'Indianapolis', 'Jacksonville', 'Las Vegas',
-                'Los Angeles', 'Miami', 'New England', 'New York', 'Pittsburgh',
-                'Tennessee', 'Dallas', 'Philadelphia', 'Washington', 'Arizona',
-                'Atlanta', 'Carolina', 'Chicago', 'Detroit', 'Green Bay',
-                'Minnesota', 'New Orleans', 'Seattle', 'San Francisco', 'Tampa Bay'
-            ]
-            return f"{random.choice(city_names)} Defense"
-        else:
-            return fake.name()
-
-    def _validate_sample_data(self, players_df: pd.DataFrame):
-        """Validate the generated sample data"""
-        required_fields = ['PlayerID', 'Name', 'Position', 'Team', 'Salary', 'ProjectedPoints']
-        
-        # Check required fields
-        missing_fields = [field for field in required_fields if field not in players_df.columns]
-        if missing_fields:
-            raise DataIngestionError(f"Missing required fields: {missing_fields}")
-        
-        # Validate data types and ranges
-        if players_df['Salary'].min() < 3000 or players_df['Salary'].max() > 12000:
-            logger.warning("Some salaries are outside expected range")
-            
-        if players_df['ProjectedPoints'].min() < 0:
-            raise DataIngestionError("Negative projected points found")
-            
-        # Check position distribution
-        position_counts = players_df['Position'].value_counts()
-        required_positions = ['QB', 'RB', 'WR', 'TE', 'K', 'DST']
-        
-        for pos in required_positions:
-            if pos not in position_counts:
-                raise DataIngestionError(f"No {pos} players generated")
-                
-        logger.info("Sample data validation passed")
-
-    async def get_current_players(self) -> pd.DataFrame:
-        """Get current player data"""
-        if self.current_data is None:
-            await self.create_sample_data()
-        return self.current_data.copy()
-        
+        return status
+    
     async def refresh_data(self):
-        """Refresh player data"""
-        logger.info("Refreshing player data...")
-        await self.create_sample_data()
-        
-    async def get_last_update_time(self) -> Optional[datetime]:
-        """Get last update timestamp"""
-        return self.last_update
+        """Refresh data"""
+        self.last_update = datetime.now()
+        return load_weekly_data()
