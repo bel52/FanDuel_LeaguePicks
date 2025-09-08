@@ -1,31 +1,35 @@
-FROM python:3.11-slim
+FROM python:3.13-slim
 
-WORKDIR /app
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/code
 
+# Set work directory
+WORKDIR /code
+
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
+    --no-install-recommends \
     curl \
+    gcc \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy and install Python dependencies
+COPY requirements.txt /code/requirements.txt
+RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
 
-COPY app/ ./app/
+# Copy application code
+COPY ./app /code/app
 
-# Ensure all subdirectories exist inside container
-RUN mkdir -p \
-    data/input data/output data/fantasypros data/weekly \
-    data/targets data/executed data/season data/bankroll \
-    logs
+# Create non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN chown -R appuser:appuser /code
+USER appuser
 
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app
-ENV TZ=America/New_York
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
 
-EXPOSE 8010
-
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD curl -f http://localhost:8010/health || exit 1
-
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010"]
+# Run the application
+CMD ["fastapi", "run", "app/main.py", "--host", "0.0.0.0", "--port", "8000"]
