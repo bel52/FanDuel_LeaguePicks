@@ -22,3 +22,7 @@ __pycache__/
 .DS_Store
 #data/weekly/*
 #logs/*
+*.old*
+*.old
+*.bak
+*.bak*
