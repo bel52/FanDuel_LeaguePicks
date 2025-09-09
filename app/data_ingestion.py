@@ -1,11 +1,9 @@
-# app/data_ingestion.py
+# app/data_ingestion.py - Simplified working version
 import os
 import pandas as pd
 import numpy as np
 import logging
-from typing import Tuple, Optional, List, Dict, Any
-from datetime import datetime
-import glob
+from typing import Tuple, Optional, List
 
 logger = logging.getLogger(__name__)
 
@@ -15,31 +13,37 @@ def load_weekly_data() -> Optional[pd.DataFrame]:
         data_dir = "data/input"
         all_data = []
         
+        if not os.path.exists(data_dir):
+            logger.warning(f"Directory {data_dir} does not exist")
+            return None
+        
         # Load each position file
         for pos in ["qb", "rb", "wr", "te", "dst"]:
             file_path = os.path.join(data_dir, f"{pos}.csv")
             if os.path.exists(file_path):
-                df = pd.read_csv(file_path)
-                # Add position hint if not in data
-                if 'POS' not in df.columns:
-                    df['POS'] = pos.upper() if pos != 'dst' else 'DST'
-                all_data.append(df)
-                logger.info(f"Loaded {len(df)} players from {pos}.csv")
+                try:
+                    df = pd.read_csv(file_path)
+                    if not df.empty:
+                        # Add position hint if not in data
+                        if 'POS' not in df.columns:
+                            df['POS'] = pos.upper() if pos != 'dst' else 'DST'
+                        all_data.append(df)
+                        logger.info(f"Loaded {len(df)} players from {pos}.csv")
+                except Exception as e:
+                    logger.warning(f"Failed to load {pos}.csv: {e}")
         
         if not all_data:
-            logger.warning("No data files found in data/input/")
+            logger.warning("No valid data files found")
             return None
         
         # Combine all dataframes
         combined_df = pd.concat(all_data, ignore_index=True)
         
-        # Normalize column names
+        # Normalize column names and clean data
         combined_df = normalize_columns(combined_df)
-        
-        # Clean and validate data
         combined_df = clean_player_data(combined_df)
         
-        logger.info(f"Loaded total of {len(combined_df)} players")
+        logger.info(f"Successfully loaded {len(combined_df)} total players")
         return combined_df
         
     except Exception as e:
@@ -51,7 +55,6 @@ def load_data_from_input_dir() -> Tuple[Optional[pd.DataFrame], List[str]]:
     warnings = []
     
     try:
-        # Try to load weekly data
         df = load_weekly_data()
         
         if df is None or df.empty:
@@ -152,18 +155,22 @@ def clean_player_data(df: pd.DataFrame) -> pd.DataFrame:
         
         df['OWN_PCT'] = df['OWN_PCT'].apply(parse_ownership)
     
-    # Extract position from player name if needed
-    if 'POS' not in df.columns and 'PLAYER NAME' in df.columns:
-        # Try to extract from name format like "Josh Allen (BUF - QB)"
+    # Extract team and position from player name if needed
+    if 'TEAM' not in df.columns or 'POS' not in df.columns:
         import re
         
-        def extract_position(name):
-            match = re.search(r'\(.*?-\s*([A-Z/]+)\)', str(name))
+        def extract_from_name(name):
+            # Pattern like "Josh Allen (BUF - QB)"
+            match = re.search(r'\(([A-Z]{2,3})\s*-\s*([A-Z/]+)\)', str(name))
             if match:
-                return match.group(1)
-            return None
+                return match.group(1), match.group(2)
+            return None, None
         
-        df['POS'] = df['PLAYER NAME'].apply(extract_position)
+        if 'TEAM' not in df.columns:
+            df['TEAM'] = df['PLAYER NAME'].apply(lambda x: extract_from_name(x)[0])
+        
+        if 'POS' not in df.columns:
+            df['POS'] = df['PLAYER NAME'].apply(lambda x: extract_from_name(x)[1])
     
     # Clean position values
     if 'POS' in df.columns:
@@ -175,18 +182,8 @@ def clean_player_data(df: pd.DataFrame) -> pd.DataFrame:
         df['POS'] = df['POS'].replace(position_map)
         
         # Filter to valid positions only
-        valid_positions = ['QB', 'RB', 'WR', 'TE', 'DST', 'K']
+        valid_positions = ['QB', 'RB', 'WR', 'TE', 'DST']
         df = df[df['POS'].isin(valid_positions)]
-# Extract team from player name if needed
-    if 'TEAM' not in df.columns and 'PLAYER NAME' in df.columns:
-        def extract_team(name):
-            import re
-            match = re.search(r'\(([A-Z]{2,3})', str(name))
-            if match:
-                return match.group(1)
-            return None
-        
-        df['TEAM'] = df['PLAYER NAME'].apply(extract_team)
     
     # Clean player names (remove position/team info if in name)
     if 'PLAYER NAME' in df.columns:
@@ -196,11 +193,6 @@ def clean_player_data(df: pd.DataFrame) -> pd.DataFrame:
     if 'SALARY' in df.columns and 'PROJ PTS' in df.columns:
         df['VALUE'] = df['PROJ PTS'] / (df['SALARY'] / 1000)
         df['VALUE'] = df['VALUE'].round(2)
-    
-    # Add ceiling and floor estimates if not present
-    if 'CEILING' not in df.columns and 'PROJ PTS' in df.columns:
-        df['CEILING'] = df['PROJ PTS'] * 1.4
-        df['FLOOR'] = df['PROJ PTS'] * 0.6
     
     return df
 
@@ -219,21 +211,21 @@ def validate_player_data(df: pd.DataFrame) -> List[str]:
         pos_counts = df['POS'].value_counts()
         
         min_requirements = {
-            'QB': 5,
-            'RB': 10,
-            'WR': 15,
-            'TE': 5,
-            'DST': 5
+            'QB': 3,
+            'RB': 6,
+            'WR': 8,
+            'TE': 3,
+            'DST': 3
         }
         
         for pos, min_count in min_requirements.items():
             if pos not in pos_counts or pos_counts[pos] < min_count:
-                warnings.append(f"Insufficient {pos} players: {pos_counts.get(pos, 0)} (need at least {min_count})")
+                warnings.append(f"Low {pos} player count: {pos_counts.get(pos, 0)} (recommend at least {min_count})")
     
     # Check salary distribution
     if 'SALARY' in df.columns:
         avg_salary = df['SALARY'].mean()
-        if avg_salary < 5000 or avg_salary > 8000:
+        if avg_salary < 4000 or avg_salary > 9000:
             warnings.append(f"Unusual average salary: ${avg_salary:.0f}")
     
     # Check for duplicates
@@ -296,19 +288,6 @@ def create_sample_data() -> pd.DataFrame:
             # DSTs
             'BUF', 'SF', 'DAL', 'NE', 'BAL', 'PHI', 'DEN', 'CIN'
         ],
-        'OPP': [
-            # QBs
-            'MIA', 'LV', 'WAS', 'CLE', 'NYG', 'PIT', 'TEN', 'BUF',
-            # RBs
-            'ARI', 'TEN', 'HOU', 'DAL', 'JAX', 'GB', 'NYG', 'CLE', 'LAR', 'NE', 'MIA', 'DET',
-            # WRs
-            'BUF', 'MIA', 'GB', 'PIT', 'NYG', 'WAS', 'GB', 'SEA', 'CHI', 'TB', 'LAR', 'NO',
-            'WAS', 'BUF', 'IND', 'PIT', 'BAL', 'PHI', 'JAX', 'NO',
-            # TEs
-            'LV', 'CLE', 'GB', 'ARI', 'WAS', 'DAL', 'CAR', 'IND',
-            # DSTs
-            'MIA', 'ARI', 'NYG', 'NYJ', 'CLE', 'WAS', 'KC', 'PIT'
-        ],
         'SALARY': [
             # QBs
             8500, 8300, 8200, 8000, 7700, 7900, 7600, 7300,
@@ -345,50 +324,5 @@ def create_sample_data() -> pd.DataFrame:
     
     # Add calculated columns
     df['VALUE'] = (df['PROJ PTS'] / (df['SALARY'] / 1000)).round(2)
-    df['CEILING'] = (df['PROJ PTS'] * 1.4).round(1)
-    df['FLOOR'] = (df['PROJ PTS'] * 0.6).round(1)
     
     return df
-
-class DataIngestion:
-    """Legacy class for backward compatibility"""
-    
-    def __init__(self):
-        self.last_update = None
-    
-    def create_sample_data(self) -> pd.DataFrame:
-        """Create sample data (wrapper for function)"""
-        return create_sample_data()
-    
-    def load_weekly_data(self) -> Optional[pd.DataFrame]:
-        """Load weekly data (wrapper for function)"""
-        return load_weekly_data()
-    
-    async def check_data_availability(self) -> str:
-        """Check if data is available"""
-        df = load_weekly_data()
-        if df is not None and not df.empty:
-            return "available"
-        return "unavailable"
-    
-    async def get_detailed_status(self) -> Dict[str, Any]:
-        """Get detailed data status"""
-        df, warnings = load_data_from_input_dir()
-        
-        status = {
-            "available": df is not None and not df.empty,
-            "row_count": len(df) if df is not None else 0,
-            "warnings": warnings
-        }
-        
-        if df is not None and not df.empty:
-            status["positions"] = df['POS'].value_counts().to_dict() if 'POS' in df.columns else {}
-            status["avg_salary"] = df['SALARY'].mean() if 'SALARY' in df.columns else 0
-            status["avg_projection"] = df['PROJ PTS'].mean() if 'PROJ PTS' in df.columns else 0
-        
-        return status
-    
-    async def refresh_data(self):
-        """Refresh data"""
-        self.last_update = datetime.now()
-        return load_weekly_data()
