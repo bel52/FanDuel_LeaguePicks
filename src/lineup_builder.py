@@ -1,177 +1,176 @@
+"""
+Construct DFS lineups using a simple brute-force search with optional
+adjustments for odds and weather data.
+
+This module defines a ``build_lineup`` function that takes a list of
+player dictionaries and returns the best projected lineup under a salary
+cap. Players are grouped by position, filtered by a value threshold,
+ranked by adjusted projection, and then brute-forced across a trimmed
+pool to find the optimal combination. Odds and weather data, when
+provided, are used to adjust player projections via ``lineup_rules``.
+
+The search space is constrained by constants like ``QB_TOP`` or
+``RB_TOP`` to keep runtime manageable. If no valid lineup can be built,
+the function returns ``(None, -1.0)``.
+"""
+
+from typing import List, Dict, Any, Tuple, Optional
 import itertools
 from src import lineup_rules as rules
 
 CAP = 60000
 
-# Search budgets (kept small for speed; can increase)
-QB_TOP   = 10
-MATE_TOP = 5
-RB_TOP   = 12
-WR_TOP   = 18
-TE_TOP   = 10
-DST_TOP  = 10
-FLEX_TOP = 20
+# Maximum number of players to consider at each position. Adjust these
+# values to trade off runtime versus lineup quality.
+QB_TOP = 4
+RB_TOP = 7
+WR_TOP = 10
+TE_TOP = 4
+DST_TOP = 4
+FLEX_TOP = 15
 
-def build_lineup(players, odds_data=None, weather_data=None):
+Positions = ('QB', 'RB', 'WR', 'TE', 'DST')
+
+
+def _by_pos(players: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    pos = {p: [] for p in Positions}
+    for pl in players:
+        if pl.get('Pos') in pos:
+            pos[pl['Pos']].append(pl)
+    return pos
+
+
+def _adj(p: Dict[str, Any], game_info_map: Dict[str, Dict[str, Any]]) -> float:
+    # Compute adjusted score; fallback to raw projection if no game info
+    return float(rules.adjusted_score(p, game_info_map.get(p.get('Team'))))
+
+
+def _val(p: Dict[str, Any]) -> float:
+    from src.util import value_per_1k
+    return value_per_1k(p.get('ProjFP', 0.0), p.get('Salary', 0))
+
+
+def _top_pool(players: List[Dict[str, Any]], top_n: int) -> List[Dict[str, Any]]:
+    # Filter by value threshold then sort by value and adjusted projection
+    val_ok = [p for p in players if rules.meets_value(p)]
+    val_ok.sort(key=lambda p: (_val(p), p.get('ProjFP', 0.0)), reverse=True)
+    if len(val_ok) >= top_n:
+        return val_ok[:top_n]
+    rem = [p for p in players if p not in val_ok]
+    rem.sort(key=lambda p: (_val(p), p.get('ProjFP', 0.0)), reverse=True)
+    return (val_ok + rem)[:top_n]
+
+
+def build_lineup(players: List[Dict[str, Any]], odds_data: Optional[List[Dict[str, Any]]] = None,
+                 weather_data: Optional[List[Dict[str, Any]]] = None,
+                 injuries: Optional[Dict[str, str]] = None,
+                 locked: Optional[set[str]] = None) -> Tuple[Optional[Dict[str, Any]], float]:
     """
-    Greedy-but-broadened search:
-      - Try top N QBs by adjusted score
-      - For each, try up to M single-stack mates (WR or TE, same team)
-      - Try RB pairs, WR sets, TE (if not stacked), DST
-      - Fill FLEX from remaining best that fit under CAP
-    Enforces:
-      - Single stack (QB + 1 WR/TE)
-      - ≤2 non-QB teammates (including the stack mate)
-      - Avoid DST directly opposing the QB
+    Build the optimal lineup from a list of players.
+
+    Args:
+        players: List of player dictionaries with keys ``Name``, ``Team``, ``Pos``, ``ProjFP``, ``Salary``.
+        odds_data: Optional list of games with implied totals. Each dict should
+            contain ``Home``, ``Away``, ``HomeImplied``, ``AwayImplied``.
+        weather_data: Optional list of weather dicts. Each dict may include
+            ``Team``, ``wind_mph``, ``precip_chance``.
+
+    Returns:
+        (lineup, score): The lineup is a dict mapping roster slots to
+            player dicts; score is the sum of adjusted projections. If no
+            lineup is possible, returns (None, -1.0).
     """
-    # Filter by value thresholds
-    pool = [p for p in players if rules.meets_value(p)]
-    QBs  = [p for p in pool if p['Pos']=='QB']
-    RBs  = [p for p in pool if p['Pos']=='RB']
-    WRs  = [p for p in pool if p['Pos']=='WR']
-    TEs  = [p for p in pool if p['Pos']=='TE']
-    DSTs = [p for p in pool if p['Pos']=='DST']
-
-    # Implied totals / weather map (team -> info)
-    gi = {}
-    if odds_data:
-        for g in odds_data:
-            if g.get('HomeImplied')!='':
-                gi[g['Home']] = gi.get(g['Home'], {}) | {'implied_total': float(g['HomeImplied'])}
-            if g.get('AwayImplied')!='':
-                gi[g['Away']] = gi.get(g['Away'], {}) | {'implied_total': float(g['AwayImplied'])}
-    # Weather could be merged similarly if provided.
-
-    def adj(p):
-        # defensive: skip any accidental non-player dicts
-        if not isinstance(p, dict) or 'Team' not in p:
-            return 0.0
-        return rules.adjusted_score(p, gi.get(p['Team']))
-
-    # Sort by adjusted score
-    QBs.sort(key=adj, reverse=True)
-    RBs.sort(key=adj, reverse=True)
-    WRs.sort(key=adj, reverse=True)
-    TEs.sort(key=adj, reverse=True)
-    DSTs.sort(key=adj, reverse=True)
-
-    if not (QBs and len(RBs)>=2 and len(WRs)>=3 and TEs and DSTs):
+    if not players:
         return None, -1.0
 
-    # Limit search sets
-    QBs  = QBs[:QB_TOP]
-    RBsT = RBs[:RB_TOP]
-    WRT  = WRs[:WR_TOP]
-    TET  = TEs[:TE_TOP]
-    DSTT = DSTs[:DST_TOP]
+    # Filter out injured or locked players
+    filtered_players: List[Dict[str, Any]] = []
+    injuries = injuries or {}
+    locked = locked or set()
+    for p in players:
+        name = p.get('Name')
+        # Exclude if player is injured (status OUT/IR/DOUBTFUL) or locked
+        status = injuries.get(name, '').upper()
+        if status in ('OUT', 'IR', 'DOUBTFUL'):
+            continue
+        if name in locked:
+            continue
+        filtered_players.append(p)
+    players = filtered_players
+    pools = _by_pos(players)
+    # Create game info mapping for odds and weather
+    game_info_map: Dict[str, Dict[str, Any]] = {}
+    if odds_data:
+        for g in odds_data:
+            try:
+                home = g.get('Home')
+                away = g.get('Away')
+                if home and g.get('HomeImplied'):
+                    game_info_map.setdefault(home, {})['implied_total'] = float(g['HomeImplied'])
+                if away and g.get('AwayImplied'):
+                    game_info_map.setdefault(away, {})['implied_total'] = float(g['AwayImplied'])
+            except Exception:
+                continue
+    if weather_data:
+        for w in weather_data:
+            try:
+                team = w.get('Team')
+                if not team:
+                    continue
+                info = game_info_map.setdefault(team, {})
+                if 'wind_mph' in w and w['wind_mph'] != '':
+                    info['wind_mph'] = int(w['wind_mph'])
+                if 'precip_chance' in w and w['precip_chance'] != '':
+                    info['precip_chance'] = int(w['precip_chance'])
+            except Exception:
+                continue
 
-    best = None
+    # Determine candidate pools per position
+    QBs = _top_pool(pools.get('QB', []), QB_TOP)
+    RBs = _top_pool(pools.get('RB', []), RB_TOP)
+    WRs = _top_pool(pools.get('WR', []), WR_TOP)
+    TEs = _top_pool(pools.get('TE', []), TE_TOP)
+    DSTs = _top_pool(pools.get('DST', []), DST_TOP)
+
+    # Ensure minimum counts
+    if not (QBs and len(RBs) >= 2 and len(WRs) >= 3 and TEs and DSTs):
+        return None, -1.0
+
+    # Pre-sort flex candidates once
+    flex_sorted = sorted(RBs + WRs + TEs, key=lambda p: (_val(p), p.get('ProjFP', 0.0)), reverse=True)
+
     best_score = -1.0
+    best: Optional[Dict[str, Any]] = None
+
+    # Precompute adjusted projections for each player
+    adj_scores = {id(p): _adj(p, game_info_map) for p in players}
 
     for qb in QBs:
-        # stack mates: WR/TE same team
-        mates = [p for p in (WRT + TET) if p['Team']==qb['Team'] and p['Player']!=qb['Player']]
-        mates.sort(key=adj, reverse=True)
-        if not mates:
-            continue
-
-        for mate in mates[:MATE_TOP]:
-            used_names = {qb['Player'], mate['Player']}
-            salary = qb['Salary'] + mate['Salary']
-            roster = {'QB': qb}
-            wr_needed = 3
-            if mate['Pos']=='WR':
-                roster['WR1'] = mate
-                wr_needed = 2
-            else:
-                roster['TE'] = mate
-
-            # RB pair
-            for rb1, rb2 in itertools.combinations([r for r in RBsT if r['Player'] not in used_names], 2):
-                s_rb = rb1['Salary'] + rb2['Salary']
-                if salary + s_rb > CAP: 
-                    continue
-                used_rb = used_names | {rb1['Player'], rb2['Player']}
-
-                # WR fill
-                wr_pool = [w for w in WRT if w['Player'] not in used_rb]
-                for wrs in itertools.combinations(wr_pool, wr_needed):
-                    s_wr = sum(w['Salary'] for w in wrs)
-                    if salary + s_rb + s_wr > CAP:
-                        continue
-                    roster_wr = {}
-                    if 'WR1' in roster:
-                        roster_wr['WR2'], roster_wr['WR3'] = wrs
-                    else:
-                        roster_wr['WR1'], roster_wr['WR2'], roster_wr['WR3'] = wrs
-
-                    used_wr = used_rb | {w['Player'] for w in wrs}
-
-                    # TE if not already stacked
-                    s_te = 0
-                    roster_te = {}
-                    if 'TE' not in roster:
-                        te_options = [t for t in TET if t['Player'] not in used_wr]
-                        te_pick = None
-                        for te in te_options:
-                            if salary + s_rb + s_wr + te['Salary'] <= CAP:
-                                te_pick = te
-                                s_te = te['Salary']
-                                break
-                        if not te_pick:
+        for rb2 in itertools.combinations(RBs, 2):
+            for wr3 in itertools.combinations(WRs, 3):
+                for te in TEs:
+                    for dst in DSTs:
+                        chosen = [qb, *rb2, *wr3, te, dst]
+                        chosen_keys = {(c['Name'], c['Pos'], c['Team']) for c in chosen}
+                        base_salary = sum(int(c.get('Salary', 0) or 0) for c in chosen)
+                        if base_salary > CAP:
                             continue
-                        roster_te['TE'] = te_pick
-
-                    # DST (avoid DST vs QB opponent)
-                    dst_opts = [d for d in DSTT if d['Player'] not in used_wr and d['Team'] != qb.get('Opp')]
-                    dst_pick = None
-                    s_dst = 0
-                    for d in dst_opts:
-                        if salary + s_rb + s_wr + s_te + d['Salary'] <= CAP:
-                            dst_pick = d
-                            s_dst = d['Salary']
-                            break
-                    if not dst_pick:
-                        continue
-
-                    # FLEX from remaining best RB/WR/TE
-                    used = used_wr | ({roster_te['TE']['Player']} if 'TE' in roster_te else set())
-                    used |= {dst_pick['Player']}
-                    flex_pool = [p for p in (RBsT + WRT + TET) if p['Player'] not in used]
-                    flex_pool.sort(key=adj, reverse=True)
-
-                    flex_pick = None
-                    for fx in flex_pool[:FLEX_TOP]:
-                        total_sal = salary + s_rb + s_wr + s_te + s_dst + fx['Salary']
-                        if total_sal <= CAP:
-                            flex_pick = fx
-                            break
-                    if not flex_pick:
-                        continue
-
-                    # ≤2 non-QB teammates with QB (including the mate)
-                    team_count = 0
-                    group = [mate, rb1, rb2] + list(wrs) + ([roster_te['TE']] if 'TE' in roster_te else []) + [flex_pick]
-                    for pl in group:
-                        if pl['Team'] == qb['Team'] and pl['Pos'] != 'QB':
-                            team_count += 1
-                    if team_count > 2:
-                        continue
-
-                    # Build final lineup object (ONLY player dicts as values)
-                    lineup = {'QB': qb, 'RB1': rb1, 'RB2': rb2, 'DST': dst_pick, 'FLEX': flex_pick}
-                    lineup.update(roster_wr)
-                    if 'WR1' in roster:  # stacked with WR
-                        lineup['WR1'] = roster['WR1']
-                    if 'TE' in roster_te:
-                        lineup['TE'] = roster_te['TE']
-                    elif 'TE' in roster:  # stacked with TE
-                        lineup['TE'] = roster['TE']
-
-                    # Score
-                    total = sum(adj(p) for p in lineup.values())
-                    if total > best_score:
-                        best = lineup
-                        best_score = round(total, 2)
-
+                        # pick first FLEX that is not already in chosen and fits CAP
+                        for fx in flex_sorted[:FLEX_TOP * 3]:
+                            key = (fx['Name'], fx['Pos'], fx['Team'])
+                            if key in chosen_keys:
+                                continue
+                            total_salary = base_salary + int(fx.get('Salary', 0) or 0)
+                            if total_salary > CAP:
+                                continue
+                            lineup = {
+                                'QB': qb, 'RB1': rb2[0], 'RB2': rb2[1],
+                                'WR1': wr3[0], 'WR2': wr3[1], 'WR3': wr3[2],
+                                'TE': te, 'FLEX': fx, 'DST': dst
+                            }
+                            total = sum(adj_scores[id(p)] for p in lineup.values())
+                            if total > best_score:
+                                best = lineup
+                                best_score = round(total, 2)
+                            break  # take best available flex for this core
     return best, best_score
