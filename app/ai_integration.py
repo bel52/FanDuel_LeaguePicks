@@ -1,347 +1,448 @@
-import os
-import logging
-import json
-import asyncio
-from typing import Dict, List, Any, Optional, Tuple
-from datetime import datetime, timedelta
-from functools import lru_cache
-import aiohttp
+#!/usr/bin/env python3
+"""
+Cost-Effective AI Integration for DFS Analysis
+Uses ChatGPT-4o-mini for $0.10/week vs $15 budget
+"""
 
-from app.config import settings
-from app.cache_manager import CacheManager
+import asyncio
+import json
+import logging
+import tiktoken
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any
+import openai
+from openai import AsyncOpenAI
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
 class AIAnalyzer:
-    """Advanced AI-powered lineup analysis with cost optimization and fallback."""
-
-    def __init__(self):
-        self.openai_client = None
-        self.anthropic_client = None
-        self.cache_manager = CacheManager()
+    """
+    Cost-optimized AI analysis using ChatGPT-4o-mini
+    Estimated cost: $0.10/week vs $2.09 for Claude
+    """
+    
+    def __init__(self, api_key: Optional[str] = None):
+        self.client = AsyncOpenAI(api_key=api_key) if api_key else None
+        self.model = "gpt-4o-mini"
         
-        # Rate limiter for AI calls (simple implementation without aiolimiter)
-        self.ai_calls_made = 0
-        self.ai_reset_time = datetime.now()
-        self.max_calls_per_hour = int(os.getenv("MAX_AI_CALLS_PER_HOUR", "100"))
+        # Cost tracking
+        self.daily_usage = {
+            'input_tokens': 0,
+            'output_tokens': 0,
+            'calls': 0,
+            'cost': 0.0
+        }
         
-        # Initialize AI API clients
-        self._initialize_clients()
+        # Pricing (per million tokens)
+        self.pricing = {
+            'input': 0.15 / 1000000,   # $0.15 per 1M input tokens
+            'output': 0.60 / 1000000   # $0.60 per 1M output tokens
+        }
         
-        # Cost tracking for reporting
-        self.daily_cost = 0.0
-        self.call_count = 0
-
-    def _initialize_clients(self):
-        """Initialize OpenAI and Anthropic clients based on available API keys."""
-        if settings.openai_api_key:
-            try:
-                import openai
-                self.openai_client = openai.OpenAI(api_key=settings.openai_api_key)
-                logger.info("OpenAI client initialized")
-            except Exception as e:
-                logger.error(f"Failed to initialize OpenAI client: {e}")
+        # Token counter
+        try:
+            self.encoding = tiktoken.encoding_for_model(self.model)
+        except:
+            self.encoding = tiktoken.get_encoding("cl100k_base")
         
-        if settings.anthropic_api_key:
-            try:
-                import anthropic
-                self.anthropic_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-                logger.info("Anthropic client initialized")
-            except Exception as e:
-                logger.error(f"Failed to initialize Anthropic client: {e}")
-
-    async def _check_rate_limit(self):
-        """Simple rate limiting check"""
-        now = datetime.now()
-        if (now - self.ai_reset_time).total_seconds() > 3600:  # Reset every hour
-            self.ai_calls_made = 0
-            self.ai_reset_time = now
+        # Cache for repeated analyses
+        self.analysis_cache = {}
+    
+    async def enhance_projections(
+        self, 
+        players: List[Dict[str, Any]], 
+        game_type: str = "gpp"
+    ) -> List[Dict[str, Any]]:
+        """
+        AI-enhanced player projections with cost optimization
+        """
+        if not self.client:
+            logger.info("🤖 AI analysis disabled - no API key")
+            return players
         
-        if self.ai_calls_made >= self.max_calls_per_hour:
-            raise Exception("AI rate limit exceeded")
+        try:
+            # Group players for batch analysis (cost optimization)
+            enhanced_players = []
+            
+            # Process in batches of 10 for efficiency
+            batch_size = 10
+            for i in range(0, len(players), batch_size):
+                batch = players[i:i + batch_size]
+                enhanced_batch = await self._analyze_player_batch(batch, game_type)
+                enhanced_players.extend(enhanced_batch)
+            
+            logger.info(f"🧠 AI enhanced {len(enhanced_players)} players")
+            return enhanced_players
+            
+        except Exception as e:
+            logger.error(f"AI enhancement failed: {e}")
+            return players
+    
+    async def _analyze_player_batch(
+        self, 
+        players: List[Dict[str, Any]], 
+        game_type: str
+    ) -> List[Dict[str, Any]]:
+        """Analyze batch of players with AI"""
         
-        self.ai_calls_made += 1
-
-    async def analyze_lineup(
-        self,
-        lineup_players: List[Dict],
-        sim_results: Dict,
-        game_type: str = "league",
-        news_context: Optional[Dict] = None,
-        weather_context: Optional[Dict] = None
-    ) -> str:
-        """Generate a comprehensive AI analysis for the lineup, with caching and cost control."""
+        # Create efficient prompt for batch analysis
+        player_summary = []
+        for p in players:
+            player_summary.append({
+                'name': p['name'],
+                'position': p['position'], 
+                'team': p['team'],
+                'salary': p.get('salary', 0),
+                'projection': p.get('projection', 0),
+                'injury_status': p.get('injury_status', 'healthy')
+            })
+        
+        cache_key = self._generate_cache_key(player_summary, game_type)
         
         # Check cache first
-        cache_key = self._generate_cache_key(lineup_players, game_type)
-        cached_analysis = await self.cache_manager.get(cache_key)
-        if cached_analysis:
-            logger.info("Using cached AI analysis for lineup.")
-            return cached_analysis
-
-        try:
-            await self._check_rate_limit()
-            analysis = await self._generate_analysis(lineup_players, sim_results, game_type, news_context, weather_context)
-        except Exception as e:
-            logger.error(f"AI analysis failed: {e}")
-            # Fallback to basic analysis
-            analysis = self._generate_fallback_analysis(lineup_players, sim_results, game_type)
-
-        # Cache the analysis result
-        await self.cache_manager.set(cache_key, analysis, ttl=int(os.getenv("AI_CACHE_TTL", "1800")))
-        return analysis
-
-    async def analyze_player_news_impact(
-        self,
-        player_name: str,
-        news_items: List[Dict],
-        current_projection: float
-    ) -> Tuple[float, str]:
-        """Analyze how recent news might impact a player's projection."""
-        if not news_items:
-            return current_projection, "No significant news"
+        if cache_key in self.analysis_cache:
+            logger.debug("📋 Using cached AI analysis")
+            cached_result = self.analysis_cache[cache_key]
+            return self._apply_cached_analysis(players, cached_result)
         
-        # Build a concise news summary prompt
-        news_text = "\n".join([
-            f"- {item.get('title', '')}: {item.get('summary', '')}" for item in news_items[:3]
-        ])
-        
-        prompt = f"""
-        Analyze the impact of recent news on {player_name}'s DFS projection:
-
-        Current projection: {current_projection:.1f} points
-
-        Recent news:
-        {news_text}
-
-        Provide:
-        1. Adjusted projection (number only)
-        2. Brief reasoning (under 50 words)
-
-        Format: "PROJECTION: X.X | REASONING: <short explanation>"
-        """
+        # AI analysis prompt
+        prompt = self._create_analysis_prompt(player_summary, game_type)
         
         try:
-            await self._check_rate_limit()
-            response = await self._call_openai(prompt, max_tokens=100)
+            # Count tokens for cost tracking
+            input_tokens = len(self.encoding.encode(prompt))
             
-            # Parse the response for expected format
-            if "PROJECTION:" in response and "REASONING:" in response:
-                parts = response.split("|")
-                proj_part = parts[0].replace("PROJECTION:", "").strip()
-                reason_part = parts[1].replace("REASONING:", "").strip()
-                try:
-                    new_projection = float(proj_part)
-                    return new_projection, reason_part
-                except ValueError:
-                    pass
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=800,
+                temperature=0.3
+            )
+            
+            # Update usage tracking
+            output_tokens = response.usage.completion_tokens if response.usage else 0
+            await self._update_usage_stats(input_tokens, output_tokens)
+            
+            # Parse AI response
+            ai_analysis = response.choices[0].message.content
+            analysis_data = self._parse_ai_response(ai_analysis)
+            
+            # Cache the analysis
+            self.analysis_cache[cache_key] = analysis_data
+            
+            # Apply enhancements
+            return self._apply_ai_enhancements(players, analysis_data)
+            
         except Exception as e:
-            logger.error(f"News impact analysis failed for {player_name}: {e}")
-        
-        # If parsing or API fails, return original projection
-        return current_projection, "Analysis unavailable"
-
-    async def suggest_optimal_swaps(
-        self,
-        current_lineup: List[Dict],
-        available_players: List[Dict],
-        salary_remaining: int,
-        game_status: str = "EVEN"
-    ) -> List[Dict]:
-        """Suggest up to 3 optimal player swaps using AI given the current lineup and game situation."""
-        strategy = "ceiling" if game_status.upper() == "BEHIND" else "balanced" if game_status.upper() == "EVEN" else "floor"
-        
-        prompt = f"""
-        Current DFS situation: {game_status}
-        Strategy needed: {strategy}
-        Salary remaining: ${salary_remaining}
-
-        Current lineup:
-        {self._format_lineup_summary(current_lineup)}
-
-        Suggest up to 3 player swaps optimized for a **{strategy}** strategy.
-        Consider correlation, leverage, and salary constraints.
-
-        Format each suggestion as:
-        "OUT: [Player] ($X) | IN: [Player] ($Y) | REASON: <brief explanation>"
-        """
-        
-        try:
-            await self._check_rate_limit()
-            response = await self._call_openai(prompt, max_tokens=200)
-            return self._parse_swap_suggestions(response)
-        except Exception as e:
-            logger.error(f"Swap suggestion analysis failed: {e}")
-            return []
-
-    def _generate_cache_key(self, lineup_players: List[Dict], game_type: str) -> str:
-        """Generate a unique cache key for a given lineup to cache AI analysis."""
-        player_names = [p["name"] if "name" in p else p.get("PLAYER NAME", "") for p in lineup_players]
-        key_data = {
-            "players": sorted(player_names),
-            "game_type": game_type,
-            "hour": datetime.now().strftime("%Y-%m-%d-%H")
-        }
-        return f"ai_analysis:{hash(json.dumps(key_data, sort_keys=True))}"
-
-    async def _generate_analysis(
-        self,
-        lineup_players: List[Dict],
-        sim_results: Dict,
-        game_type: str,
-        news_context: Optional[Dict],
-        weather_context: Optional[Dict]
-    ) -> str:
-        """Use OpenAI to generate the lineup analysis text."""
-        prompt = self._build_analysis_prompt(lineup_players, sim_results, game_type, news_context, weather_context)
-        
-        # Track estimated cost for this call
-        input_tokens = len(prompt) // 4  # rough estimate
-        output_tokens = 300
-        estimated_cost = (input_tokens * 0.15 + output_tokens * 0.60) / 1_000_000
-        self.daily_cost += estimated_cost
-        self.call_count += 1
-        
-        if self.openai_client:
-            try:
-                response = self.openai_client.chat.completions.create(
-                    model=os.getenv("GPT_MODEL", "gpt-4o-mini"),
-                    messages=[
-                        {"role": "system", "content": "You are an expert DFS analyst specializing in NFL strategy optimization."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    max_tokens=300,
-                    temperature=0.7
-                )
-                logger.info(f"AI call #{self.call_count} to OpenAI, estimated cost ${estimated_cost:.6f}")
-                return response.choices[0].message.content.strip()
-            except Exception as e:
-                logger.error(f"OpenAI call failed: {e}")
-                raise
-        
-        # Fallback to Anthropic if OpenAI unavailable
-        if self.anthropic_client:
-            try:
-                response = self.anthropic_client.messages.create(
-                    model=os.getenv("CLAUDE_MODEL", "claude-3-sonnet-20240229"),
-                    max_tokens=300,
-                    messages=[{"role": "user", "content": prompt}],
-                    system="You are an expert DFS analyst specializing in NFL strategy optimization."
-                )
-                return response.content[0].text.strip()
-            except Exception as e:
-                logger.error(f"Anthropic call failed: {e}")
-                raise
-        
-        raise Exception("No AI clients available")
-
-    def _build_analysis_prompt(
-        self,
-        lineup_players: List[Dict],
-        sim_results: Dict,
-        game_type: str,
-        news_context: Optional[Dict],
-        weather_context: Optional[Dict]
-    ) -> str:
-        """Construct the prompt for AI lineup analysis."""
-        # Basic lineup summary
-        lineup_desc = "; ".join([f"{p['name']} ({p['position']})" for p in lineup_players])
-        
-        prompt = (
-            f"Provide a DFS analysis for the following {game_type} lineup:\n"
-            f"LINEUP: {lineup_desc}\n\n"
-            f"Projected mean score: {sim_results.get('mean_score', 0):.2f}, "
-            f"90th percentile: {sim_results.get('percentiles', {}).get('90th', 0):.2f}, "
-            f"Sharpe ratio: {sim_results.get('sharpe_ratio', 0):.3f}.\n"
-        )
-        
-        # Add context if available
-        if news_context:
-            prompt += f"Recent News: {news_context}\n"
-        if weather_context:
-            prompt += f"Weather Factors: {weather_context}\n"
-        
-        # Guidance for analysis content
-        prompt += (
-            "Analyze the lineup with focus on:\n"
-            "1. Correlation (stack synergy and game environment)\n"
-            "2. Leverage (ownership and differentiation)\n"
-            "3. Risk/Upside (variance and ceiling potential)\n"
-            "4. Key concerns (injuries, weather, or roster construction)\n"
-            "Keep the analysis under 250 words, and provide actionable insights.\n"
-        )
-        
-        return prompt
-
-    def _generate_fallback_analysis(
-        self,
-        lineup_players: List[Dict],
-        sim_results: Dict,
+            logger.error(f"AI batch analysis failed: {e}")
+            return players
+    
+    def _create_analysis_prompt(
+        self, 
+        players: List[Dict[str, Any]], 
         game_type: str
     ) -> str:
-        """Generate a basic analysis if AI calls fail."""
-        # Simple stats from simulation results
-        mean_score = sim_results.get('mean_score', 0)
-        p90 = sim_results.get('percentiles', {}).get('90th', 0)
-        sharpe = sim_results.get('sharpe_ratio', 0)
+        """Create optimized prompt for player analysis"""
         
-        # Identify primary QB and count stacks
-        qb = next((p for p in lineup_players if p.get("position") == "QB"), None)
-        stack_count = sum(1 for p in lineup_players if qb and p.get("team") == qb.get("team") and p.get("position") in ["WR", "TE"])
+        strategy_context = {
+            'gpp': 'Focus on ceiling potential and contrarian plays for tournaments',
+            'cash': 'Prioritize floor and consistency for cash games',
+            'tournament': 'Maximum ceiling and leverage for large tournaments'
+        }
         
-        high_own = [p for p in lineup_players if (p.get("own_pct") or 0) > 20]
-        low_own = [p for p in lineup_players if 0 < (p.get("own_pct") or 0) < 10]
-        
-        strategy_note = "prioritize ceiling plays for maximum upside" if game_type == "h2h" else "balance floor and ceiling for consistency"
-        
-        analysis_lines = []
-        analysis_lines.append(f"CORRELATION: {'Strong' if stack_count >= 2 else 'Standard'} stack around {qb['name'] if qb else 'the QB'} with {stack_count} pass-catcher(s).")
-        analysis_lines.append(f"LEVERAGE: " + ("Has contrarian picks (e.g., " + ", ".join(p['name'] for p in low_own[:2]) + ")" if low_own else "Lineup is fairly chalky") + ".")
-        analysis_lines.append(f"RISK/UPSIDE: 90th percentile outcome is {p90:.1f} points (Sharpe ratio {sharpe:.2f}), indicating " + ("high upside." if sharpe >= 1.5 else "some volatility."))
-        
-        if high_own:
-            analysis_lines.append(f"KEY CONCERNS: High ownership on {high_own[0]['name']} – consider a pivot if news breaks.")
-        else:
-            analysis_lines.append(f"KEY CONCERNS: No major ownership risks identified; {strategy_note}.")
-        
-        return " ".join(analysis_lines)
+        prompt = f"""Analyze these NFL DFS players for {game_type} strategy.
+{strategy_context.get(game_type, '')}
 
-    def _format_lineup_summary(self, lineup: List[Dict]) -> str:
-        """Format lineup players for inclusion in AI prompts."""
-        lines = []
-        for player in lineup:
-            name = player.get('name') or player.get('PLAYER NAME', '')
-            pos = player.get('position') or player.get('POS', '')
-            salary = player.get('salary') or player.get('SALARY', 0)
-            lines.append(f"{pos} {name} (${salary})")
-        return "; ".join(lines)
+Players: {json.dumps(players, indent=1)}
 
-    def _parse_swap_suggestions(self, response: str) -> List[Dict]:
-        """Parse AI swap suggestion text into structured list of suggestions."""
-        suggestions = []
-        for line in response.splitlines():
-            if 'OUT:' in line and 'IN:' in line:
-                try:
-                    parts = line.split('|')
-                    out_player = parts[0].replace('OUT:', '').strip()
-                    in_player = parts[1].replace('IN:', '').strip()
-                    reason = parts[2].replace('REASON:', '').strip() if len(parts) > 2 else "No reason provided"
-                    suggestions.append({"out": out_player, "in": in_player, "reason": reason})
-                except Exception:
-                    continue
-        return suggestions[:3]  # up to 3 suggestions
+Provide analysis as JSON:
+{{
+  "player_name": {{
+    "projection_adjustment": 0.0,  // -3.0 to +3.0 point adjustment
+    "ceiling_multiplier": 1.0,     // 0.8 to 1.4 multiplier
+    "floor_multiplier": 1.0,       // 0.7 to 1.2 multiplier  
+    "ownership_estimate": 5.0,     // 1-50% ownership estimate
+    "confidence": 7,               // 1-10 confidence score
+    "notes": "key insight"
+  }}
+}}
 
-    async def _call_openai(self, prompt: str, max_tokens: int = 300) -> str:
-        """Low-level helper to call OpenAI completion API."""
-        if not self.openai_client:
-            raise ValueError("OpenAI client not initialized")
+Focus on:
+- Injury impacts
+- Weather conditions
+- Matchup advantages 
+- Game script potential
+- Ownership leverage
+
+Keep response under 600 tokens for cost efficiency."""
+
+        return prompt
+    
+    def _parse_ai_response(self, response: str) -> Dict[str, Any]:
+        """Parse AI response into structured data"""
+        try:
+            # Try to extract JSON from response
+            start_idx = response.find('{')
+            end_idx = response.rfind('}') + 1
+            
+            if start_idx >= 0 and end_idx > start_idx:
+                json_str = response[start_idx:end_idx]
+                return json.loads(json_str)
+                
+        except json.JSONDecodeError:
+            pass
         
-        response = self.openai_client.chat.completions.create(
-            model=os.getenv("GPT_MODEL", "gpt-4o-mini"),
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=max_tokens,
-            temperature=0.7
+        # Fallback: parse text response
+        return self._parse_text_response(response)
+    
+    def _parse_text_response(self, response: str) -> Dict[str, Any]:
+        """Fallback parser for non-JSON AI responses"""
+        analysis = {}
+        
+        # Simple keyword-based parsing
+        lines = response.split('\n')
+        current_player = None
+        
+        for line in lines:
+            line = line.strip()
+            if ':' in line:
+                key, value = line.split(':', 1)
+                key = key.strip().lower()
+                value = value.strip()
+                
+                if 'player' in key or any(pos in line.upper() for pos in ['QB', 'RB', 'WR', 'TE']):
+                    current_player = value
+                    analysis[current_player] = {}
+                elif current_player and any(word in key for word in ['projection', 'ceiling', 'floor', 'ownership']):
+                    try:
+                        num_value = float(value.split()[0])
+                        analysis[current_player][key] = num_value
+                    except:
+                        pass
+        
+        return analysis
+    
+    def _apply_ai_enhancements(
+        self, 
+        players: List[Dict[str, Any]], 
+        analysis: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Apply AI analysis to player projections"""
+        
+        enhanced = []
+        
+        for player in players:
+            enhanced_player = player.copy()
+            player_name = player['name']
+            
+            # Find matching analysis (fuzzy match)
+            ai_data = None
+            for analyzed_name, data in analysis.items():
+                if self._names_match(player_name, analyzed_name):
+                    ai_data = data
+                    break
+            
+            if ai_data:
+                # Apply AI adjustments
+                base_proj = player.get('projection', 8.0)
+                
+                # Projection adjustment
+                proj_adj = ai_data.get('projection_adjustment', 0.0)
+                enhanced_player['projection'] = round(base_proj + proj_adj, 1)
+                
+                # Ceiling/floor multipliers
+                ceiling_mult = ai_data.get('ceiling_multiplier', 1.0)
+                floor_mult = ai_data.get('floor_multiplier', 1.0)
+                
+                enhanced_player['ceiling'] = round(base_proj * ceiling_mult, 1)
+                enhanced_player['floor'] = round(base_proj * floor_mult, 1)
+                
+                # Ownership estimate
+                enhanced_player['ownership'] = ai_data.get('ownership_estimate', 5.0)
+                
+                # Add AI insights
+                enhanced_player['ai_confidence'] = ai_data.get('confidence', 7)
+                enhanced_player['ai_notes'] = ai_data.get('notes', '')
+                enhanced_player['ai_enhanced'] = True
+            else:
+                enhanced_player['ai_enhanced'] = False
+            
+            enhanced.append(enhanced_player)
+        
+        return enhanced
+    
+    def _apply_cached_analysis(
+        self, 
+        players: List[Dict[str, Any]], 
+        cached_analysis: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Apply cached AI analysis to players"""
+        return self._apply_ai_enhancements(players, cached_analysis)
+    
+    def _names_match(self, name1: str, name2: str) -> bool:
+        """Fuzzy name matching for player identification"""
+        # Simple fuzzy matching
+        n1 = name1.lower().replace(' ', '').replace('.', '')
+        n2 = name2.lower().replace(' ', '').replace('.', '')
+        
+        # Exact match
+        if n1 == n2:
+            return True
+        
+        # Substring match (last name)
+        name1_parts = name1.split()
+        name2_parts = name2.split()
+        
+        if len(name1_parts) > 0 and len(name2_parts) > 0:
+            return name1_parts[-1].lower() in name2.lower()
+        
+        return False
+    
+    def _generate_cache_key(self, players: List[Dict], game_type: str) -> str:
+        """Generate cache key for analysis results"""
+        # Create key from player names and game type
+        player_names = sorted([p['name'] for p in players])
+        key_data = f"{game_type}_{hash(tuple(player_names))}"
+        return key_data
+    
+    async def _update_usage_stats(self, input_tokens: int, output_tokens: int):
+        """Track API usage and costs"""
+        self.daily_usage['input_tokens'] += input_tokens
+        self.daily_usage['output_tokens'] += output_tokens
+        self.daily_usage['calls'] += 1
+        
+        # Calculate cost
+        cost = (
+            input_tokens * self.pricing['input'] + 
+            output_tokens * self.pricing['output']
         )
-        return response.choices[0].message.content.strip()
+        self.daily_usage['cost'] += cost
+        
+        # Log cost every 10 calls
+        if self.daily_usage['calls'] % 10 == 0:
+            logger.info(f"💰 AI usage: {self.daily_usage['calls']} calls, ${self.daily_usage['cost']:.4f}")
+    
+    async def analyze_news_impact(
+        self, 
+        player_name: str, 
+        news_text: str, 
+        current_projection: float
+    ) -> Dict[str, Any]:
+        """Analyze news impact on player projection"""
+        
+        if not self.client:
+            return {'impact': 0, 'confidence': 0.5}
+        
+        prompt = f"""Analyze DFS impact of this NFL news:
+
+Player: {player_name}
+Current Projection: {current_projection} points
+News: {news_text}
+
+Provide impact analysis as JSON:
+{{
+  "projection_change": 0.0,  // -5.0 to +5.0 point change
+  "confidence": 0.5,         // 0.0 to 1.0 confidence
+  "severity": 5,            // 1-10 severity scale  
+  "dfs_impact": "explanation",
+  "recommended_action": "hold/swap/avoid"
+}}
+
+Consider injury severity, role changes, weather, etc."""
+        
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=200,
+                temperature=0.2
+            )
+            
+            analysis = response.choices[0].message.content
+            return self._parse_ai_response(analysis)
+            
+        except Exception as e:
+            logger.error(f"News analysis failed: {e}")
+            return {'projection_change': 0, 'confidence': 0.5}
+    
+    async def analyze_correlation_stacks(
+        self, 
+        lineup_players: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """AI analysis of lineup correlations and stacks"""
+        
+        if not self.client:
+            return {'stack_score': 5, 'recommendations': []}
+        
+        teams = {}
+        for player in lineup_players:
+            team = player.get('team', '')
+            if team not in teams:
+                teams[team] = []
+            teams[team].append(f"{player['name']} ({player['position']})")
+        
+        prompt = f"""Analyze DFS lineup correlations:
+
+Lineup by team:
+{json.dumps(teams, indent=1)}
+
+Provide correlation analysis as JSON:
+{{
+  "stack_score": 7,           // 1-10 correlation quality
+  "primary_stack": "team",    // Best correlated stack
+  "correlation_boost": 1.2,   // Expected correlation multiplier
+  "recommendations": ["specific advice"],
+  "leverage_opportunities": ["contrarian plays"]
+}}
+
+Focus on QB-WR correlations, game stacks, bring-back plays."""
+        
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=300,
+                temperature=0.3
+            )
+            
+            return self._parse_ai_response(response.choices[0].message.content)
+            
+        except Exception as e:
+            logger.error(f"Correlation analysis failed: {e}")
+            return {'stack_score': 5, 'recommendations': []}
+    
+    def get_daily_usage_stats(self) -> Dict[str, Any]:
+        """Get current API usage and cost statistics"""
+        return {
+            'usage': self.daily_usage.copy(),
+            'weekly_projection': self.daily_usage['cost'] * 7,
+            'budget_utilization': (self.daily_usage['cost'] * 7) / 15.0,  # $15 weekly budget
+            'cost_per_call': self.daily_usage['cost'] / max(1, self.daily_usage['calls'])
+        }
+    
+    def reset_daily_usage(self):
+        """Reset daily usage counters"""
+        self.daily_usage = {
+            'input_tokens': 0,
+            'output_tokens': 0,
+            'calls': 0,
+            'cost': 0.0
+        }
+    
+    @lru_cache(maxsize=100)
+    def estimate_analysis_cost(self, num_players: int, game_type: str) -> float:
+        """Estimate cost for analyzing N players"""
+        # Average tokens per player analysis
+        input_tokens_per_player = 50
+        output_tokens_per_player = 40
+        
+        total_input = num_players * input_tokens_per_player
+        total_output = num_players * output_tokens_per_player
+        
+        cost = (
+            total_input * self.pricing['input'] + 
+            total_output * self.pricing['output']
+        )
+        
+        return cost
