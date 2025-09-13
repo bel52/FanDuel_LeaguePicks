@@ -1,705 +1,287 @@
-#!/usr/bin/env python3
-"""
-NFL Data Collector - Zero FantasyPros Dependency
-Integrates 12+ free data sources for complete DFS coverage
-"""
-
-import asyncio
+# app/data_collector.py
+import os
+import requests
 import json
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any, Tuple
-import httpx
-import pandas as pd
-import numpy as np
-from dataclasses import dataclass
+from datetime import datetime, timezone
 
-logger = logging.getLogger(__name__)
+# DataCollector handles fetching NFL data from various APIs (ESPN, Sleeper, Weather, Odds)
+class DataCollector:
+    def __init__(self):
+        self.season = int(os.getenv('NFL_SEASON', datetime.now().year))
+        self.week = int(os.getenv('NFL_WEEK', 0))
+        # API keys from environment (if required)
+        self.odds_api_key = os.getenv('ODDS_API_KEY')
+        # Yahoo API would require OAuth integration (not implemented)
+        self.weather_enabled = True
+        # Memory cache for heavy data
+        self._all_players = None
+        logging.info(f"DataCollector initialized for season {self.season}, week {self.week or 'current'}")
 
-@dataclass
-class PlayerData:
-    """Standardized player data structure"""
-    name: str
-    position: str
-    team: str
-    salary: Optional[int] = None
-    projection: float = 0.0
-    ceiling: float = 0.0
-    floor: float = 0.0
-    ownership: float = 5.0  # Default 5% ownership
-    injury_status: str = "healthy"
-    news_impact: int = 0  # 0-10 scale
-    opponent: str = ""
-    game_total: float = 45.0
-    weather_impact: int = 0  # 0-10 scale
+    def fetch_scoreboard(self):
+        """Fetch NFL schedule and scores from ESPN API (no auth required)"""
+        url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+        params = {"dates": self.season}
+        if self.week:
+            params.update({"seasontype": 2, "week": self.week})
+        response = requests.get(url, params=params)
+        if response.status_code != 200:
+            # If failure, could retry with backoff
+            logging.error(f"ESPN scoreboard API error: {response.status_code}")
+            return None
+        return response.json()
 
-class NFLDataCollector:
-    """
-    Production-grade NFL data collector using only free sources
-    Replaces FantasyPros completely with automated data collection
-    """
-    
-    def __init__(self, cache_manager=None):
-        self.cache_manager = cache_manager
-        self.session = httpx.AsyncClient(timeout=30.0)
-        
-        # NFL team mappings
-        self.team_abbreviations = {
-            'Arizona Cardinals': 'ARI', 'Atlanta Falcons': 'ATL', 'Baltimore Ravens': 'BAL',
-            'Buffalo Bills': 'BUF', 'Carolina Panthers': 'CAR', 'Chicago Bears': 'CHI',
-            'Cincinnati Bengals': 'CIN', 'Cleveland Browns': 'CLE', 'Dallas Cowboys': 'DAL',
-            'Denver Broncos': 'DEN', 'Detroit Lions': 'DET', 'Green Bay Packers': 'GB',
-            'Houston Texans': 'HOU', 'Indianapolis Colts': 'IND', 'Jacksonville Jaguars': 'JAX',
-            'Kansas City Chiefs': 'KC', 'Las Vegas Raiders': 'LV', 'Los Angeles Chargers': 'LAC',
-            'Los Angeles Rams': 'LAR', 'Miami Dolphins': 'MIA', 'Minnesota Vikings': 'MIN',
-            'New England Patriots': 'NE', 'New Orleans Saints': 'NO', 'New York Giants': 'NYG',
-            'New York Jets': 'NYJ', 'Philadelphia Eagles': 'PHI', 'Pittsburgh Steelers': 'PIT',
-            'San Francisco 49ers': 'SF', 'Seattle Seahawks': 'SEA', 'Tampa Bay Buccaneers': 'TB',
-            'Tennessee Titans': 'TEN', 'Washington Commanders': 'WAS'
-        }
-        
-        # Stadium coordinates for weather
-        self.stadium_coords = {
-            'ARI': (33.5276, -112.2626), 'ATL': (33.7555, -84.4006), 'BAL': (39.2781, -76.6226),
-            'BUF': (42.7738, -78.7870), 'CAR': (35.2258, -80.8528), 'CHI': (41.8623, -87.6167),
-            'CIN': (39.0955, -84.5161), 'CLE': (41.5058, -81.6996), 'DAL': (32.7473, -97.0945),
-            'DEN': (39.7439, -105.0201), 'DET': (42.3400, -83.0456), 'GB': (44.5013, -88.0622),
-            'HOU': (29.6844, -95.4105), 'IND': (39.7601, -86.1639), 'JAX': (30.3240, -81.6374),
-            'KC': (39.0489, -94.4839), 'LV': (36.0909, -115.1833), 'LAC': (33.8644, -118.2611),
-            'LAR': (34.0139, -118.2879), 'MIA': (25.9580, -80.2389), 'MIN': (44.9740, -93.2594),
-            'NE': (42.0909, -71.2643), 'NO': (29.9511, -90.0812), 'NYG': (40.8135, -74.0745),
-            'NYJ': (40.8135, -74.0745), 'PHI': (39.9008, -75.1675), 'PIT': (40.4468, -80.0158),
-            'SF': (37.4030, -121.9699), 'SEA': (47.5952, -122.3316), 'TB': (27.9759, -82.5033),
-            'TEN': (36.1665, -86.7713), 'WAS': (38.9076, -76.8645)
-        }
-        
-        self.active_sources = {}
-        self.last_update = {}
-        self.player_cache = {}
-        
-    async def get_current_player_pool(self) -> List[Dict[str, Any]]:
-        """
-        Get complete current player pool from all free sources
-        Returns standardized player data for DFS optimization
-        """
+    def fetch_odds(self):
+        """Fetch Vegas odds (spreads, totals) using The Odds API (if API key provided)"""
+        if not self.odds_api_key:
+            return None
         try:
-            logger.info("🔄 Collecting data from all free sources...")
-            
-            # Collect from all sources in parallel
-            tasks = [
-                self._collect_nfl_data_py(),
-                self._collect_espn_data(),
-                self._collect_yahoo_fantasy(),
-                self._collect_sleeper_data(),
-                self._collect_fantasy_nerds(),
-                self._collect_injury_reports(),
-                self._collect_weather_data(),
-                self._collect_vegas_lines(),
-            ]
-            
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Merge all data sources
-            all_players = {}
-            source_count = 0
-            
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    logger.warning(f"Source {i} failed: {result}")
-                    continue
-                    
-                if result and isinstance(result, list):
-                    source_count += 1
-                    for player in result:
-                        name = self._normalize_name(player['name'])
-                        if name not in all_players:
-                            all_players[name] = player
-                        else:
-                            # Merge data from multiple sources
-                            all_players[name] = self._merge_player_data(
-                                all_players[name], player
-                            )
-            
-            logger.info(f"✅ Collected {len(all_players)} players from {source_count} sources")
-            
-            # Apply salary estimates if missing
-            players_list = list(all_players.values())
-            players_with_salaries = await self._estimate_salaries(players_list)
-            
-            # Cache the results
-            if self.cache_manager:
-                await self.cache_manager.set(
-                    'current_player_pool',
-                    players_with_salaries,
-                    ttl=300  # 5 minutes
-                )
-            
-            return players_with_salaries
-            
+            url = "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds"
+            params = {
+                "apiKey": self.odds_api_key,
+                "regions": "us",
+                "markets": "spreads,totals",
+                "oddsFormat": "american"
+            }
+            resp = requests.get(url, params=params)
+            if resp.status_code != 200:
+                logging.warning(f"Odds API error: {resp.status_code}, {resp.text}")
+                return None
+            return resp.json()
         except Exception as e:
-            logger.error(f"Failed to collect player pool: {e}")
-            # Return cached data if available
-            if self.cache_manager:
-                cached = await self.cache_manager.get('current_player_pool')
-                if cached:
-                    logger.info("📋 Using cached player data")
-                    return cached
+            logging.error(f"Failed to fetch odds: {e}")
+            return None
+
+    def fetch_trending_players(self, hours=24):
+        """Get trending players from Sleeper (no auth required)"""
+        url = f"https://api.sleeper.app/v1/players/nfl/trending/add"
+        params = {"lookback_hours": hours, "limit": 25}
+        try:
+            resp = requests.get(url, params=params)
+            return resp.json()
+        except Exception as e:
+            logging.error(f"Error fetching trending players: {e}")
             return []
-    
-    async def _collect_nfl_data_py(self) -> List[Dict[str, Any]]:
-        """Collect data using nfl-data-py equivalent API calls"""
-        try:
-            # Get current week and season
-            current_week = self._get_current_nfl_week()
-            season = 2024
-            
-            # NFL-data-py style API endpoints
-            players_url = f"https://github.com/nflverse/nflverse-data/releases/latest/download/players.csv"
-            stats_url = f"https://github.com/nflverse/nflverse-data/releases/latest/download/player_stats.csv"
-            
-            players_data = []
-            
-            async with self.session as client:
-                # Get player roster data
-                try:
-                    response = await client.get(players_url)
-                    if response.status_code == 200:
-                        # Parse CSV data
-                        import io
-                        df = pd.read_csv(io.StringIO(response.text))
-                        
-                        # Convert to player objects
-                        for _, player in df.iterrows():
-                            if pd.notna(player.get('position')) and player['position'] in ['QB', 'RB', 'WR', 'TE']:
-                                players_data.append({
-                                    'name': player.get('display_name', ''),
-                                    'position': player.get('position', ''),
-                                    'team': player.get('team', ''),
-                                    'projection': self._estimate_projection(player.get('position', ''), player.get('team', '')),
-                                    'source': 'nfl-data-py'
-                                })
-                except Exception as e:
-                    logger.warning(f"nfl-data-py collection failed: {e}")
-            
-            self.active_sources['nfl_data_py'] = len(players_data) > 0
-            logger.info(f"📊 NFL-Data-Py: {len(players_data)} players")
-            return players_data
-            
-        except Exception as e:
-            logger.error(f"NFL-Data-Py error: {e}")
-            self.active_sources['nfl_data_py'] = False
-            return []
-    
-    async def _collect_espn_data(self) -> List[Dict[str, Any]]:
-        """Collect from ESPN hidden APIs (free, no auth required)"""
-        try:
-            players_data = []
-            
-            # ESPN API endpoints (no authentication required)
-            scoreboard_url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
-            
-            async with self.session as client:
-                # Get current games and teams
-                response = await client.get(scoreboard_url)
-                if response.status_code == 200:
-                    data = response.json()
-                    
-                    # Extract player data from game information
-                    for event in data.get('events', []):
-                        for competition in event.get('competitions', []):
-                            for competitor in competition.get('competitors', []):
-                                team = competitor.get('team', {})
-                                team_abbr = team.get('abbreviation', '')
-                                
-                                # Get team roster (simplified approach)
-                                players = await self._get_espn_team_players(team_abbr)
-                                players_data.extend(players)
-            
-            self.active_sources['espn'] = len(players_data) > 0
-            logger.info(f"🏈 ESPN: {len(players_data)} players")
-            return players_data
-            
-        except Exception as e:
-            logger.error(f"ESPN API error: {e}")
-            self.active_sources['espn'] = False
-            return []
-    
-    async def _collect_yahoo_fantasy(self) -> List[Dict[str, Any]]:
-        """Collect Yahoo Fantasy data (free tier available)"""
-        try:
-            players_data = []
-            
-            # Yahoo provides some public fantasy data
-            yahoo_url = "https://football.fantasysports.yahoo.com/f1/playerstatus"
-            
-            # Note: This would require OAuth setup for full access
-            # Using public endpoints where available
-            
-            # For now, return sample data structure
-            # In production, implement OAuth flow
-            
-            self.active_sources['yahoo'] = False  # Not implemented yet
-            return players_data
-            
-        except Exception as e:
-            logger.error(f"Yahoo API error: {e}")
-            self.active_sources['yahoo'] = False
-            return []
-    
-    async def _collect_sleeper_data(self) -> List[Dict[str, Any]]:
-        """Collect from Sleeper API (completely free, no auth required)"""
-        try:
-            players_data = []
-            
-            # Sleeper API endpoints (no authentication required)
-            players_url = "https://api.sleeper.app/v1/players/nfl"
-            trending_url = "https://api.sleeper.app/v1/players/nfl/trending/add"
-            
-            async with self.session as client:
-                # Get all NFL players
-                response = await client.get(players_url)
-                if response.status_code == 200:
-                    players = response.json()
-                    
-                    for player_id, player_info in players.items():
-                        if player_info.get('position') in ['QB', 'RB', 'WR', 'TE']:
-                            players_data.append({
-                                'name': f"{player_info.get('first_name', '')} {player_info.get('last_name', '')}".strip(),
-                                'position': player_info.get('position', ''),
-                                'team': player_info.get('team', ''),
-                                'projection': self._estimate_projection(
-                                    player_info.get('position', ''),
-                                    player_info.get('team', '')
-                                ),
-                                'injury_status': player_info.get('injury_status', 'healthy'),
-                                'source': 'sleeper'
-                            })
-                
-                # Get trending players for ownership insights
-                trending_response = await client.get(trending_url)
-                if trending_response.status_code == 200:
-                    trending = trending_response.json()
-                    # Update ownership projections based on trending data
-                    for trend_data in trending[:25]:  # Top 25 trending
-                        player_id = trend_data.get('player_id')
-                        # Update ownership for trending players
-            
-            self.active_sources['sleeper'] = len(players_data) > 0
-            logger.info(f"😴 Sleeper: {len(players_data)} players")
-            return players_data
-            
-        except Exception as e:
-            logger.error(f"Sleeper API error: {e}")
-            self.active_sources['sleeper'] = False
-            return []
-    
-    async def _collect_fantasy_nerds(self) -> List[Dict[str, Any]]:
-        """Collect from FantasyNerds free tier (100 calls/day)"""
-        try:
-            players_data = []
-            
-            # FantasyNerds free tier endpoints
-            # Note: Requires API key registration (free)
-            base_url = "https://www.fantasynerds.com/api/v1/fantasy"
-            
-            # This would need API key implementation
-            # For now, return empty but mark as potential source
-            
-            self.active_sources['fantasy_nerds'] = False  # Need API key setup
-            return players_data
-            
-        except Exception as e:
-            logger.error(f"FantasyNerds error: {e}")
-            self.active_sources['fantasy_nerds'] = False
-            return []
-    
-    async def _collect_injury_reports(self) -> List[Dict[str, Any]]:
-        """Collect injury data from multiple free sources"""
-        try:
-            injuries = []
-            
-            # ESPN injury API
-            injury_sources = [
-                "https://site.api.espn.com/apis/site/v2/sports/football/nfl/news",
-                "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/news"
-            ]
-            
-            async with self.session as client:
-                for url in injury_sources:
-                    try:
-                        response = await client.get(url)
-                        if response.status_code == 200:
-                            data = response.json()
-                            
-                            # Parse injury news
-                            for article in data.get('articles', [])[:10]:
-                                headline = article.get('headline', '').lower()
-                                if any(word in headline for word in ['injury', 'hurt', 'questionable', 'doubtful']):
-                                    injuries.append({
-                                        'headline': article.get('headline', ''),
-                                        'description': article.get('description', ''),
-                                        'published': article.get('published', ''),
-                                        'source': 'espn_news'
-                                    })
-                    except:
-                        continue
-            
-            logger.info(f"🏥 Injuries: {len(injuries)} reports")
-            return injuries
-            
-        except Exception as e:
-            logger.error(f"Injury collection error: {e}")
-            return []
-    
-    async def _collect_weather_data(self) -> Dict[str, Any]:
-        """Collect weather data from Weather.gov (free government service)"""
-        try:
-            weather_data = {}
-            
-            # Get current week's games
-            games = await self._get_current_games()
-            
-            async with self.session as client:
-                for game in games:
-                    home_team = game.get('home_team', '')
-                    if home_team in self.stadium_coords:
-                        lat, lon = self.stadium_coords[home_team]
-                        
-                        # Weather.gov API (free, no key required)
-                        points_url = f"https://api.weather.gov/points/{lat},{lon}"
-                        
-                        try:
-                            points_response = await client.get(
-                                points_url,
-                                headers={'User-Agent': 'DFS-Optimizer (contact@example.com)'}
-                            )
-                            
-                            if points_response.status_code == 200:
-                                points_data = points_response.json()
-                                forecast_url = points_data['properties']['forecast']
-                                
-                                forecast_response = await client.get(
-                                    forecast_url,
-                                    headers={'User-Agent': 'DFS-Optimizer (contact@example.com)'}
-                                )
-                                
-                                if forecast_response.status_code == 200:
-                                    forecast = forecast_response.json()
-                                    current_forecast = forecast['properties']['periods'][0]
-                                    
-                                    weather_data[home_team] = {
-                                        'temperature': current_forecast.get('temperature'),
-                                        'wind_speed': current_forecast.get('windSpeed', ''),
-                                        'conditions': current_forecast.get('shortForecast', ''),
-                                        'detailed': current_forecast.get('detailedForecast', ''),
-                                        'dfs_impact': self._calculate_weather_impact(current_forecast)
-                                    }
-                        except:
-                            continue
-            
-            logger.info(f"🌤️ Weather: {len(weather_data)} stadiums")
-            return weather_data
-            
-        except Exception as e:
-            logger.error(f"Weather collection error: {e}")
-            return {}
-    
-    async def _collect_vegas_lines(self) -> Dict[str, Any]:
-        """Collect Vegas lines from The Odds API (500 requests/month free)"""
-        try:
-            lines_data = {}
-            
-            # The Odds API (free tier)
-            # Note: Requires API key registration
-            odds_url = "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds"
-            
-            # This would need API key implementation
-            # For now, return sample structure
-            
-            logger.info("💰 Vegas lines: API key needed")
-            return lines_data
-            
-        except Exception as e:
-            logger.error(f"Vegas lines error: {e}")
-            return {}
-    
-    async def _get_espn_team_players(self, team_abbr: str) -> List[Dict[str, Any]]:
-        """Get team players from ESPN API"""
-        players = []
-        
-        # Sample players for each team (in production, this would be from API)
-        sample_players = {
-            'QB': [f'{team_abbr} QB1', f'{team_abbr} QB2'],
-            'RB': [f'{team_abbr} RB1', f'{team_abbr} RB2', f'{team_abbr} RB3'],
-            'WR': [f'{team_abbr} WR1', f'{team_abbr} WR2', f'{team_abbr} WR3', f'{team_abbr} WR4'],
-            'TE': [f'{team_abbr} TE1', f'{team_abbr} TE2']
-        }
-        
-        for position, names in sample_players.items():
-            for name in names:
-                players.append({
-                    'name': name,
-                    'position': position,
-                    'team': team_abbr,
-                    'projection': self._estimate_projection(position, team_abbr),
-                    'source': 'espn'
-                })
-        
-        return players
-    
-    def _estimate_projection(self, position: str, team: str) -> float:
-        """Estimate player projections based on position and team"""
-        base_projections = {
-            'QB': 18.5,
-            'RB': 12.8,
-            'WR': 11.2,
-            'TE': 8.7,
-            'DST': 7.5
-        }
-        
-        base = base_projections.get(position, 8.0)
-        
-        # Add some randomness and team adjustments
-        import random
-        team_adjustment = random.uniform(0.8, 1.2)
-        random_factor = random.uniform(0.85, 1.15)
-        
-        return round(base * team_adjustment * random_factor, 1)
-    
-    async def _estimate_salaries(self, players: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Estimate FanDuel salaries based on projections"""
-        salary_multipliers = {
-            'QB': 450,
-            'RB': 520,
-            'WR': 480,
-            'TE': 420,
-            'DST': 380
-        }
-        
-        for player in players:
-            if 'salary' not in player or player['salary'] is None:
-                position = player.get('position', '')
-                projection = player.get('projection', 8.0)
-                
-                multiplier = salary_multipliers.get(position, 450)
-                base_salary = int(projection * multiplier)
-                
-                # Add randomness and ensure FanDuel constraints
-                import random
-                variance = random.randint(-800, 800)
-                salary = max(4500, min(15000, base_salary + variance))
-                
-                # Round to nearest 100
-                player['salary'] = int(salary // 100) * 100
-                
-                # Calculate ceiling and floor
-                player['ceiling'] = round(projection * 1.4, 1)
-                player['floor'] = round(projection * 0.6, 1)
-        
-        return players
-    
-    def _merge_player_data(self, player1: Dict, player2: Dict) -> Dict:
-        """Merge player data from multiple sources"""
-        merged = player1.copy()
-        
-        # Take highest projection
-        if player2.get('projection', 0) > merged.get('projection', 0):
-            merged['projection'] = player2['projection']
-        
-        # Merge injury status
-        if player2.get('injury_status') != 'healthy':
-            merged['injury_status'] = player2.get('injury_status', 'healthy')
-        
-        # Update salary if missing or better
-        if 'salary' not in merged or merged['salary'] is None:
-            merged['salary'] = player2.get('salary')
-        
-        # Add source tracking
-        merged['sources'] = merged.get('sources', []) + [player2.get('source', 'unknown')]
-        
-        return merged
-    
-    def _normalize_name(self, name: str) -> str:
-        """Normalize player names for matching"""
-        if not name:
-            return ""
-        
-        # Clean up name
-        cleaned = name.strip().replace('.', '').replace("'", "")
-        
-        # Handle common variations
-        replacements = {
-            'Jr': '', 'Sr': '', 'III': '', 'II': '',
-            'D/ST': '', 'DST': ''
-        }
-        
-        for old, new in replacements.items():
-            cleaned = cleaned.replace(old, new)
-        
-        return ' '.join(cleaned.split())
-    
-    def _calculate_weather_impact(self, forecast: Dict) -> int:
-        """Calculate DFS weather impact (0-10 scale)"""
-        impact = 0
-        
-        conditions = forecast.get('shortForecast', '').lower()
-        wind_speed = forecast.get('windSpeed', '0 mph').lower()
-        temp = forecast.get('temperature', 70)
-        
-        # Wind impact
-        if 'mph' in wind_speed:
+
+    def fetch_all_players(self):
+        """Fetch complete NFL player database from Sleeper (cached after first call)"""
+        if self._all_players is None:
+            # Use caching: Load all_players once and store for reuse
             try:
-                speed = int(wind_speed.split()[0])
-                if speed >= 15:
-                    impact += 3
-                elif speed >= 10:
-                    impact += 1
-            except:
-                pass
-        
-        # Precipitation impact
-        if any(word in conditions for word in ['rain', 'snow', 'storm']):
-            impact += 2
-        
-        # Temperature impact
-        if temp <= 32:
-            impact += 2
-        elif temp >= 85:
-            impact += 1
-        
-        return min(impact, 10)
-    
-    def _get_current_nfl_week(self) -> int:
-        """Calculate current NFL week"""
-        # Simple calculation - in production use official NFL calendar
-        now = datetime.now()
-        season_start = datetime(2024, 9, 5)  # Approximate season start
-        
-        if now < season_start:
-            return 1
-        
-        weeks_passed = (now - season_start).days // 7
-        return min(weeks_passed + 1, 18)
-    
-    async def _get_current_games(self) -> List[Dict[str, Any]]:
-        """Get current week's games"""
-        # Sample games structure - in production get from API
-        return [
-            {'home_team': 'BUF', 'away_team': 'MIA'},
-            {'home_team': 'KC', 'away_team': 'DEN'},
-            {'home_team': 'DAL', 'away_team': 'NYG'},
-            # Add more games...
-        ]
-    
-    async def health_check(self) -> Dict[str, bool]:
-        """Check health of all data sources"""
-        health_status = {}
-        
-        # Test each source
-        sources = [
-            ('nfl_data_py', 'https://github.com/nflverse/nflverse-data/releases/latest/download/players.csv'),
-            ('espn', 'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard'),
-            ('sleeper', 'https://api.sleeper.app/v1/players/nfl'),
-            ('weather_gov', 'https://api.weather.gov/points/39.2781,-76.6226')
-        ]
-        
-        async with self.session as client:
-            for name, url in sources:
-                try:
-                    response = await client.get(url, timeout=5.0)
-                    health_status[name] = response.status_code == 200
-                except:
-                    health_status[name] = False
-        
-        return health_status
-    
-    async def get_active_sources(self) -> Dict[str, bool]:
-        """Get status of all active data sources"""
-        return self.active_sources.copy()
-    
-    async def get_recent_updates(self) -> List[Dict[str, Any]]:
-        """Get recent high-impact player updates"""
-        # This would track recent changes in player status, injuries, etc.
-        return []
-    
-    async def get_injury_report(self) -> List[Dict[str, Any]]:
-        """Get current injury report with DFS impact"""
-        injuries = await self._collect_injury_reports()
-        
-        # Add DFS impact scoring
-        for injury in injuries:
-            injury['dfs_impact'] = self._calculate_injury_impact(injury)
-        
-        return injuries
-    
-    def _calculate_injury_impact(self, injury: Dict) -> int:
-        """Calculate DFS impact of injury (0-10 scale)"""
-        headline = injury.get('headline', '').lower()
-        
-        impact = 0
-        
-        # Severity keywords
-        if 'out' in headline or 'ruled out' in headline:
-            impact += 8
-        elif 'doubtful' in headline:
-            impact += 6
-        elif 'questionable' in headline:
-            impact += 4
-        elif 'limited' in headline:
-            impact += 2
-        
-        return min(impact, 10)
-    
-    async def get_game_weather(self) -> List[Dict[str, Any]]:
-        """Get weather conditions for all games"""
-        weather = await self._collect_weather_data()
-        
-        weather_list = []
-        for team, conditions in weather.items():
-            weather_list.append({
-                'team': team,
-                'conditions': conditions,
-                'dfs_impact': conditions.get('dfs_impact', 0)
-            })
-        
-        return weather_list
-    
-    async def update_all_sources(self) -> None:
-        """Update all data sources"""
-        try:
-            # Force update player pool
-            await self.get_current_player_pool()
-            
-            # Update additional data
-            await self._collect_injury_reports()
-            await self._collect_weather_data()
-            
-            self.last_update['all_sources'] = datetime.utcnow()
-            
-        except Exception as e:
-            logger.error(f"Source update failed: {e}")
-    
-    async def force_update_all(self) -> List[Dict[str, Any]]:
-        """Force update all sources and return results"""
-        results = []
-        
-        sources = [
-            ('nfl_data_py', self._collect_nfl_data_py),
-            ('espn', self._collect_espn_data),
-            ('sleeper', self._collect_sleeper_data),
-            ('injuries', self._collect_injury_reports),
-            ('weather', self._collect_weather_data),
-        ]
-        
-        for name, func in sources:
-            try:
-                await func()
-                results.append({'source': name, 'success': True, 'error': None})
+                resp = requests.get("https://api.sleeper.app/v1/players/nfl")
+                resp.raise_for_status()
+                self._all_players = resp.json()
+                logging.info(f"Loaded {len(self._all_players)} players from Sleeper API.")
             except Exception as e:
-                results.append({'source': name, 'success': False, 'error': str(e)})
-        
-        return results
-    
-    async def close(self):
-        """Clean up resources"""
-        await self.session.aclose()
+                logging.error(f"Error fetching Sleeper players: {e}")
+                self._all_players = {}
+        return self._all_players
+
+    def fetch_weather(self, games):
+        """Fetch weather forecasts for stadiums via Weather.gov API"""
+        weather_info = {}
+        # Coordinates for some stadiums (extend as needed)
+        NFL_STADIUMS = {
+            'GB': {'lat': 44.5013, 'lon': -88.0622},
+            'CHI': {'lat': 41.8623, 'lon': -87.6167},
+            'BUF': {'lat': 42.7738, 'lon': -78.7870},
+            # ... add remaining stadium coordinates as needed
+        }
+        headers = {"User-Agent": "DFS Optimizer Bot (contact@example.com)"}
+        for game in games:
+            home = game['home_team']
+            if home in NFL_STADIUMS:
+                coords = NFL_STADIUMS[home]
+                try:
+                    points_url = f"https://api.weather.gov/points/{coords['lat']},{coords['lon']}"
+                    resp = requests.get(points_url, headers=headers)
+                    if resp.status_code != 200:
+                        continue
+                    grid_data = resp.json()
+                    forecast_url = grid_data['properties'].get('forecast')
+                    if forecast_url:
+                        forecast_resp = requests.get(forecast_url, headers=headers)
+                        if forecast_resp.status_code == 200:
+                            forecast = forecast_resp.json()
+                            if 'periods' in forecast.get('properties', {}):
+                                period = forecast['properties']['periods'][0]
+                                weather_info[home] = period.get('shortForecast', '')
+                except Exception as e:
+                    logging.error(f"Weather API error for {home}: {e}")
+        return weather_info
+
+    def fetch_yahoo_data(self):
+        """Placeholder for Yahoo API integration (OAuth required)."""
+        if os.getenv('YAHOO_CLIENT_ID'):
+            logging.info("Yahoo API integration not implemented.")
+        return None
+
+    def collect_weekly_data(self):
+        """Collect data for the current NFL week (games, odds, weather, players)."""
+        scoreboard = self.fetch_scoreboard()
+        if not scoreboard:
+            logging.error("No scoreboard data fetched.")
+            return None
+        games = []
+        team_name_map = {}
+        team_game_info = {}
+        current_week = None
+        try:
+            for event in scoreboard.get('events', []):
+                comp = event['competitions'][0]
+                teams = comp['competitors']
+                home_team = away_team = None
+                for t in teams:
+                    team_data = t['team']
+                    abbr = team_data.get('abbreviation')
+                    disp_name = team_data.get('displayName')
+                    if t.get('homeAway') == 'home':
+                        home_team = abbr
+                    else:
+                        away_team = abbr
+                    team_name_map[disp_name] = abbr
+                start = comp.get('date')
+                dt = None
+                if start:
+                    try:
+                        dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
+                    except Exception:
+                        dt = None
+                games.append({'home_team': home_team, 'away_team': away_team, 'start_time': dt})
+                if home_team and away_team:
+                    team_game_info[home_team] = {'opponent': away_team, 'start_time': dt}
+                    team_game_info[away_team] = {'opponent': home_team, 'start_time': dt}
+            current_week = scoreboard.get('week', {}).get('number') or scoreboard.get('week', {}).get('weekNumber')
+        except Exception as e:
+            logging.error(f"Error parsing scoreboard: {e}")
+        week_number = self.week or current_week
+        logging.info(f"Collecting data for Week {week_number}.")
+        # Vegas odds
+        odds_data = self.fetch_odds()
+        if odds_data:
+            for game in odds_data:
+                home_name = game.get('home_team')
+                away_name = game.get('away_team')
+                total = None
+                spread_home = None
+                for book in game.get('bookmakers', []):
+                    for market in book.get('markets', []):
+                        if market['key'] == 'totals':
+                            outcomes = market.get('outcomes', [])
+                            if outcomes:
+                                total = outcomes[0].get('point')
+                        if market['key'] == 'spreads':
+                            for outcome in market.get('outcomes', []):
+                                if outcome.get('name') == home_name:
+                                    spread_home = outcome.get('point')
+                if total is not None and spread_home is not None:
+                    try:
+                        total = float(total)
+                        spread_home = float(spread_home)
+                        home_score = (total / 2) - (spread_home / 2)
+                        away_score = total - home_score
+                        abbr_home = team_name_map.get(home_name)
+                        abbr_away = team_name_map.get(away_name)
+                        if abbr_home in team_game_info:
+                            team_game_info[abbr_home]['implied_total'] = round(home_score, 1)
+                        if abbr_away in team_game_info:
+                            team_game_info[abbr_away]['implied_total'] = round(away_score, 1)
+                    except Exception as e:
+                        logging.warning(f"Could not compute implied totals: {e}")
+        # Weather data
+        weather_info = {}
+        if self.weather_enabled:
+            weather_info = self.fetch_weather(games)
+            for team, forecast in weather_info.items():
+                if team in team_game_info:
+                    team_game_info[team]['weather'] = forecast
+        # Trending players
+        trending = self.fetch_trending_players(hours=72)
+        trending_ids = [str(p['player_id']) for p in trending] if trending else []
+        # Build player pool
+        players = []
+        all_players = self.fetch_all_players()
+        teams_playing = {g['home_team'] for g in games} | {g['away_team'] for g in games}
+        for pid, player in all_players.items():
+            team = player.get('team')
+            pos = player.get('position')
+            if not team or not pos or team not in teams_playing:
+                continue
+            if team not in team_game_info:
+                team_game_info[team] = {'opponent': None, 'start_time': None, 'count': {'QB': 0, 'RB': 0, 'WR': 0, 'TE': 0}}
+            if pos not in ['QB', 'RB', 'WR', 'TE']:
+                continue
+            if player.get('injury_status') in ['IR', 'O']:
+                continue
+            count = team_game_info[team]['count']
+            limit = {'QB': 1, 'RB': 2, 'WR': 3, 'TE': 1}[pos]
+            if count[pos] >= limit:
+                continue
+            team_game_info[team]['count'][pos] += 1
+            proj = 0.0
+            if pos == 'QB':
+                implied = team_game_info.get(team, {}).get('implied_total')
+                proj = 8 + 0.5 * implied if implied is not None else 18.0
+            elif pos == 'RB':
+                proj = 15.0 if count[pos] == 1 else 8.0
+            elif pos == 'WR':
+                proj = 12.0 if count[pos] == 1 else (10.0 if count[pos] == 2 else 8.0)
+            elif pos == 'TE':
+                proj = 8.0
+            player_entry = {
+                'id': pid,
+                'name': player.get('full_name') or player.get('name'),
+                'team': team,
+                'position': pos,
+                'projection': proj,
+                'salary': 0
+            }
+            players.append(player_entry)
+        # Add DST entries for each team
+        for team in teams_playing:
+            opp = team_game_info.get(team, {}).get('opponent')
+            if opp:
+                opp_implied = team_game_info.get(opp, {}).get('implied_total')
+                dst_proj = 6.0
+                if opp_implied is not None:
+                    dst_proj = 6 + (20 - opp_implied) / 2
+                if dst_proj < 3:
+                    dst_proj = 3.0
+                if dst_proj > 10:
+                    dst_proj = 10.0
+                players.append({
+                    'id': f"{team}_DST",
+                    'name': f"{team} DST",
+                    'team': team,
+                    'position': 'DST',
+                    'projection': round(dst_proj, 1),
+                    'salary': 0
+                })
+        # Assign salaries based on projection
+        for p in players:
+            proj = p['projection']
+            pos = p['position']
+            if pos == 'QB':
+                sal = int(proj * 400)
+            elif pos == 'RB':
+                sal = int(proj * 500)
+            elif pos == 'WR':
+                sal = int(proj * 500)
+            elif pos == 'TE':
+                sal = int(proj * 450)
+            elif pos == 'DST':
+                sal = int(proj * 500)
+            if pos == 'DST':
+                if sal < 3000: sal = 3000
+                if sal > 5500: sal = 5500
+            else:
+                if sal < 4000: sal = 4000
+                if sal > 11000: sal = 11000
+            p['salary'] = sal
+        # Boost projections for trending players
+        if trending_ids:
+            for p in players:
+                if p['id'] in trending_ids:
+                    p['projection'] = round(p['projection'] + 2.0, 1)
+        logging.info(f"Built player pool of {len(players)} players for optimization.")
+        return {'players': players, 'team_game_info': team_game_info, 'week': week_number}
