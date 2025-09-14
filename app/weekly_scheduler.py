@@ -1,6 +1,6 @@
-# app/weekly_scheduler.py
 import logging
 from datetime import datetime, timezone
+import pytz
 
 from app.data_collector import DataCollector
 from app.optimizer import Optimizer
@@ -106,11 +106,12 @@ def run_late_swap_lineup():
 
 def schedule_jobs(scheduler):
     logging.info("Scheduling weekly lineup optimizer tasks...")
+    eastern = pytz.timezone('America/New_York')
     try:
-        scheduler.add_job(run_initial_lineup, trigger='cron', day_of_week='tue', hour=3, minute=0, timezone='America/New_York', id='initial_lineup')
-        scheduler.add_job(run_midweek_update, trigger='cron', day_of_week='fri', hour=3, minute=0, timezone='America/New_York', id='midweek_update')
-        scheduler.add_job(run_final_lineup, trigger='cron', day_of_week='sun', hour=11, minute=30, timezone='America/New_York', id='final_lineup')
-        scheduler.add_job(run_late_swap_lineup, trigger='cron', day_of_week='sun', hour=16, minute=5, timezone='America/New_York', id='late_swap')
+        scheduler.add_job(run_initial_lineup, trigger='cron', day_of_week='tue', hour=3, minute=0, timezone=eastern, id='initial_lineup')
+        scheduler.add_job(run_midweek_update, trigger='cron', day_of_week='fri', hour=3, minute=0, timezone=eastern, id='midweek_update')
+        scheduler.add_job(run_final_lineup, trigger='cron', day_of_week='sun', hour=11, minute=30, timezone=eastern, id='final_lineup')
+        scheduler.add_job(run_late_swap_lineup, trigger='cron', day_of_week='sun', hour=16, minute=5, timezone=eastern, id='late_swap')
         logging.info("Weekly tasks scheduled (Tue/Fri/Sun).")
     except Exception as e:
         logging.error(f"Failed to schedule jobs: {e}")

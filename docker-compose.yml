@@ -1,23 +1,19 @@
 version: '3.8'
-
 services:
-  web:
-    container_name: dfs-web
+  app:
     build: .
     ports:
       - "8010:8000"
-    environment:
-      - DEBUG=${DEBUG:-false}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    env_file:
+      - .env
+    depends_on:
+      - redis
     volumes:
-      - ./app:/code/app
-      - ./data:/code/data
-      - ./logs:/code/logs
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      - ./data:/app/data
+      - ./logs:/app/logs
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+volumes:
+  redis_data:
