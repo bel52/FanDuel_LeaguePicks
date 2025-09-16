@@ -1,94 +1,93 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import PlainTextResponse, JSONResponse
-import logging
-from typing import Optional
+from fastapi import FastAPI, Query
+from fastapi.responses import ORJSONResponse, PlainTextResponse
+from typing import List
+from app.services.optimizer import generate_lineups
+from app.services import data
 
-from app.weekly_scheduler import data_collector, optimizer, ai_client, monte_carlo, schedule_jobs
-from apscheduler.schedulers.background import BackgroundScheduler
-
-app = FastAPI(title="FanDuel NFL DFS Optimizer")
-
-# Start scheduled weekly tasks on startup
-scheduler = BackgroundScheduler()
-schedule_jobs(scheduler)
-scheduler.start()
-
-@app.on_event("shutdown")
-def shutdown_event():
-    scheduler.shutdown()
+app = FastAPI(title="FanDuel League Picks", default_response_class=ORJSONResponse)
 
 @app.get("/health")
-def health():
-    return {"status": "ok"}
+async def health():
+    week = await data.try_load_from_espm_current_week() if hasattr(data, "try_load_from_espm_current_week") else 1
+    return {"status": "ok", "week": week}
 
 @app.get("/players/current")
-def players_current():
-    try:
-        data = data_collector.collect_weekly_data()
-        if not data:
-            raise HTTPException(status_code=503, detail="Data unavailable")
-        return {
-            "week": data.get("week"),
-            "count": len(data.get("players", [])),
-            "players": data.get("players", [])[:100],  # cap to 100 for payload size
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logging.exception("players_current failed")
-        raise HTTPException(status_code=500, detail=f"players_current error: {e}")
+async def players_current():
+    players = await data.get_players()
+    return {"week": await data.get_current_week(), "count": len(players), "players": players}
 
 @app.get("/optimize")
-def optimize_endpoint(game_type: str = "gpp", num_lineups: int = 1):
-    try:
-        data = data_collector.collect_weekly_data()
-        if not data:
-            raise HTTPException(status_code=503, detail="Failed to retrieve data for optimization")
-        players = data.get('players', [])
-        team_game_info = data.get('team_game_info', {})
-        if not players:
-            raise HTTPException(status_code=503, detail="No players available for optimization")
-        lineup_results = optimizer.generate_lineups(players, team_game_info, num_lineups=num_lineups, locked_players=None, game_type=game_type)
-        output = []
-        for lineup in lineup_results:
-            metrics = monte_carlo.simulate_lineup(lineup)
-            output.append({
-                "players": [{"position": p['position'], "name": p['name'], "team": p['team'], "projection": p['projection'], "salary": p['salary']} for p in lineup],
-                "metrics": {"proj": metrics['mean'], "stdev": metrics['stddev'], "p75": metrics['p75']}
-            })
-        return {"lineups": output}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logging.exception("optimize failed")
-        return JSONResponse(status_code=500, content={"error": "optimize_failed", "detail": str(e)})
+async def optimize(
+    game_type: str = Query("gpp", pattern="^(h2h|league|gpp)$"),
+    num_lineups: int = Query(1, ge=1, le=50),
+    uniqueness: int = Query(3, ge=0, le=9),
+):
+    players = await data.get_players()
+    lineups = generate_lineups(players, mode=game_type, num_lineups=num_lineups, uniqueness=uniqueness)
 
-@app.get("/optimize/text", response_class=PlainTextResponse)
-def optimize_text_endpoint(game_type: str = "gpp", num_lineups: int = 1):
-    try:
-        data = data_collector.collect_weekly_data()
-        if not data:
-            return "Error: failed to retrieve data.\n"
-        players = data.get('players', [])
-        team_game_info = data.get('team_game_info', {})
-        if not players:
-            return "Error: no players available.\n"
-        lineup_results = optimizer.generate_lineups(players, team_game_info, num_lineups=num_lineups, locked_players=None, game_type=game_type)
-        if not lineup_results:
-            return "No lineup generated.\n"
-        lines = []
-        for idx, lineup in enumerate(lineup_results, start=1):
-            lines.append(f"Lineup {idx}:")
-            for p in lineup:
-                lines.append(f"{p['position']}: {p['name']} ({p['team']}) - $${p['salary']} proj {p['projection']}")
-            metrics = monte_carlo.simulate_lineup(lineup)
-            lines.append(f"Projected total: {metrics['mean']} ± {metrics['stddev']} (75th %ile: {metrics['p75']})")
-            lines.append("")
-        text_output = "\n".join(lines)
-        if num_lineups == 1:
-            analysis = ai_client.analyze_lineup(lineup_results[0], team_game_info)
-            text_output += f"Analysis: {analysis}\n"
-        return text_output
-    except Exception as e:
-        logging.exception("optimize/text failed")
-        return f"Error: {e}\n"
+    def pack(roster: List[dict]):
+        total_salary = sum(int(p["salary"]) for p in roster)
+        total_proj = round(sum(float(p["projection"]) for p in roster), 2)
+        return {
+            "mode": game_type,
+            "total_salary": total_salary,
+            "total_projection": total_proj,
+            "players": [{
+                "id": p.get("id"),
+                "name": p.get("name"),
+                "team": p.get("team"),
+                "position": p.get("position"),
+                "salary": int(p.get("salary")),
+                "projection": float(p.get("projection")),
+            } for p in roster],
+        }
+
+    return {
+        "week": await data.get_current_week(),
+        "players_considered": len(players),
+        "count": len(lineups),
+        "lineups": [pack(r) for r in lineups],
+    }
+
+@app.get("/optimize/text")
+async def optimize_text(
+    game_type: str = Query("gpp", pattern="^(h2h|league|gpp)$"),
+    num_lineups: int = Query(1, ge=1, le=20),
+    uniqueness: int = Query(3, ge=0, le=9),
+):
+    players = await data.get_players()
+    lineups = generate_lineups(players, mode=game_type, num_lineups=num_lineups, uniqueness=uniqueness)
+
+    if not lineups:
+        return PlainTextResponse("No valid lineup generated. Check player pool, positions, or salary cap.", status_code=200)
+
+    cards = []
+    for i, roster in enumerate(lineups, start=1):
+        total_salary = sum(int(p["salary"]) for p in roster)
+        total_proj = round(sum(float(p["projection"]) for p in roster), 2)
+        by_pos = {}
+        for p in roster:
+            by_pos.setdefault(p["position"], []).append(f'{p["name"]} ({p["team"]}) ${p["salary"]} proj {p["projection"]:.1f}')
+        # FLEX is implied by counts; we still print 9 names total.
+        body_lines = []
+        for label in ["QB", "RB", "WR", "TE", "DST"]:
+            if label in by_pos:
+                for row in by_pos[label]:
+                    body_lines.append(f"{label}: {row}")
+        # Add remaining player as FLEX (RB/WR/TE) if we have 9 players already printed < 9
+        if len(body_lines) < 9 and len(roster) == 9:
+            flex = [p for p in roster if p["position"] in {"RB","WR","TE"}]
+            # Choose one not yet fully accounted for (simple heuristic)
+            body_lines.append("FLEX: " + f'{flex[-1]["name"]} ({flex[-1]["team"]}) ${flex[-1]["salary"]} proj {flex[-1]["projection"]:.1f}')
+
+        header = f"[{game_type.upper()}] Lineup #{i} | Salary: ${total_salary} | Proj: {total_proj}"
+        # Quick mode note
+        if game_type == "h2h":
+            note = "Note: Cash build — favors floor and stability."
+        elif game_type == "league":
+            note = "Note: Small-field — balanced floor/ceiling and value."
+        else:
+            note = "Note: GPP — ceiling/value biased for upside."
+        cards.append(header + "\n" + "\n".join(body_lines) + "\n" + note)
+
+    return PlainTextResponse("\n\n" + ("\n" + "-"*64 + "\n\n").join(cards))
