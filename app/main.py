@@ -1,93 +1,111 @@
-from fastapi import FastAPI, Query
-from fastapi.responses import ORJSONResponse, PlainTextResponse
-from typing import List
-from app.services.optimizer import generate_lineups
-from app.services import data
+from __future__ import annotations
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse, PlainTextResponse
+from typing import Optional, List, Dict, Any
 
-app = FastAPI(title="FanDuel League Picks", default_response_class=ORJSONResponse)
+from app.data_ingestion import weekly_player_pool
+from app.salary_provider import attach_salaries, FD_CAP
+from app.enhanced_optimizer import EnhancedDFSOptimizer
+
+app = FastAPI(title="FanDuel DFS Optimizer")
+
+@app.get("/")
+def root():
+    return {"ok": True, "version": "live-2025-09-16-c"}
 
 @app.get("/health")
-async def health():
-    week = await data.try_load_from_espm_current_week() if hasattr(data, "try_load_from_espm_current_week") else 1
-    return {"status": "ok", "week": week}
+def health_check():
+    return {"status": "ok", "version": "live-2025-09-16-c"}
 
-@app.get("/players/current")
-async def players_current():
-    players = await data.get_players()
-    return {"week": await data.get_current_week(), "count": len(players), "players": players}
-
-@app.get("/optimize")
-async def optimize(
-    game_type: str = Query("gpp", pattern="^(h2h|league|gpp)$"),
-    num_lineups: int = Query(1, ge=1, le=50),
-    uniqueness: int = Query(3, ge=0, le=9),
-):
-    players = await data.get_players()
-    lineups = generate_lineups(players, mode=game_type, num_lineups=num_lineups, uniqueness=uniqueness)
-
-    def pack(roster: List[dict]):
-        total_salary = sum(int(p["salary"]) for p in roster)
-        total_proj = round(sum(float(p["projection"]) for p in roster), 2)
-        return {
-            "mode": game_type,
-            "total_salary": total_salary,
-            "total_projection": total_proj,
-            "players": [{
-                "id": p.get("id"),
-                "name": p.get("name"),
-                "team": p.get("team"),
-                "position": p.get("position"),
-                "salary": int(p.get("salary")),
-                "projection": float(p.get("projection")),
-            } for p in roster],
-        }
-
+@app.get("/__debug")
+def debug_info():
+    routes = [r.path for r in app.router.routes]
     return {
-        "week": await data.get_current_week(),
-        "players_considered": len(players),
-        "count": len(lineups),
-        "lineups": [pack(r) for r in lineups],
+        "version": "live-2025-09-16-c",
+        "routes": routes,
+        "ingestion_has_weekly_player_pool": True,
+        "ingestion_defs": ["weekly_player_pool"],
     }
 
-@app.get("/optimize/text")
-async def optimize_text(
-    game_type: str = Query("gpp", pattern="^(h2h|league|gpp)$"),
-    num_lineups: int = Query(1, ge=1, le=20),
-    uniqueness: int = Query(3, ge=0, le=9),
+@app.get("/players/current")
+def players_current() -> Dict[str, Any]:
+    players, meta = weekly_player_pool()
+    payload = attach_salaries(players)
+    return {
+        "count": len(payload["players"]),
+        "players": payload["players"],
+        "meta": {**meta, "salary_source": payload["salary_source"], "cap": payload["cap"]},
+    }
+
+@app.get("/optimize")
+def optimize(
+    game_type: Optional[str] = "league",
+    num_lineups: Optional[int] = 1,  # reserved for portfolio; returns 1 for now
+    lock: Optional[List[str]] = None,
+    ban: Optional[List[str]] = None
 ):
-    players = await data.get_players()
-    lineups = generate_lineups(players, mode=game_type, num_lineups=num_lineups, uniqueness=uniqueness)
+    players, meta = weekly_player_pool()
+    payload = attach_salaries(players)
+    opt = EnhancedDFSOptimizer(payload["players"], cap=FD_CAP, locks=lock, bans=ban)
+    lineup, info = opt.optimize_one()
 
-    if not lineups:
-        return PlainTextResponse("No valid lineup generated. Check player pool, positions, or salary cap.", status_code=200)
+    if not lineup:
+        return JSONResponse({
+            "game_type": game_type,
+            "lineups": [{"players": [], "total_proj": 0, "total_salary": 0}],
+            "meta": {**meta, **info}
+        })
 
-    cards = []
-    for i, roster in enumerate(lineups, start=1):
-        total_salary = sum(int(p["salary"]) for p in roster)
-        total_proj = round(sum(float(p["projection"]) for p in roster), 2)
-        by_pos = {}
-        for p in roster:
-            by_pos.setdefault(p["position"], []).append(f'{p["name"]} ({p["team"]}) ${p["salary"]} proj {p["projection"]:.1f}')
-        # FLEX is implied by counts; we still print 9 names total.
-        body_lines = []
-        for label in ["QB", "RB", "WR", "TE", "DST"]:
-            if label in by_pos:
-                for row in by_pos[label]:
-                    body_lines.append(f"{label}: {row}")
-        # Add remaining player as FLEX (RB/WR/TE) if we have 9 players already printed < 9
-        if len(body_lines) < 9 and len(roster) == 9:
-            flex = [p for p in roster if p["position"] in {"RB","WR","TE"}]
-            # Choose one not yet fully accounted for (simple heuristic)
-            body_lines.append("FLEX: " + f'{flex[-1]["name"]} ({flex[-1]["team"]}) ${flex[-1]["salary"]} proj {flex[-1]["projection"]:.1f}')
+    total_salary = sum(int(p["salary"]) for p in lineup)
+    return JSONResponse({
+        "game_type": game_type,
+        "lineups": [{
+            "players": lineup,
+            "total_proj": info["total_proj"],
+            "total_salary": total_salary,
+        }],
+        "meta": {**meta, "cap": FD_CAP, "cap_used": info["cap_used"], "salary_source": "proxy"}
+    })
 
-        header = f"[{game_type.upper()}] Lineup #{i} | Salary: ${total_salary} | Proj: {total_proj}"
-        # Quick mode note
-        if game_type == "h2h":
-            note = "Note: Cash build — favors floor and stability."
-        elif game_type == "league":
-            note = "Note: Small-field — balanced floor/ceiling and value."
-        else:
-            note = "Note: GPP — ceiling/value biased for upside."
-        cards.append(header + "\n" + "\n".join(body_lines) + "\n" + note)
+@app.get("/optimize/text")
+def optimize_text(
+    game_type: Optional[str] = "league",
+    lock: Optional[List[str]] = None,
+    ban: Optional[List[str]] = None
+):
+    players, meta = weekly_player_pool()
+    payload = attach_salaries(players)
+    opt = EnhancedDFSOptimizer(payload["players"], cap=FD_CAP, locks=lock, bans=ban)
+    lineup, info = opt.optimize_one()
+    if not lineup:
+        warns = (meta.get("warnings") or []) + (info.get("warnings") or [])
+        msg = "No valid lineup."
+        if warns:
+            msg += " " + "; ".join(warns)
+        return PlainTextResponse(msg, status_code=200)
 
-    return PlainTextResponse("\n\n" + ("\n" + "-"*64 + "\n\n").join(cards))
+    order = ["QB", "RB", "WR", "TE", "FLEX", "DST"]
+    by_slot: Dict[str, List[Dict[str, Any]]] = {k: [] for k in order}
+    for p in lineup:
+        by_slot.setdefault(p["pos_out"], []).append(p)
+
+    lines = []
+    for slot in order:
+        for p in by_slot.get(slot, []):
+            opp = p.get("opponent", "") or ""
+            opp_str = f" vs {opp}" if opp else ""
+            lines.append(f"{slot}: {p['name']} ({p['team']}{opp_str}) — {float(p['proj']):.2f} proj — ${int(p['salary']):,}")
+
+    total_proj = info["total_proj"]
+    total_salary = sum(int(p["salary"]) for p in lineup)
+    lines.append("")
+    lines.append(f"Total Salary: ${total_salary:,} / ${FD_CAP:,}")
+    lines.append(f"Projected Total: {total_proj:.2f}")
+
+    warns = (meta.get("warnings") or []) + (info.get("warnings") or [])
+    if warns:
+        lines.append("")
+        for w in warns:
+            lines.append(f"NOTE: {w}")
+
+    return PlainTextResponse("\n".join(lines), status_code=200)
