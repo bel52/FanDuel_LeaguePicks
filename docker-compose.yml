@@ -5,8 +5,10 @@ services:
     container_name: dfs-web
     ports:
       - "8010:8010"
+    env_file:
+      - .env
     environment:
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
     depends_on:
       - redis
     volumes:
