@@ -1,1 +1,1 @@
-# marks app/ as a package
+# Makes 'app' a package.

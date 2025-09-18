@@ -1,20 +1,35 @@
-from pydantic import BaseModel
+from __future__ import annotations
 import os
+from pathlib import Path
+from dotenv import load_dotenv
 
-class Settings(BaseModel):
-    # External APIs (all optional; we auto-detect availability)
-    ODDS_API_KEY: str | None = os.getenv("ODDS_API_KEY")
+ROOT = Path(__file__).resolve().parents[1]
+ENV_FILE = ROOT / ".env"
+if ENV_FILE.exists():
+    load_dotenv(ENV_FILE)
 
-    # App/runtime
-    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
-    PORT: int = int(os.getenv("PORT", "8010"))
+APP_PORT = int(os.getenv("APP_PORT", "8010"))
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+SALARY_CAP = int(os.getenv("SALARY_CAP", "60000"))
 
-    # Strategy knobs
-    MAX_LINEUPS: int = int(os.getenv("MAX_LINEUPS", "20"))
-    GAME_TYPE_DEFAULT: str = os.getenv("GAME_TYPE_DEFAULT", "league")  # 'league' or 'h2h'
-    FLEX_POSITIONS: tuple[str, ...] = ("RB", "WR", "TE")
+ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
+OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
-    # Locking / late-swap (foundation)
-    LOCK_WINDOW_MINUTES: int = int(os.getenv("LOCK_WINDOW_MINUTES", "0"))  # 0 = lock at kickoff
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.1"))
+OPENAI_TIMEOUT_SECS = int(os.getenv("OPENAI_TIMEOUT_SECS", "40"))
 
-settings = Settings()
+ODDS_API_REGION = os.getenv("ODDS_API_REGION", "us")
+ODDS_API_MARKETS = os.getenv("ODDS_API_MARKETS", "h2h,totals,spreads")
+ODDS_API_SPORT = os.getenv("ODDS_API_SPORT", "americanfootball_nfl")
+
+BASELINE_WEEK = int(os.getenv("BASELINE_WEEK", "0"))
+ODDS_IMPLIED_MULTIPLIER = float(os.getenv("ODDS_IMPLIED_MULTIPLIER", "0.08"))
+WEATHER_WIND_PENALTY = float(os.getenv("WEATHER_WIND_PENALTY", "0.03"))
+WEATHER_RAIN_PENALTY = float(os.getenv("WEATHER_RAIN_PENALTY", "0.04"))
+
+DATA_DIR = ROOT / "data"
+INPUT_DIR = DATA_DIR / "input"
+EXPORTS_DIR = DATA_DIR / "exports"
+LOG_DIR = ROOT / "logs"

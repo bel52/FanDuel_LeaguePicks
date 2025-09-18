@@ -1,20 +1,12 @@
-version: "3.8"
 services:
-  dfs-web:
+  fanduel_lp:
     build: .
-    container_name: dfs-web
-    ports:
-      - "8010:8010"
+    container_name: fanduel_leaguepicks
     env_file:
       - .env
-    environment:
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
-    depends_on:
-      - redis
+    ports:
+      - "8010:8010"
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
-
-  redis:
-    image: redis:latest
-    container_name: dfs-redis
+    restart: unless-stopped

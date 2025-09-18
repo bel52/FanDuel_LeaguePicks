@@ -1,111 +1,81 @@
 from __future__ import annotations
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
-from typing import Optional, List, Dict, Any
+from typing import List
+import json
 
-from app.data_ingestion import weekly_player_pool
-from app.salary_provider import attach_salaries, FD_CAP
-from app.enhanced_optimizer import EnhancedDFSOptimizer
+from app.config import APP_PORT, LOG_LEVEL, BASELINE_WEEK
+from app.models import Player, PlayersResponse, OptimizeResponse, Lineup
+from app.utils import ensure_dirs
+from app.data_sources import load_players
+from app.odds import fetch_odds, implied_total_boost
+from app.weather import weather_adjustment
+from app.ai import tweak_projections_with_ai, ai_available
+from app.optimizer import select_optimal
 
-app = FastAPI(title="FanDuel DFS Optimizer")
+app = FastAPI(title="FanDuel LeaguePicks", version="1.1.1")
 
-@app.get("/")
+@app.on_event("startup")
+def _startup():
+    ensure_dirs()
+
+@app.get("/", response_class=PlainTextResponse)
 def root():
-    return {"ok": True, "version": "live-2025-09-16-c"}
+    return "FanDuel LeaguePicks is running. Try /players/current or /optimize/text?game_type=gpp"
 
-@app.get("/health")
-def health_check():
-    return {"status": "ok", "version": "live-2025-09-16-c"}
+def _apply_context_adjustments(players: List[Player]) -> List[Player]:
+    odds_blob = fetch_odds()
+    updated = []
+    for p in players:
+        mult = implied_total_boost(p.team, odds_blob)
+        proj = p.projection * mult
+        updated.append(p.copy(update={"projection": proj}))
+    return updated
 
-@app.get("/__debug")
-def debug_info():
-    routes = [r.path for r in app.router.routes]
-    return {
-        "version": "live-2025-09-16-c",
-        "routes": routes,
-        "ingestion_has_weekly_player_pool": True,
-        "ingestion_defs": ["weekly_player_pool"],
-    }
+@app.get("/players/current", response_model=PlayersResponse)
+def get_players_current():
+    base = load_players()
+    with_odds = _apply_context_adjustments(base)
+    final_players, ai_note = tweak_projections_with_ai(with_odds, context_hint="NFL main slate focus.")
+    return PlayersResponse(week=BASELINE_WEEK, count=len(final_players), players=final_players)
 
-@app.get("/players/current")
-def players_current() -> Dict[str, Any]:
-    players, meta = weekly_player_pool()
-    payload = attach_salaries(players)
-    return {
-        "count": len(payload["players"]),
-        "players": payload["players"],
-        "meta": {**meta, "salary_source": payload["salary_source"], "cap": payload["cap"]},
-    }
+@app.get("/optimize/json", response_model=OptimizeResponse)
+def optimize_json(game_type: str = Query("gpp")):
+    base = load_players()
+    adjusted = _apply_context_adjustments(base)
+    players_ai, ai_comment = tweak_projections_with_ai(adjusted, context_hint=f"Optimize for {game_type.upper()} strategy.")
+    chosen, total_salary, total_proj, notes = select_optimal(players_ai, game_type=game_type)  # type: ignore
+    lineup = Lineup(players=chosen, total_salary=total_salary, projected_points=total_proj,
+                    game_type=game_type, notes=notes, ai_commentary=ai_comment)
+    meta = {"ai_enabled": ai_available()}
+    return OptimizeResponse(lineup=lineup, metadata=meta)
 
-@app.get("/optimize")
-def optimize(
-    game_type: Optional[str] = "league",
-    num_lineups: Optional[int] = 1,  # reserved for portfolio; returns 1 for now
-    lock: Optional[List[str]] = None,
-    ban: Optional[List[str]] = None
-):
-    players, meta = weekly_player_pool()
-    payload = attach_salaries(players)
-    opt = EnhancedDFSOptimizer(payload["players"], cap=FD_CAP, locks=lock, bans=ban)
-    lineup, info = opt.optimize_one()
-
-    if not lineup:
-        return JSONResponse({
-            "game_type": game_type,
-            "lineups": [{"players": [], "total_proj": 0, "total_salary": 0}],
-            "meta": {**meta, **info}
-        })
-
-    total_salary = sum(int(p["salary"]) for p in lineup)
-    return JSONResponse({
-        "game_type": game_type,
-        "lineups": [{
-            "players": lineup,
-            "total_proj": info["total_proj"],
-            "total_salary": total_salary,
-        }],
-        "meta": {**meta, "cap": FD_CAP, "cap_used": info["cap_used"], "salary_source": "proxy"}
-    })
-
-@app.get("/optimize/text")
-def optimize_text(
-    game_type: Optional[str] = "league",
-    lock: Optional[List[str]] = None,
-    ban: Optional[List[str]] = None
-):
-    players, meta = weekly_player_pool()
-    payload = attach_salaries(players)
-    opt = EnhancedDFSOptimizer(payload["players"], cap=FD_CAP, locks=lock, bans=ban)
-    lineup, info = opt.optimize_one()
-    if not lineup:
-        warns = (meta.get("warnings") or []) + (info.get("warnings") or [])
-        msg = "No valid lineup."
-        if warns:
-            msg += " " + "; ".join(warns)
-        return PlainTextResponse(msg, status_code=200)
-
-    order = ["QB", "RB", "WR", "TE", "FLEX", "DST"]
-    by_slot: Dict[str, List[Dict[str, Any]]] = {k: [] for k in order}
-    for p in lineup:
-        by_slot.setdefault(p["pos_out"], []).append(p)
-
+@app.get("/optimize/text", response_class=PlainTextResponse)
+def optimize_text(game_type: str = Query("gpp")):
+    res = optimize_json(game_type=game_type)
+    l = res.lineup
     lines = []
-    for slot in order:
-        for p in by_slot.get(slot, []):
-            opp = p.get("opponent", "") or ""
-            opp_str = f" vs {opp}" if opp else ""
-            lines.append(f"{slot}: {p['name']} ({p['team']}{opp_str}) — {float(p['proj']):.2f} proj — ${int(p['salary']):,}")
-
-    total_proj = info["total_proj"]
-    total_salary = sum(int(p["salary"]) for p in lineup)
-    lines.append("")
-    lines.append(f"Total Salary: ${total_salary:,} / ${FD_CAP:,}")
-    lines.append(f"Projected Total: {total_proj:.2f}")
-
-    warns = (meta.get("warnings") or []) + (info.get("warnings") or [])
-    if warns:
+    lines.append(f"Week: {BASELINE_WEEK}")
+    lines.append(f"Game type: {l.game_type}")
+    lines.append(f"Projected points: {l.projected_points:.2f}")
+    lines.append(f"Salary: {l.total_salary}")
+    lines.append("Roster:")
+    for p in l.players:
+        lines.append(f" - {p.position}  {p.name} ({p.team})  ${p.salary}  proj {p.projection:.2f}")
+    if l.notes:
         lines.append("")
-        for w in warns:
-            lines.append(f"NOTE: {w}")
+        lines.append(f"Optimizer notes: {l.notes}")
+    if l.ai_commentary:
+        lines.append("")
+        lines.append(f"AI: {l.ai_commentary}")
+    return "\n".join(lines)
 
-    return PlainTextResponse("\n".join(lines), status_code=200)
+@app.post("/ingest/players")
+async def ingest_players(file: UploadFile = File(...)):
+    from app.config import INPUT_DIR
+    path = INPUT_DIR / "players.sample.json"
+    raw = await file.read()
+    data = json.loads(raw.decode("utf-8"))
+    _ = [Player(**p) for p in data]
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return JSONResponse({"ok": True, "count": len(data), "saved": str(path)})

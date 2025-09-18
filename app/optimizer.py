@@ -1,76 +1,71 @@
-# app/optimizer.py
-import pulp
+from __future__ import annotations
+from typing import List, Tuple
+from dataclasses import dataclass
 
-class Optimizer:
-    def __init__(self, salary_cap=60000):
-        self.salary_cap = salary_cap
+from app.models import Player, GameType, FLEX_ELIGIBLE
+from app.config import SALARY_CAP
 
-    def generate_lineups(self, players, team_game_info, num_lineups=1, locked_players=None, game_type='gpp'):
-        prob = pulp.LpProblem('DFS_Lineup', pulp.LpMaximize)
-        x = pulp.LpVariable.dicts('x', range(len(players)), lowBound=0, upBound=1, cat='Binary')
-        qb_idx = [i for i,p in enumerate(players) if p['position'] == 'QB']
-        rb_idx = [i for i,p in enumerate(players) if p['position'] == 'RB']
-        wr_idx = [i for i,p in enumerate(players) if p['position'] == 'WR']
-        te_idx = [i for i,p in enumerate(players) if p['position'] == 'TE']
-        dst_idx = [i for i,p in enumerate(players) if p['position'] == 'DST']
-        locked_idx = []
-        remaining_positions = {'QB': 1, 'RB': 2, 'WR': 3, 'TE': 1, 'FLEX': 1, 'DST': 1}
-        remaining_salary_cap = self.salary_cap
-        if locked_players:
-            for lp in locked_players:
-                for i,p in enumerate(players):
-                    if p['id'] == lp['id']:
-                        locked_idx.append(i)
-                        pos = p['position']
-                        if pos in ['RB','WR','TE']:
-                            if remaining_positions.get(pos, 0) == 0 and remaining_positions['FLEX'] > 0:
-                                remaining_positions['FLEX'] -= 1
-                            else:
-                                remaining_positions[pos] = max(0, remaining_positions[pos] - 1)
-                        elif pos in ['QB','DST']:
-                            remaining_positions[pos] = max(0, remaining_positions[pos] - 1)
-                        remaining_salary_cap -= p['salary']
-                        break
-        # Objective: maximize total projected points
-        prob += pulp.lpSum([players[i]['projection'] * x[i] for i in range(len(players)) if i not in locked_idx])
-        # Roster constraints
-        prob += pulp.lpSum([x[i] for i in qb_idx if i not in locked_idx]) == remaining_positions['QB']
-        prob += pulp.lpSum([x[i] for i in dst_idx if i not in locked_idx]) == remaining_positions['DST']
-        prob += pulp.lpSum([x[i] for i in rb_idx if i not in locked_idx]) >= remaining_positions['RB']
-        prob += pulp.lpSum([x[i] for i in wr_idx if i not in locked_idx]) >= remaining_positions['WR']
-        prob += pulp.lpSum([x[i] for i in te_idx if i not in locked_idx]) >= remaining_positions['TE']
-        total_rwt = remaining_positions['RB'] + remaining_positions['WR'] + remaining_positions['TE'] + remaining_positions['FLEX']
-        prob += pulp.lpSum([x[i] for i in rb_idx + wr_idx + te_idx if i not in locked_idx]) == total_rwt
-        prob += pulp.lpSum([players[i]['salary'] * x[i] for i in range(len(players)) if i not in locked_idx]) <= remaining_salary_cap
-        if game_type.lower() == 'gpp':
-            # QB stack: if QB selected, at least one same-team WR/TE selected
-            for i in qb_idx:
-                if i in locked_idx: 
-                    continue
-                team = players[i]['team']
-                receiver_indices = [j for j,p in enumerate(players) if p['team'] == team and p['position'] in ['WR','TE'] and j not in locked_idx]
-                if receiver_indices:
-                    prob += x[i] <= pulp.lpSum([x[j] for j in receiver_indices])
-            # Avoid offensive player against own DST
-            for i in dst_idx:
-                if i in locked_idx:
-                    continue
-                team = players[i]['team']
-                opp_team = team_game_info.get(team, {}).get('opponent')
-                if opp_team:
-                    opp_offense = [j for j,p in enumerate(players) if p['team'] == opp_team and p['position'] in ['QB','RB','WR','TE'] and j not in locked_idx]
-                    for j in opp_offense:
-                        prob += x[i] + x[j] <= 1
-        solutions = []
-        for lineup_num in range(num_lineups):
-            prob.solve(pulp.PULP_CBC_CMD(msg=False))
-            if pulp.LpStatus[prob.status] != 'Optimal':
-                break
-            chosen_idx = [i for i in range(len(players)) if i not in locked_idx and pulp.value(x[i]) == 1]
-            lineup = locked_players.copy() if locked_players else []
-            for idx in chosen_idx:
-                lineup.append(players[idx])
-            solutions.append(sorted(lineup, key=lambda p: p['position']))
-            if lineup_num < num_lineups - 1:
-                prob += pulp.lpSum([x[i] for i in chosen_idx]) <= total_rwt - 1
-        return solutions
+@dataclass
+class RosterRule:
+    qbs: int = 1
+    rbs: int = 2
+    wrs: int = 3
+    tes: int = 1
+    flex: int = 1
+    defs: int = 1
+
+def select_optimal(players: List[Player], game_type: GameType = "gpp") -> Tuple[List[Player], int, float, str]:
+    rules = RosterRule()
+    pool = list(players)
+    by_pos = lambda pos: [p for p in pool if p.position == pos]
+    sort_key = lambda p: (p.projection / max(1, p.salary), p.projection)
+
+    chosen: List[Player] = []
+    def take(best_from: List[Player], n: int):
+        return sorted(best_from, key=sort_key, reverse=True)[:max(0, n)]
+
+    chosen += take(by_pos("QB"), rules.qbs)
+    chosen += take(by_pos("RB"), rules.rbs)
+    chosen += take(by_pos("WR"), rules.wrs)
+    chosen += take(by_pos("TE"), rules.tes)
+    chosen += take(by_pos("DEF"), rules.defs)
+
+    used_ids = {p.id for p in chosen}
+    remaining_cap = SALARY_CAP - sum(p.salary for p in chosen)
+
+    flex_cands = [p for p in pool if p.position in FLEX_ELIGIBLE and p.id not in used_ids]
+    flex_cands = sorted(flex_cands, key=lambda p: p.projection, reverse=True)
+    for p in flex_cands:
+        if p.salary <= remaining_cap:
+            chosen.append(p)
+            used_ids.add(p.id)
+            remaining_cap -= p.salary
+            break
+
+    def try_improve():
+        nonlocal chosen, remaining_cap
+        current_salary = sum(p.salary for p in chosen)
+        current_proj = sum(p.projection for p in chosen)
+        for i, p_out in enumerate(chosen):
+            candidates = [x for x in pool if x.position == p_out.position and x.id not in used_ids]
+            if p_out.position in FLEX_ELIGIBLE:
+                candidates += [x for x in pool if x.position in FLEX_ELIGIBLE and x.id not in used_ids]
+            for p_in in sorted(candidates, key=lambda x: x.projection, reverse=True)[:25]:
+                new_salary = current_salary - p_out.salary + p_in.salary
+                new_proj = current_proj - p_out.projection + p_in.projection
+                if new_salary <= SALARY_CAP and new_proj > current_proj + 0.15:
+                    used_ids.remove(p_out.id)
+                    chosen[i] = p_in
+                    used_ids.add(p_in.id)
+                    remaining_cap = SALARY_CAP - new_salary
+                    return True
+        return False
+
+    for _ in range(6):
+        if not try_improve():
+            break
+
+    total_salary = sum(p.salary for p in chosen)
+    total_proj = sum(p.projection for p in chosen)
+    notes = f"Greedy+local optimization. Salary used {total_salary}/{SALARY_CAP}."
+    return chosen, total_salary, total_proj, notes
