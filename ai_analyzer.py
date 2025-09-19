@@ -1,6 +1,6 @@
-import openai
+from openai import OpenAI
 import json
-from typing import Dict, List, Optional
+from typing import Dict, List
 import asyncio
 from tenacity import retry, stop_after_attempt, wait_exponential
 import logging
@@ -18,10 +18,12 @@ class AIAnalyzer:
         
     def initialize_clients(self):
         """Initialize AI clients if API keys are available"""
-        if config.OPENAI_API_KEY:
-            openai.api_key = config.OPENAI_API_KEY
-            self.openai_client = openai.OpenAI(api_key=config.OPENAI_API_KEY)
+        try:
+            self.openai_client = OpenAI(api_key=(config.OPENAI_API_KEY or None))
             logger.info("OpenAI client initialized")
+        except Exception as e:
+            logger.warning(f"OpenAI client not initialized: {e}")
+            self.openai_client = None
         
         if config.ANTHROPIC_API_KEY:
             try:
@@ -34,7 +36,6 @@ class AIAnalyzer:
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     async def analyze_slate(self, players: List[Player], games: List, use_claude: bool = False) -> Dict:
         """Analyze entire slate for optimal strategies"""
-        
         if use_claude and self.anthropic_client:
             return await self._analyze_with_claude(players, games)
         elif self.openai_client:
@@ -44,9 +45,8 @@ class AIAnalyzer:
             return self._rule_based_analysis(players, games)
     
     async def _analyze_with_gpt(self, players: List[Player], games: List) -> Dict:
-        """Analyze using GPT-4"""
-        # Prepare data for token efficiency
-        player_data = self._prepare_player_data(players[:50])  # Limit for tokens
+        """Analyze using GPT-4 family"""
+        player_data = self._prepare_player_data(players[:50])  # keep tokens reasonable
         game_data = self._prepare_game_data(games)
         
         prompt = f"""You are an expert DFS analyst. Analyze this NFL slate:
@@ -73,34 +73,40 @@ Provide analysis in this exact JSON format:
         {{"primary": "QB Name", "stack": ["WR1", "WR2"], "leverage": "Low ownership with high correlation"}}
     ]
 }}"""
-        
         try:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",  # Cost-effective model
+            resp = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "You are a DFS expert focused on finding edges in NFL contests."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,
-                max_tokens=2000,
-                response_format={"type": "json_object"}
+                max_tokens=2000
+                # NOTE: intentionally not using response_format due to pydantic strictness in current SDK
             )
-            
-            result = json.loads(response.choices[0].message.content)
-            
-            # Log cost
-            cost = estimate_cost(prompt, response.choices[0].message.content, "gpt-4o-mini")
+            content = resp.choices[0].message.content
+            # Some SDKs may return list of content parts; normalize to string
+            if isinstance(content, list):
+                content = "".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content)
+            try:
+                result = json.loads(content)
+            except json.JSONDecodeError:
+                # Last resort: extract JSON block
+                import re
+                m = re.search(r'\{.*\}', content, re.DOTALL)
+                result = json.loads(m.group()) if m else self._rule_based_analysis(players, games)
+
+            cost = estimate_cost(prompt, content, "gpt-4o-mini")
             logger.info(f"GPT analysis cost: ${cost:.4f}")
-            
             return result
-            
+
         except Exception as e:
             logger.error(f"GPT analysis failed: {e}")
             return self._rule_based_analysis(players, games)
     
     async def _analyze_with_claude(self, players: List[Player], games: List) -> Dict:
-        """Analyze using Claude for more complex reasoning"""
-        player_data = self._prepare_player_data(players[:100])  # Claude handles more context
+        """Analyze using Claude for more context"""
+        player_data = self._prepare_player_data(players[:100])
         game_data = self._prepare_game_data(games)
         
         prompt = f"""Analyze this NFL DFS slate with focus on tournament-winning strategies.
@@ -115,25 +121,19 @@ Provide comprehensive analysis including:
 4. Lineup construction strategies for different contest types
 
 Format as JSON with keys: game_stacks, leverage_plays, fade_candidates, construction_rules"""
-        
         try:
             response = self.anthropic_client.messages.create(
                 model="claude-3-sonnet-20240229",
                 max_tokens=3000,
                 messages=[{"role": "user", "content": prompt}]
             )
-            
-            # Parse Claude's response
             content = response.content[0].text
-            # Extract JSON from response (Claude might add explanation)
             import re
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
             if json_match:
                 return json.loads(json_match.group())
-            
         except Exception as e:
             logger.error(f"Claude analysis failed: {e}")
-        
         return self._rule_based_analysis(players, games)
     
     def _rule_based_analysis(self, players: List[Player], games: List) -> Dict:
@@ -145,8 +145,6 @@ Format as JSON with keys: game_stacks, leverage_plays, fade_candidates, construc
             "weather_impacts": [],
             "contrarian_stacks": []
         }
-        
-        # Identify high-total games for stacking
         for game in games:
             if hasattr(game, 'over_under') and game.over_under >= 47:
                 analysis["game_stacks"].append({
@@ -155,8 +153,6 @@ Format as JSON with keys: game_stacks, leverage_plays, fade_candidates, construc
                     "correlation_plays": ["QB", "WR1", "WR2", "OPP_WR1"],
                     "reasoning": "High total game with shootout potential"
                 })
-        
-        # Find value plays
         sorted_players = sorted(players, key=lambda p: p.value, reverse=True)
         for player in sorted_players[:10]:
             if player.ownership_projection and player.ownership_projection < 10:
@@ -165,8 +161,6 @@ Format as JSON with keys: game_stacks, leverage_plays, fade_candidates, construc
                     "projected_ownership": player.ownership_projection,
                     "upside_scenario": f"High value at {player.value:.2f} pts/$1000"
                 })
-        
-        # Identify chalk to fade
         for player in players:
             if player.ownership_projection and player.ownership_projection > 30:
                 analysis["fade_candidates"].append({
@@ -174,11 +168,9 @@ Format as JSON with keys: game_stacks, leverage_plays, fade_candidates, construc
                     "projected_ownership": player.ownership_projection,
                     "concerns": "High ownership reduces tournament leverage"
                 })
-        
         return analysis
     
     def _prepare_player_data(self, players: List[Player]) -> List[Dict]:
-        """Prepare player data for AI analysis"""
         return [
             {
                 'name': p.name,
@@ -193,7 +185,6 @@ Format as JSON with keys: game_stacks, leverage_plays, fade_candidates, construc
         ]
     
     def _prepare_game_data(self, games: List) -> List[Dict]:
-        """Prepare game data for AI analysis"""
         game_list = []
         for game in games:
             if hasattr(game, 'over_under'):
@@ -205,12 +196,9 @@ Format as JSON with keys: game_stacks, leverage_plays, fade_candidates, construc
         return game_list
     
     async def analyze_lineup(self, lineup: Lineup, contest_type: str = "gpp") -> Dict:
-        """Analyze a specific lineup for strengths/weaknesses"""
         if not self.openai_client:
             return {"analysis": "AI analysis unavailable", "score": 7.0}
-        
         lineup_str = self._format_lineup(lineup)
-        
         prompt = f"""Analyze this DFS lineup for {contest_type} contests:
 
 {lineup_str}
@@ -223,27 +211,24 @@ Rate the lineup (1-10) and provide:
 5. Ownership leverage
 
 Format as JSON with keys: rating, strengths, weaknesses, improvements, correlation_score"""
-        
         try:
-            response = self.openai_client.chat.completions.create(
+            resp = self.openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=1000,
-                response_format={"type": "json_object"}
+                max_tokens=1000
             )
-            
-            return json.loads(response.choices[0].message.content)
-            
+            content = resp.choices[0].message.content
+            if isinstance(content, list):
+                content = "".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content)
+            return json.loads(content)
         except Exception as e:
             logger.error(f"Lineup analysis failed: {e}")
             return {"rating": 7.0, "analysis": "Analysis failed"}
     
     def _format_lineup(self, lineup: Lineup) -> str:
-        """Format lineup for display"""
         lines = []
         for player in lineup.players:
             lines.append(f"{player.position.value}: {player.name} ({player.team}) - ${player.salary} - {player.projected_points:.1f} pts")
-        
         lines.append(f"\nTotal Salary: ${lineup.total_salary}")
         lines.append(f"Total Projected: {lineup.total_projected:.1f}")
         return "\n".join(lines)

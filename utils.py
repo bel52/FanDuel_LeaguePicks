@@ -1,91 +1,74 @@
-import time
 import json
-import hashlib
-from functools import wraps, lru_cache
-from typing import Any, Callable
+import time
 import logging
-import asyncio
+import requests
+from functools import wraps
 
 logger = logging.getLogger(__name__)
 
-def exponential_backoff(max_retries: int = 3):
-    """Decorator for exponential backoff retry logic"""
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            for attempt in range(max_retries):
+def retry_with_backoff(tries=3, base_delay=2, factor=2):
+    def deco(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            delay = base_delay
+            for attempt in range(1, tries + 1):
                 try:
-                    return await func(*args, **kwargs)
+                    return fn(*args, **kwargs)
                 except Exception as e:
-                    if attempt == max_retries - 1:
+                    if attempt == tries:
+                        logger.error(f"{fn.__name__} failed after {tries} attempts: {e}")
                         raise
-                    wait_time = (2 ** attempt) * 2
-                    logger.warning(f"Attempt {attempt + 1} failed: {e}. Retrying in {wait_time}s...")
-                    await asyncio.sleep(wait_time)
-            return None
+                    logger.warning(f"Attempt {attempt} failed: {e}. Retrying in {delay}s...")
+                    time.sleep(delay)
+                    delay *= factor
         return wrapper
-    return decorator
+    return deco
 
-def cache_result(ttl: int = 300):
-    """Cache function results with TTL"""
-    def decorator(func):
-        cache = {}
-        cache_time = {}
-        
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            # Create cache key
-            key = hashlib.md5(
-                f"{func.__name__}:{str(args)}:{str(kwargs)}".encode()
-            ).hexdigest()
-            
-            # Check cache
-            if key in cache and time.time() - cache_time[key] < ttl:
-                return cache[key]
-            
-            # Execute function
-            result = await func(*args, **kwargs)
-            
-            # Update cache
-            cache[key] = result
-            cache_time[key] = time.time()
-            
-            return result
-        return wrapper
-    return decorator
+@retry_with_backoff(tries=3, base_delay=2, factor=2)
+def http_get(url: str, headers: dict | None = None, timeout: int = 15):
+    """HTTP GET that ALWAYS returns JSON-like python objects (dict/list).
+       If the body isn't JSON, returns {'_raw': <text>} to keep .get() safe."""
+    resp = requests.get(url, headers=headers or {}, timeout=timeout)
+    resp.raise_for_status()
 
-def count_tokens(text: str, model: str = "gpt-4o-mini") -> int:
-    """Count tokens for a given text (simplified without tiktoken)"""
-    # Rough approximation: 1 token ≈ 4 characters for English text
-    # This is less accurate but avoids the dependency
-    return len(text) // 4
+    # Try direct JSON
+    try:
+        data = resp.json()
+        # If JSON is a string (e.g., "\"ok\""), try to parse again if it looks like nested JSON
+        if isinstance(data, str):
+            s = data.strip()
+            if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+                return json.loads(s)
+            # Return as dict so callers using .get() won't crash
+            return {"_raw": data}
+        return data
+    except ValueError:
+        # Not JSON — return wrapped text
+        text = resp.text
+        s = text.strip()
+        if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+            try:
+                return json.loads(s)
+            except Exception:
+                pass
+        return {"_raw": text}
 
-def estimate_cost(prompt: str, completion: str, model: str = "gpt-4o-mini") -> float:
-    """Estimate API cost"""
-    input_tokens = count_tokens(prompt, model)
-    output_tokens = count_tokens(completion, model)
-    
-    pricing = {
-        "gpt-4o-mini": {"input": 0.15/1000000, "output": 0.60/1000000},
-        "gpt-4o": {"input": 5.00/1000000, "output": 15.00/1000000},
-        "claude-3-sonnet": {"input": 3.00/1000000, "output": 15.00/1000000}
-    }
-    
-    if model in pricing:
-        cost = (input_tokens * pricing[model]["input"] + 
-                output_tokens * pricing[model]["output"])
-        return cost
-    return 0.0
+def count_tokens(prompt: str) -> int:
+    # Lightweight token approximation to avoid hard deps here
+    return max(1, len(prompt.split()))
 
-def format_currency(amount: float) -> str:
-    """Format as currency"""
-    return f"${amount:,.2f}"
+def estimate_cost(prompt: str, completion: str, model: str) -> float:
+    # Simple cost estimator placeholder; adjust with your real rates if needed
+    in_tok = count_tokens(prompt)
+    out_tok = count_tokens(completion)
+    rate_per_1k = 0.005  # example rate for mini-tier model
+    return ((in_tok + out_tok) / 1000.0) * rate_per_1k
 
-def calculate_value(projected_points: float, salary: int) -> float:
-    """Calculate player value (points per $1000)"""
-    if salary <= 0:
-        return 0.0
-    return (projected_points / salary) * 1000
-
-# Add a timedelta import if needed
-from datetime import timedelta
+def format_currency(value) -> str:
+    """Format currency cleanly for CLI output."""
+    try:
+        v = float(value)
+    except Exception:
+        return str(value)
+    # show no decimals for whole dollars; two decimals otherwise
+    return f"${v:,.0f}" if v.is_integer() else f"${v:,.2f}"
