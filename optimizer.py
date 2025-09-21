@@ -1,333 +1,480 @@
+"""
+Advanced DFS lineup optimizer with correlation modeling
+"""
 import pulp
+from ortools.linear_solver import pywraplp
 import numpy as np
-from typing import List, Dict, Optional
-from scipy import stats
-from itertools import combinations
-import logging
-from models import Player, Lineup, OptimizationSettings
+from typing import List, Dict, Optional, Tuple
+import pandas as pd
+import polars as pl
+from loguru import logger
 from config import config
+import itertools
+import random
 
-logger = logging.getLogger(__name__)
-
-class DFSOptimizer:
+class AdvancedLineupOptimizer:
+    """Production-grade lineup optimizer with advanced features"""
+    
     def __init__(self):
-        self.position_limits = {
-            'QB': {'min': 1, 'max': 1},
-            'RB': {'min': 2, 'max': 3},
-            'WR': {'min': 3, 'max': 4},
-            'TE': {'min': 1, 'max': 2},
-            'DST': {'min': 1, 'max': 1}
-        }
-        self.correlations = config.CORRELATIONS
+        self.salary_cap = config.SALARY_CAP
+        self.position_requirements = config.POSITION_REQUIREMENTS
+        self.solver_type = 'CBC'  # Can switch to 'GLPK' or 'OR-Tools'
         
-    def optimize(self, players: List[Player], settings: OptimizationSettings) -> List[Lineup]:
-        """Main optimization function"""
-        logger.info(f"Optimizing {settings.num_lineups} lineups...")
+    def optimize_single_lineup(self, players_df: pl.DataFrame, 
+                              constraints: Optional[Dict] = None) -> Dict:
+        """
+        Optimize a single lineup using integer linear programming
         
-        lineups = []
-        used_players = set()
-        
-        for i in range(settings.num_lineups):
-            # Apply exposure limits
-            available_players = self._apply_exposure_limits(players, lineups, settings.max_exposure)
+        Args:
+            players_df: Polars DataFrame with player data
+            constraints: Additional constraints (stacking, exclusions, etc)
             
-            # Generate lineup based on type
-            if settings.lineup_type == "cash":
-                lineup = self._optimize_cash_lineup(available_players, settings)
-            elif settings.lineup_type == "gpp":
-                lineup = self._optimize_gpp_lineup(available_players, settings, used_players)
+        Returns:
+            Optimal lineup dictionary
+        """
+        try:
+            logger.info("Starting single lineup optimization")
+            
+            # Convert to pandas for PuLP compatibility
+            players_pd = players_df.to_pandas()
+            
+            # Create optimization problem
+            prob = pulp.LpProblem("DFS_Lineup_Optimization", pulp.LpMaximize)
+            
+            # Decision variables (binary: player selected or not)
+            player_vars = {}
+            for idx in players_pd.index:
+                player_vars[idx] = pulp.LpVariable(f"player_{idx}", cat='Binary')
+            
+            # Objective function: maximize projected points
+            prob += pulp.lpSum([
+                players_pd.loc[idx, 'adjusted_projection'] * player_vars[idx]
+                for idx in players_pd.index
+            ]), "Total_Projected_Points"
+            
+            # Constraint: Salary cap
+            prob += pulp.lpSum([
+                players_pd.loc[idx, 'Salary'] * player_vars[idx]
+                for idx in players_pd.index
+            ]) <= self.salary_cap, "Salary_Cap"
+            
+            # Position constraints
+            for position, count in self.position_requirements.items():
+                if position == 'FLEX':
+                    # FLEX can be RB, WR, or TE
+                    flex_positions = ['RB', 'WR', 'TE']
+                    eligible = players_pd[players_pd['Position'].isin(flex_positions)].index
+                    
+                    # Account for players already used in RB/WR/TE slots
+                    rb_used = pulp.lpSum([
+                        player_vars[idx] for idx in players_pd[players_pd['Position'] == 'RB'].index
+                    ])
+                    wr_used = pulp.lpSum([
+                        player_vars[idx] for idx in players_pd[players_pd['Position'] == 'WR'].index
+                    ])
+                    te_used = pulp.lpSum([
+                        player_vars[idx] for idx in players_pd[players_pd['Position'] == 'TE'].index
+                    ])
+                    
+                    # Total FLEX-eligible players must account for position requirements
+                    prob += pulp.lpSum([player_vars[idx] for idx in eligible]) >= \
+                           self.position_requirements['RB'] + \
+                           self.position_requirements['WR'] + \
+                           self.position_requirements['TE'] + 1, f"FLEX_Min"
+                else:
+                    eligible = players_pd[players_pd['Position'] == position].index
+                    prob += pulp.lpSum([
+                        player_vars[idx] for idx in eligible
+                    ]) == count, f"Position_{position}"
+            
+            # Total players constraint
+            prob += pulp.lpSum([
+                player_vars[idx] for idx in players_pd.index
+            ]) == 9, "Total_Players"
+            
+            # Apply additional constraints
+            if constraints:
+                prob = self._apply_constraints(prob, players_pd, player_vars, constraints)
+            
+            # Solve
+            prob.solve(pulp.PULP_CBC_CMD(msg=0))
+            
+            # Extract lineup
+            if prob.status == pulp.LpStatusOptimal:
+                lineup = self._extract_lineup(players_pd, player_vars)
+                logger.info(f"Optimization successful. Score: {pulp.value(prob.objective):.2f}")
+                return lineup
             else:
-                lineup = self._optimize_balanced_lineup(available_players, settings)
+                logger.error(f"Optimization failed with status: {pulp.LpStatus[prob.status]}")
+                return {}
+                
+        except Exception as e:
+            logger.error(f"Optimization error: {e}")
+            return {}
+    
+    def optimize_multiple_lineups(self, players_df: pl.DataFrame, 
+                                 num_lineups: int,
+                                 max_overlap: int = 6,
+                                 ownership_limits: Optional[Dict] = None) -> List[Dict]:
+        """
+        Generate multiple diverse lineups for tournaments
+        
+        Args:
+            players_df: Player data
+            num_lineups: Number of lineups to generate
+            max_overlap: Maximum players shared between lineups
+            ownership_limits: Max exposure limits per player
+            
+        Returns:
+            List of optimized lineups
+        """
+        lineups = []
+        used_combinations = set()
+        
+        logger.info(f"Generating {num_lineups} lineups with max overlap of {max_overlap}")
+        
+        for i in range(num_lineups):
+            # Add diversity constraints based on previous lineups
+            constraints = {
+                'exclude_players': [],
+                'max_exposure': ownership_limits or {},
+                'force_different': i > 0
+            }
+            
+            # Calculate player exposure
+            if lineups:
+                player_exposure = self._calculate_exposure(lineups)
+                for player_name, exposure in player_exposure.items():
+                    if ownership_limits and player_name in ownership_limits:
+                        if exposure >= ownership_limits[player_name] * len(lineups):
+                            constraints['exclude_players'].append(player_name)
+            
+            # Add overlap constraints
+            if lineups and i > 0:
+                constraints['previous_lineups'] = lineups
+                constraints['max_overlap'] = max_overlap
+            
+            # Generate lineup
+            lineup = self.optimize_single_lineup(players_df, constraints)
             
             if lineup:
-                lineups.append(lineup)
-                # Track used players for diversity
-                for player in lineup.players:
-                    used_players.add(player.id)
+                # Check uniqueness
+                lineup_key = tuple(sorted([p['name'] for p in lineup['players']]))
+                if lineup_key not in used_combinations:
+                    lineups.append(lineup)
+                    used_combinations.add(lineup_key)
+                    logger.info(f"Generated lineup {i+1}/{num_lineups}")
+                else:
+                    logger.warning(f"Duplicate lineup generated, retrying...")
+                    # Retry with more constraints
+                    continue
         
         return lineups
     
-    def _optimize_cash_lineup(self, players: List[Player], settings: OptimizationSettings) -> Optional[Lineup]:
-        """Optimize for cash games (50/50s, H2H) - focus on floor"""
-        prob = pulp.LpProblem("DFS_Cash_Optimization", pulp.LpMaximize)
+    def optimize_with_correlation(self, players_df: pl.DataFrame,
+                                 correlation_matrix: Dict) -> Dict:
+        """
+        Optimize lineup with correlation constraints for stacking
         
-        # Decision variables
-        player_vars = {}
-        for i, player in enumerate(players):
-            player_vars[i] = pulp.LpVariable(f"player_{i}", cat='Binary')
-        
-        # Objective: maximize floor (use projected points if floor not available)
-        prob += pulp.lpSum([
-            (players[i].floor if players[i].floor else players[i].projected_points * 0.85) * player_vars[i]
-            for i in range(len(players))
-        ])
-        
-        # Add constraints
-        prob = self._add_base_constraints(prob, players, player_vars, settings)
-        
-        # Solve
-        prob.solve(pulp.PULP_CBC_CMD(msg=0))
-        
-        if prob.status == pulp.LpStatusOptimal:
-            return self._extract_lineup(prob, players, player_vars)
-        return None
-    
-    def _optimize_gpp_lineup(self, players: List[Player], settings: OptimizationSettings, 
-                            used_players: set) -> Optional[Lineup]:
-        """Optimize for GPPs (tournaments) - focus on ceiling and differentiation"""
-        prob = pulp.LpProblem("DFS_GPP_Optimization", pulp.LpMaximize)
-        
-        player_vars = {}
-        for i, player in enumerate(players):
-            player_vars[i] = pulp.LpVariable(f"player_{i}", cat='Binary')
-        
-        # Objective: maximize ceiling with ownership leverage
-        prob += pulp.lpSum([
-            self._calculate_gpp_score(players[i], used_players) * player_vars[i]
-            for i in range(len(players))
-        ])
-        
-        # Add constraints
-        prob = self._add_base_constraints(prob, players, player_vars, settings)
-        
-        # Add stacking constraints for GPP
-        if settings.stack_rules:
-            prob = self._add_stacking_constraints(prob, players, player_vars, settings.stack_rules)
-        
-        # Add correlation constraints
-        if settings.correlation_rules:
-            prob = self._add_correlation_constraints(prob, players, player_vars)
-        
-        prob.solve(pulp.PULP_CBC_CMD(msg=0))
-        
-        if prob.status == pulp.LpStatusOptimal:
-            return self._extract_lineup(prob, players, player_vars)
-        return None
-    
-    def _optimize_balanced_lineup(self, players: List[Player], settings: OptimizationSettings) -> Optional[Lineup]:
-        """Balanced approach for mixed contests"""
-        prob = pulp.LpProblem("DFS_Balanced_Optimization", pulp.LpMaximize)
-        
-        player_vars = {}
-        for i, player in enumerate(players):
-            player_vars[i] = pulp.LpVariable(f"player_{i}", cat='Binary')
-        
-        # Objective: balance between floor and ceiling
-        prob += pulp.lpSum([
-            (players[i].projected_points * 0.7 + 
-             (players[i].ceiling if players[i].ceiling else players[i].projected_points * 1.15) * 0.3) * player_vars[i]
-            for i in range(len(players))
-        ])
-        
-        prob = self._add_base_constraints(prob, players, player_vars, settings)
-        
-        prob.solve(pulp.PULP_CBC_CMD(msg=0))
-        
-        if prob.status == pulp.LpStatusOptimal:
-            return self._extract_lineup(prob, players, player_vars)
-        return None
-    
-    def _add_base_constraints(self, prob, players: List[Player], player_vars: dict, 
-                             settings: OptimizationSettings):
-        """Add basic constraints (salary, positions)"""
-        # Salary constraint
-        prob += pulp.lpSum([
-            players[i].salary * player_vars[i] for i in range(len(players))
-        ]) <= config.SALARY_CAP
-        
-        # Minimum salary constraint
-        prob += pulp.lpSum([
-            players[i].salary * player_vars[i] for i in range(len(players))
-        ]) >= settings.min_salary
-        
-        # Position constraints
-        for position, limits in self.position_limits.items():
-            position_players = [i for i, p in enumerate(players) if p.position.value == position]
+        Args:
+            players_df: Player data
+            correlation_matrix: Player correlation values
             
-            if position == 'RB' or position == 'WR' or position == 'TE':
-                # Flex position handling
-                flex_eligible = [i for i, p in enumerate(players) 
-                               if p.position.value in ['RB', 'WR', 'TE']]
-                
-                # Ensure minimum positions filled
-                prob += pulp.lpSum([player_vars[i] for i in position_players]) >= limits['min']
-                
-                # Total flex-eligible players equals required spots
-                if position == 'RB':
-                    total_rb_wr_te = 7  # 2 RB + 3 WR + 1 TE + 1 FLEX = 7
-                    prob += pulp.lpSum([player_vars[i] for i in flex_eligible]) == total_rb_wr_te
-            else:
-                # Fixed positions (QB, DST)
-                prob += pulp.lpSum([player_vars[i] for i in position_players]) == limits['min']
+        Returns:
+            Correlation-optimized lineup
+        """
+        # Find optimal stacks first
+        stacks = self._find_game_stacks(players_df)
         
-        # Exactly 9 players
-        prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == 9
+        best_lineup = None
+        best_score = 0
         
-        # No duplicate teams for DST
-        dst_players = [i for i, p in enumerate(players) if p.position.value == 'DST']
-        for team in set(p.team for p in players if p.position.value != 'DST'):
-            team_players = [i for i, p in enumerate(players) 
-                          if p.team == team and p.position.value != 'DST']
-            team_dst = [i for i, p in enumerate(players) 
-                       if p.team == team and p.position.value == 'DST']
+        for stack in stacks[:5]:  # Try top 5 stacks
+            constraints = {
+                'force_stack': stack,
+                'correlation_bonus': True
+            }
             
-            if team_players and team_dst:
-                # If DST is selected, no players from that team
-                for dst_idx in team_dst:
-                    for player_idx in team_players:
-                        prob += player_vars[dst_idx] + player_vars[player_idx] <= 1
+            lineup = self.optimize_single_lineup(players_df, constraints)
+            
+            if lineup:
+                # Calculate combined score with correlation
+                base_score = lineup['total_projection']
+                correlation_score = self._calculate_correlation_score(
+                    lineup['players'], 
+                    correlation_matrix
+                )
+                combined_score = base_score * (1 + correlation_score * 0.1)
+                
+                if combined_score > best_score:
+                    best_score = combined_score
+                    best_lineup = lineup
+                    best_lineup['correlation_score'] = correlation_score
+        
+        return best_lineup or {}
+    
+    def _apply_constraints(self, prob, players_df, player_vars, constraints):
+        """Apply additional constraints to optimization problem"""
+        
+        # Exclude specific players
+        if 'exclude_players' in constraints:
+            for player_name in constraints['exclude_players']:
+                player_idx = players_df[players_df['Name'] == player_name].index
+                for idx in player_idx:
+                    prob += player_vars[idx] == 0, f"Exclude_{player_name}"
+        
+        # Force include specific players
+        if 'include_players' in constraints:
+            for player_name in constraints['include_players']:
+                player_idx = players_df[players_df['Name'] == player_name].index
+                for idx in player_idx:
+                    prob += player_vars[idx] == 1, f"Include_{player_name}"
+        
+        # Stacking constraints
+        if 'force_stack' in constraints:
+            stack = constraints['force_stack']
+            
+            # Force QB-WR stack from same team
+            if 'qb' in stack and 'receivers' in stack:
+                qb_idx = players_df[players_df['Name'] == stack['qb']].index
+                if len(qb_idx) > 0:
+                    prob += player_vars[qb_idx[0]] == 1, "Force_QB"
+                    
+                    # Force at least one receiver from same team
+                    receiver_indices = []
+                    for receiver in stack['receivers']:
+                        rec_idx = players_df[players_df['Name'] == receiver].index
+                        if len(rec_idx) > 0:
+                            receiver_indices.extend(rec_idx)
+                    
+                    if receiver_indices:
+                        prob += pulp.lpSum([
+                            player_vars[idx] for idx in receiver_indices
+                        ]) >= 1, "Force_Stack_Receiver"
+        
+        # Overlap constraints with previous lineups
+        if 'previous_lineups' in constraints and 'max_overlap' in constraints:
+            for i, prev_lineup in enumerate(constraints['previous_lineups']):
+                prev_players = [p['name'] for p in prev_lineup['players']]
+                prev_indices = players_df[players_df['Name'].isin(prev_players)].index
+                
+                prob += pulp.lpSum([
+                    player_vars[idx] for idx in prev_indices
+                ]) <= constraints['max_overlap'], f"Max_Overlap_{i}"
         
         return prob
     
-    def _add_stacking_constraints(self, prob, players: List[Player], player_vars: dict, 
-                                 stack_rules: dict):
-        """Add stacking constraints for correlation plays"""
-        if stack_rules.get('qb_stack'):
-            # QB must have at least one pass catcher from same team
-            qbs = [i for i, p in enumerate(players) if p.position.value == 'QB']
-            
-            for qb_idx in qbs:
-                qb_team = players[qb_idx].team
-                team_catchers = [i for i, p in enumerate(players) 
-                               if p.team == qb_team and p.position.value in ['WR', 'TE']]
-                
-                if team_catchers:
-                    # If QB selected, at least 1 catcher from same team
-                    prob += pulp.lpSum([player_vars[i] for i in team_catchers]) >= player_vars[qb_idx]
-        
-        if stack_rules.get('game_stack'):
-            # Bring-back correlation from opposing team
-            for qb_idx in [i for i, p in enumerate(players) if p.position.value == 'QB']:
-                qb = players[qb_idx]
-                opp_players = [i for i, p in enumerate(players)
-                             if p.team == qb.opponent and p.position.value in ['WR', 'TE', 'RB']]
-                
-                if opp_players:
-                    # If QB selected, consider opponent correlation
-                    prob += pulp.lpSum([player_vars[i] for i in opp_players]) >= player_vars[qb_idx] * 0.5
-        
-        return prob
-    
-    def _add_correlation_constraints(self, prob, players: List[Player], player_vars: dict):
-        """Add correlation-based constraints"""
-        # Negative correlation: QB-DST
-        for qb_idx in [i for i, p in enumerate(players) if p.position.value == 'QB']:
-            qb = players[qb_idx]
-            opp_dst = [i for i, p in enumerate(players)
-                      if p.position.value == 'DST' and p.team == qb.opponent]
-            
-            # Avoid QB facing opposing DST
-            for dst_idx in opp_dst:
-                prob += player_vars[qb_idx] + player_vars[dst_idx] <= 1
-        
-        return prob
-    
-    def _calculate_gpp_score(self, player: Player, used_players: set) -> float:
-        """Calculate GPP-optimized score with ownership leverage"""
-        base_score = player.ceiling if player.ceiling else player.projected_points * 1.2
-        
-        # Ownership leverage
-        if player.ownership_projection:
-            if player.ownership_projection < 10:  # Low owned
-                base_score *= 1.15
-            elif player.ownership_projection > 30:  # High owned
-                base_score *= 0.9
-        
-        # Differentiation bonus
-        if player.id not in used_players:
-            base_score *= 1.05
-        
-        # Weather adjustment
-        base_score *= player.weather_impact
-        
-        return base_score
-    
-    def _apply_exposure_limits(self, players: List[Player], existing_lineups: List[Lineup], 
-                              max_exposure: float) -> List[Player]:
-        """Filter players based on exposure limits"""
-        if not existing_lineups:
-            return players
-        
-        player_counts = {}
-        for lineup in existing_lineups:
-            for player in lineup.players:
-                player_counts[player.id] = player_counts.get(player.id, 0) + 1
-        
-        max_count = int(len(existing_lineups) * max_exposure)
-        
-        return [p for p in players if player_counts.get(p.id, 0) < max_count]
-    
-    def _extract_lineup(self, prob, players: List[Player], player_vars: dict) -> Lineup:
+    def _extract_lineup(self, players_df, player_vars) -> Dict:
         """Extract lineup from solved problem"""
         selected_players = []
-        for i in range(len(players)):
-            if player_vars[i].varValue == 1:
-                selected_players.append(players[i])
+        total_salary = 0
+        total_projection = 0
         
-        total_salary = sum(p.salary for p in selected_players)
-        total_projected = sum(p.projected_points for p in selected_players)
-        
-        return Lineup(
-            players=selected_players,
-            total_salary=total_salary,
-            total_projected=total_projected,
-            stack_score=self._calculate_stack_score(selected_players),
-            ownership_sum=sum(p.ownership_projection or 20 for p in selected_players)
-        )
-    
-    def _calculate_stack_score(self, players: List[Player]) -> float:
-        """Calculate correlation score for lineup"""
-        score = 0.0
-        
-        # Check for QB stacks
-        qbs = [p for p in players if p.position.value == 'QB']
-        if qbs:
-            qb = qbs[0]
-            # Same team receivers
-            team_catchers = [p for p in players 
-                           if p.team == qb.team and p.position.value in ['WR', 'TE']]
-            score += len(team_catchers) * 10
-            
-            # Game stack (opposing players)
-            opp_players = [p for p in players if p.team == qb.opponent]
-            score += len(opp_players) * 5
-        
-        return score
-    
-    def run_monte_carlo_simulation(self, lineup: Lineup, iterations: int = 10000) -> Dict:
-        """Run Monte Carlo simulation for lineup variance analysis"""
-        scores = []
-        
-        for _ in range(iterations):
-            sim_score = 0
-            for player in lineup.players:
-                # Use normal distribution with historical variance
-                std_dev = player.projected_points * 0.3  # 30% standard deviation
-                if player.position.value == 'DST':
-                    std_dev *= 1.5  # Higher variance for DST
-                
-                player_score = np.random.normal(player.projected_points, std_dev)
-                player_score = max(0, player_score)  # Floor at 0
-                sim_score += player_score
-            
-            scores.append(sim_score)
+        for idx, var in player_vars.items():
+            if var.varValue == 1:
+                player = players_df.loc[idx].to_dict()
+                selected_players.append({
+                    'name': player['Name'],
+                    'position': player['Position'],
+                    'team': player['Team'],
+                    'salary': player['Salary'],
+                    'projection': player.get('adjusted_projection', 0)
+                })
+                total_salary += player['Salary']
+                total_projection += player.get('adjusted_projection', 0)
         
         return {
-            'mean': np.mean(scores),
-            'median': np.median(scores),
-            'std_dev': np.std(scores),
-            'min': np.min(scores),
-            'max': np.max(scores),
-            'percentiles': {
-                '25th': np.percentile(scores, 25),
-                '50th': np.percentile(scores, 50),
-                '75th': np.percentile(scores, 75),
-                '90th': np.percentile(scores, 90),
-                '95th': np.percentile(scores, 95)
-            },
-            'probability_150plus': sum(1 for s in scores if s >= 150) / iterations,
-            'probability_175plus': sum(1 for s in scores if s >= 175) / iterations,
-            'probability_200plus': sum(1 for s in scores if s >= 200) / iterations
+            'players': selected_players,
+            'total_salary': total_salary,
+            'salary_remaining': self.salary_cap - total_salary,
+            'total_projection': total_projection
         }
+    
+    def _find_game_stacks(self, players_df: pl.DataFrame) -> List[Dict]:
+        """Find optimal game stacking opportunities"""
+        stacks = []
+        
+        # Convert to pandas for easier manipulation
+        players_pd = players_df.to_pandas()
+        
+        # Find QBs with high projections
+        qbs = players_pd[players_pd['Position'] == 'QB'].nlargest(10, 'adjusted_projection')
+        
+        for _, qb in qbs.iterrows():
+            qb_team = qb['Team']
+            
+            # Find receivers from same team
+            team_receivers = players_pd[
+                (players_pd['Team'] == qb_team) & 
+                (players_pd['Position'].isin(['WR', 'TE']))
+            ].nlargest(3, 'adjusted_projection')
+            
+            if len(team_receivers) >= 1:
+                stack = {
+                    'qb': qb['Name'],
+                    'receivers': team_receivers['Name'].tolist(),
+                    'team': qb_team,
+                    'total_projection': qb['adjusted_projection'] + 
+                                      team_receivers['adjusted_projection'].sum()
+                }
+                stacks.append(stack)
+        
+        # Sort by total projection
+        stacks.sort(key=lambda x: x['total_projection'], reverse=True)
+        
+        return stacks
+    
+    def _calculate_exposure(self, lineups: List[Dict]) -> Dict[str, float]:
+        """Calculate player exposure across lineups"""
+        player_counts = {}
+        
+        for lineup in lineups:
+            for player in lineup['players']:
+                name = player['name']
+                player_counts[name] = player_counts.get(name, 0) + 1
+        
+        # Convert to percentages
+        total_lineups = len(lineups)
+        exposure = {
+            name: count / total_lineups 
+            for name, count in player_counts.items()
+        }
+        
+        return exposure
+    
+    def _calculate_correlation_score(self, players: List[Dict], 
+                                    correlation_matrix: Dict) -> float:
+        """Calculate correlation score for a lineup"""
+        total_correlation = 0
+        pairs_checked = 0
+        
+        # Find QB
+        qb = next((p for p in players if p['position'] == 'QB'), None)
+        if not qb:
+            return 0.0
+        
+        qb_team = qb['team']
+        
+        # Check each player pair
+        for player in players:
+            if player['name'] == qb['name']:
+                continue
+            
+            # Same team stacking
+            if player['team'] == qb_team:
+                if player['position'] == 'WR':
+                    total_correlation += correlation_matrix.get('QB-WR1', 0.5)
+                    pairs_checked += 1
+                elif player['position'] == 'TE':
+                    total_correlation += correlation_matrix.get('QB-TE', 0.3)
+                    pairs_checked += 1
+        
+        if pairs_checked > 0:
+            return total_correlation / pairs_checked
+        return 0.0
 
-optimizer = DFSOptimizer()
+
+class MonteCarloSimulator:
+    """Monte Carlo simulation for variance analysis"""
+    
+    def __init__(self, num_simulations: int = 10000):
+        self.num_simulations = num_simulations
+        
+    def simulate_tournament(self, lineups: List[Dict], 
+                          field_size: int = 1000,
+                          payout_structure: Dict = None) -> Dict:
+        """
+        Simulate tournament outcomes
+        
+        Args:
+            lineups: Your lineups to test
+            field_size: Total tournament entrants
+            payout_structure: Prize distribution
+            
+        Returns:
+            Simulation results
+        """
+        if not payout_structure:
+            payout_structure = self._get_default_payouts()
+        
+        results = {
+            'roi': [],
+            'min_cash_rate': 0,
+            'top_10_rate': 0,
+            'win_rate': 0
+        }
+        
+        for sim in range(self.num_simulations):
+            # Generate field scores
+            field_scores = np.random.normal(150, 25, field_size)
+            
+            # Simulate your lineup scores with correlation
+            your_scores = []
+            for lineup in lineups:
+                base_score = lineup['total_projection']
+                # Add variance
+                actual_score = np.random.normal(base_score, base_score * 0.15)
+                your_scores.append(max(0, actual_score))
+            
+            # Combine and rank
+            all_scores = list(field_scores) + your_scores
+            all_scores.sort(reverse=True)
+            
+            # Calculate payouts
+            total_payout = 0
+            for score in your_scores:
+                rank = all_scores.index(score) + 1
+                payout = self._get_payout(rank, field_size, payout_structure)
+                total_payout += payout
+            
+            # Track results
+            entry_fees = len(lineups) * 5  # Assuming $5 entry
+            roi = (total_payout - entry_fees) / entry_fees if entry_fees > 0 else 0
+            results['roi'].append(roi)
+            
+            # Track placement rates
+            for score in your_scores:
+                rank = all_scores.index(score) + 1
+                if rank <= field_size * 0.2:  # Top 20% cash
+                    results['min_cash_rate'] += 1
+                if rank <= 10:
+                    results['top_10_rate'] += 1
+                if rank == 1:
+                    results['win_rate'] += 1
+# Calculate final statistics
+        total_entries = self.num_simulations * len(lineups)
+        results['min_cash_rate'] /= total_entries
+        results['top_10_rate'] /= total_entries
+        results['win_rate'] /= total_entries
+        results['avg_roi'] = np.mean(results['roi'])
+        results['roi_std'] = np.std(results['roi'])
+        results['sharpe_ratio'] = results['avg_roi'] / results['roi_std'] if results['roi_std'] > 0 else 0
+        
+        return results
+    
+    def _get_default_payouts(self) -> Dict:
+        """Default GPP payout structure"""
+        return {
+            1: 1000,
+            2: 500,
+            3: 300,
+            4: 200,
+            5: 150,
+            10: 100,
+            20: 50,
+            50: 25,
+            100: 15,
+            200: 10
+        }
+    
+    def _get_payout(self, rank: int, field_size: int, payout_structure: Dict) -> float:
+        """Calculate payout for a given rank"""
+        for rank_threshold, payout in sorted(payout_structure.items()):
+            if rank <= rank_threshold:
+                return payout
+        
+        # Min cash line (typically top 20%)
+        if rank <= field_size * 0.2:
+            return 10  # 2x entry fee
+        
+        return 0

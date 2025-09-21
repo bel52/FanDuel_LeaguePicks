@@ -2,39 +2,42 @@
 pandas==2.1.4
 numpy==1.26.2
 pulp==2.7.0
-scipy==1.11.4
-scikit-learn==1.3.2
-xgboost==2.0.3
+ortools==9.8.3296
 
-# Data collection
-requests==2.31.0
+# API and Web
 aiohttp==3.9.1
+requests==2.31.0
 beautifulsoup4==4.12.2
 lxml==4.9.3
 playwright==1.40.0
 
-# Database
-sqlalchemy==2.0.23
-asyncpg==0.29.0
-redis==5.0.1
+# AI Integration
+openai==1.6.1
+tiktoken==0.5.2
 
-# API and async
-fastapi==0.105.0
-uvicorn==0.25.0
+# Database and Caching
+redis==5.0.1
+sqlalchemy==2.0.23
+alembic==1.13.0
+
+# Data Processing
+polars==0.20.2
+pyarrow==14.0.1
+
+# Scheduling and Async
+apscheduler==3.10.4
 asyncio==3.4.3
 aiolimiter==1.1.0
 
-# AI/ML
-openai>=1.40,<2
-anthropic==0.8.1
-tiktoken==0.5.2
-psycopg2-binary<3
+# Web Framework
+fastapi==0.108.0
+uvicorn==0.25.0
 
-# Utils
+# Utilities
 python-dotenv==1.0.0
 pydantic==2.5.2
-pytz==2023.3
-schedule==1.2.0
 tenacity==8.2.3
-tqdm==4.66.1
-httpx==0.27.*
+loguru==0.7.2
+
+# NFL Data
+nfl-data-py==0.3.1
