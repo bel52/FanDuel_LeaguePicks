@@ -1,3 +1,4 @@
+from typing import List, Dict, Any, Optional, Tuple
 """
 Main DFS Optimizer Application with Automated FanDuel Salaries
 """

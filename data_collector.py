@@ -298,8 +298,7 @@ class NFLDataCollector:
                         await asyncio.sleep(0.2)  # Rate limiting
                         
                 except Exception as e:
-                    logger
-logger.warning(f"Failed to get injuries for {team}: {e}")
+                    logger.warning(f"Failed to get injuries for {team}: {e}")
                     continue
             
             return injuries
