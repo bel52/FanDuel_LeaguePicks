@@ -1,0 +1,48 @@
+2025-09-19 15:48:01,177 - ai_analyzer - INFO - OpenAI client initialized
+2025-09-19 15:48:01,204 - ai_analyzer - INFO - Anthropic client initialized
+2025-09-19 15:48:01,231 - ai_analyzer - INFO - OpenAI client initialized
+2025-09-19 15:48:01,258 - ai_analyzer - INFO - Anthropic client initialized
+2025-09-19 15:48:01,258 - __main__ - ERROR - Error: 'DataCollector' object does not support the asynchronous context manager protocol
+Traceback (most recent call last):
+  File "/home/brett/fanduel/main.py", line 231, in main
+    await optimizer.run_single_optimization(args.type, args.lineups)
+  File "/home/brett/fanduel/main.py", line 45, in run_single_optimization
+    async with self.collector as collector:
+TypeError: 'DataCollector' object does not support the asynchronous context manager protocol
+2025-09-19 15:49:10,585 - ai_analyzer - INFO - OpenAI client initialized
+2025-09-19 15:49:10,612 - ai_analyzer - INFO - Anthropic client initialized
+2025-09-19 15:49:10,639 - ai_analyzer - INFO - OpenAI client initialized
+2025-09-19 15:49:10,666 - ai_analyzer - INFO - Anthropic client initialized
+2025-09-19 15:49:10,666 - __main__ - ERROR - Error: 'DataCollector' object does not support the asynchronous context manager protocol
+Traceback (most recent call last):
+  File "/home/brett/fanduel/main.py", line 231, in main
+    await optimizer.run_single_optimization(args.type, args.lineups)
+  File "/home/brett/fanduel/main.py", line 45, in run_single_optimization
+    async with self.collector as collector:
+TypeError: 'DataCollector' object does not support the asynchronous context manager protocol
+2025-09-19 15:50:19,331 - ai_analyzer - INFO - OpenAI client initialized
+2025-09-19 15:50:19,358 - ai_analyzer - INFO - Anthropic client initialized
+2025-09-19 15:50:19,384 - ai_analyzer - INFO - OpenAI client initialized
+2025-09-19 15:50:19,411 - ai_analyzer - INFO - Anthropic client initialized
+2025-09-19 15:50:19,411 - __main__ - ERROR - Error: 'DataCollector' object has no attribute 'collect_all_data'
+Traceback (most recent call last):
+  File "/home/brett/fanduel/main.py", line 231, in main
+    await optimizer.run_single_optimization(args.type, args.lineups)
+  File "/home/brett/fanduel/main.py", line 46, in run_single_optimization
+    data = await collector.collect_all_data()
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'DataCollector' object has no attribute 'collect_all_data'
+2025-09-19 15:52:10,705 - ai_analyzer - INFO - OpenAI client initialized
+2025-09-19 15:52:10,734 - ai_analyzer - INFO - Anthropic client initialized
+2025-09-19 15:52:10,763 - ai_analyzer - INFO - OpenAI client initialized
+2025-09-19 15:52:10,792 - ai_analyzer - INFO - Anthropic client initialized
+2025-09-19 15:52:10,792 - data_collector - WARNING - Player pool too small (0). Falling back to local sample if available.
+2025-09-19 15:52:10,792 - data_collector - INFO - Collected 0 players after merge.
+2025-09-19 15:52:10,792 - __main__ - ERROR - Error: 'DataCollector' object has no attribute 'fetch_dfs_salaries'
+Traceback (most recent call last):
+  File "/home/brett/fanduel/main.py", line 231, in main
+    await optimizer.run_single_optimization(args.type, args.lineups)
+  File "/home/brett/fanduel/main.py", line 51, in run_single_optimization
+    players = await collector.fetch_dfs_salaries()
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'DataCollector' object has no attribute 'fetch_dfs_salaries'

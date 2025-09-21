@@ -1,5 +1,5 @@
 """
-Automated data collection from free APIs
+Automated data collection from free APIs and FanDuel
 """
 import asyncio
 import aiohttp
@@ -14,6 +14,7 @@ from loguru import logger
 from config import config
 import redis
 from tenacity import retry, stop_after_attempt, wait_exponential
+from fanduel_scraper import FanDuelScraper, AlternativeSalarySource
 
 class NFLDataCollector:
     """Collects NFL data from multiple free sources"""
@@ -23,6 +24,7 @@ class NFLDataCollector:
         self.rate_limiter = AsyncLimiter(60, 60)  # 60 requests per minute
         self.redis_client = redis.from_url(config.REDIS_URL)
         self.cache_ttl = 1800  # 30 minutes
+        self.fanduel_scraper = FanDuelScraper()
         
     async def __aenter__(self):
         """Async context manager entry"""
@@ -36,7 +38,7 @@ class NFLDataCollector:
     
     async def collect_all_data(self, week: int, season: int = 2024) -> Dict:
         """
-        Collect all data for a given week
+        Collect all data for a given week including FanDuel salaries
         
         Args:
             week: NFL week number
@@ -55,8 +57,9 @@ class NFLDataCollector:
             logger.info("Using cached data")
             return json.loads(cached_data)
         
-        # Collect data from multiple sources concurrently
+        # Collect data from all sources concurrently
         tasks = [
+            self.get_fanduel_salaries(week),  # NEW: Automated FanDuel salaries
             self.get_nfl_data_py(week, season),
             self.get_espn_data(week, season),
             self.get_sleeper_data(),
@@ -69,12 +72,13 @@ class NFLDataCollector:
         
         # Process results
         data = {
-            'players': results[0] if not isinstance(results[0], Exception) else {},
-            'espn': results[1] if not isinstance(results[1], Exception) else {},
-            'sleeper': results[2] if not isinstance(results[2], Exception) else {},
-            'weather': results[3] if not isinstance(results[3], Exception) else {},
-            'injuries': results[4] if not isinstance(results[4], Exception) else {},
-            'vegas': results[5] if not isinstance(results[5], Exception) else {},
+            'salaries': results[0] if not isinstance(results[0], Exception) else {},
+            'players': results[1] if not isinstance(results[1], Exception) else {},
+            'espn': results[2] if not isinstance(results[2], Exception) else {},
+            'sleeper': results[3] if not isinstance(results[3], Exception) else {},
+            'weather': results[4] if not isinstance(results[4], Exception) else {},
+            'injuries': results[5] if not isinstance(results[5], Exception) else {},
+            'vegas': results[6] if not isinstance(results[6], Exception) else {},
             'timestamp': datetime.now().isoformat()
         }
         
@@ -88,7 +92,39 @@ class NFLDataCollector:
         logger.info("Data collection completed successfully")
         return data
     
-    async def get_nfl_data_py(self, week: int, season: int) -> pd.DataFrame:
+    async def get_fanduel_salaries(self, week: int) -> Dict:
+        """Get FanDuel salaries automatically"""
+        try:
+            logger.info("Fetching FanDuel salaries automatically")
+            
+            # Get salaries from FanDuel scraper
+            salaries_df = await self.fanduel_scraper.get_nfl_salaries(week)
+            
+            if salaries_df.empty:
+                logger.warning("FanDuel scraping failed, trying alternative sources")
+                
+                # Try alternative sources
+                salaries_df = await AlternativeSalarySource.get_from_dfs_sites()
+                
+                if salaries_df.empty:
+                    logger.warning("Alternative sources failed, estimating salaries")
+                    # Last resort: estimate based on projections
+                    player_stats = await self.get_nfl_data_py(week, 2024)
+                    if player_stats:
+                        stats_df = pd.DataFrame(player_stats.get('weekly', []))
+                        salaries_df = await AlternativeSalarySource.estimate_salaries(stats_df)
+            
+            if not salaries_df.empty:
+                logger.info(f"Retrieved {len(salaries_df)} player salaries")
+                return salaries_df.to_dict('records')
+            
+            return {}
+            
+        except Exception as e:
+            logger.error(f"Error fetching FanDuel salaries: {e}")
+            return {}
+    
+    async def get_nfl_data_py(self, week: int, season: int) -> Dict:
         """Get data from nfl-data-py (no API key required)"""
         try:
             logger.info("Fetching nfl-data-py data")
@@ -131,6 +167,9 @@ class NFLDataCollector:
         except Exception as e:
             logger.error(f"Error fetching nfl-data-py: {e}")
             return {}
+    
+    # ... rest of the methods remain the same (get_espn_data, get_sleeper_data, etc.)
+    # No FantasyPros references, all other methods unchanged
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     async def get_espn_data(self, week: int, season: int) -> Dict:
@@ -207,7 +246,7 @@ class NFLDataCollector:
                     async with self.rate_limiter:
                         # Get grid point
                         points_url = f"{config.WEATHER_BASE_URL}/points/{stadium['lat']},{stadium['lon']}"
-                        headers = {'User-Agent': 'DFS Optimizer (your-email@example.com)'}
+                        headers = {'User-Agent': 'DFS Optimizer (contact@example.com)'}
                         
                         async with self.session.get(points_url, headers=headers) as response:
                             if response.status != 200:
@@ -259,7 +298,8 @@ class NFLDataCollector:
                         await asyncio.sleep(0.2)  # Rate limiting
                         
                 except Exception as e:
-                    logger.warning(f"Failed to get injuries for {team}: {e}")
+                    logger
+logger.warning(f"Failed to get injuries for {team}: {e}")
                     continue
             
             return injuries
@@ -303,38 +343,6 @@ class NFLDataCollector:
         except Exception as e:
             logger.error(f"Error fetching Vegas lines: {e}")
             return {}
-    
-    async def validate_and_update_salaries(self, existing_salaries: pd.DataFrame) -> pd.DataFrame:
-        """
-        Validate existing salary data and update if needed
-        
-        Args:
-            existing_salaries: Current salary DataFrame
-            
-        Returns:
-            Updated salary DataFrame
-        """
-        try:
-            logger.info("Validating salary data")
-            
-            # Check if data is older than 24 hours
-            cache_key = "salary_last_updated"
-            last_updated = self.redis_client.get(cache_key)
-            
-            if last_updated:
-                last_updated_time = datetime.fromisoformat(last_updated.decode())
-                if datetime.now() - last_updated_time < timedelta(hours=24):
-                    logger.info("Salary data is current")
-                    return existing_salaries
-            
-            logger.warning("Salary data is outdated - manual update required")
-            # In production, you'd fetch from FanDuel API or scrape
-            # For now, return existing data
-            return existing_salaries
-            
-        except Exception as e:
-            logger.error(f"Error validating salaries: {e}")
-            return existing_salaries
 
 
 class DataProcessor:
@@ -343,21 +351,32 @@ class DataProcessor:
     def __init__(self):
         self.redis_client = redis.from_url(config.REDIS_URL)
     
-    def process_all_data(self, raw_data: Dict, salary_data: pd.DataFrame) -> pl.DataFrame:
+    def process_all_data(self, raw_data: Dict, salary_data: Optional[pd.DataFrame] = None) -> pl.DataFrame:
         """
-        Process and combine all collected data
+        Process and combine all collected data including FanDuel salaries
         
         Args:
             raw_data: Raw data from collectors
-            salary_data: FanDuel salary data
+            salary_data: Optional manual salary data (now automated)
             
         Returns:
             Processed Polars DataFrame ready for optimization
         """
         logger.info("Processing collected data")
         
+        # Use automated FanDuel salaries from raw_data
+        if 'salaries' in raw_data and raw_data['salaries']:
+            salaries_df = pd.DataFrame(raw_data['salaries'])
+            logger.info(f"Using automated FanDuel salaries: {len(salaries_df)} players")
+        elif salary_data is not None and not salary_data.empty:
+            salaries_df = salary_data
+            logger.info(f"Using provided salary data: {len(salaries_df)} players")
+        else:
+            logger.error("No salary data available")
+            return pl.DataFrame()
+        
         # Convert salary data to Polars for better performance
-        salaries_pl = pl.from_pandas(salary_data)
+        salaries_pl = pl.from_pandas(salaries_df)
         
         # Process player statistics
         player_stats = self._process_player_stats(raw_data.get('players', {}))

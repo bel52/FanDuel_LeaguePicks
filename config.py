@@ -15,20 +15,22 @@ class Config:
     
     # API Keys
     OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+    ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
+    
+    # AI Configuration
+    AI_MODEL_PREFERENCE = os.getenv('AI_MODEL_PREFERENCE', 'both')  # 'openai', 'claude', or 'both'
+    AI_WEEKLY_BUDGET = float(os.getenv('AI_WEEKLY_BUDGET', 5.00))
     
     # Database
     DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///dfs_optimizer.db')
     REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379')
-    
-    # FanDuel Credentials (for automated login if needed)
-    FANDUEL_USERNAME = os.getenv('FANDUEL_USERNAME')
-    FANDUEL_PASSWORD = os.getenv('FANDUEL_PASSWORD')
     
     # Update Intervals
     UPDATE_INTERVAL_MINUTES = int(os.getenv('UPDATE_INTERVAL_MINUTES', 30))
     WEATHER_UPDATE_HOURS = 4
     INJURY_UPDATE_MINUTES = 15
     NEWS_UPDATE_MINUTES = 10
+    SALARY_UPDATE_HOURS = 6  # Check for salary updates every 6 hours
     
     # Data Paths
     BASE_DIR = Path(__file__).parent
@@ -95,11 +97,6 @@ class Config:
         'FLEX': 1,  # RB/WR/TE
         'DST': 1
     }
-    
-    # AI Settings
-    AI_MODEL = "gpt-4o-mini"  # Cost-effective option
-    MAX_TOKENS = 1500
-    TEMPERATURE = 0.3  # Lower for more consistent analysis
     
     # Logging
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')

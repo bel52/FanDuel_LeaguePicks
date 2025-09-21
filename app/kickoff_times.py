@@ -1,19 +1,26 @@
-from datetime import datetime
-import pytz, requests
+import os
+import json
+from typing import List, Dict, Optional
 
-def get_next_game_time(team: str) -> datetime:
-    """Example: fetch ESPN scoreboard and find next game involving `team`."""
-    url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+_LAST = os.path.join("data", "output", "last_lineup.json")
+
+
+def save_last_lineup(lineup: List[Dict]) -> None:
+    """Persist the latest optimized lineup for league comparison."""
+    os.makedirs(os.path.dirname(_LAST), exist_ok=True)
     try:
-        r = requests.get(url, timeout=5)
-        data = r.json()
-        eastern = pytz.timezone("America/New_York")
-        for event in data.get("events", []):
-            comp = event.get("competitions", [{}])[0]
-            teams = [c['team']['abbreviation'] for c in comp.get('competitors', [])]
-            if team in teams:
-                dt = datetime.fromisoformat(comp['date'].replace('Z','+00:00')).astimezone(eastern)
-                return dt
-    except:
-        pass
-    return None
+        with open(_LAST, "w") as f:
+            json.dump(lineup, f, indent=2)
+    except Exception as e:
+        print(f"WARNING: Could not save last lineup: {e}")
+
+
+def load_last_lineup() -> Optional[List[Dict]]:
+    """Load previously saved lineup, or None if not available."""
+    if not os.path.exists(_LAST):
+        return None
+    try:
+        with open(_LAST, "r") as f:
+            return json.load(f)
+    except Exception:
+        return None

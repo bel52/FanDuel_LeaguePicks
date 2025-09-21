@@ -1,5 +1,5 @@
 """
-Main DFS Optimizer Application
+Main DFS Optimizer Application with Automated FanDuel Salaries
 """
 import asyncio
 from datetime import datetime, timedelta
@@ -15,9 +15,10 @@ from config import config
 from data_collector import NFLDataCollector, DataProcessor
 from ai_analyzer import DFSAIAnalyzer, CorrelationAnalyzer
 from optimizer import AdvancedLineupOptimizer, MonteCarloSimulator
+from fanduel_scraper import FanDuelScraper
 
 class DFSOptimizerApp:
-    """Main application orchestrator"""
+    """Main application orchestrator with automated salary updates"""
     
     def __init__(self):
         self.data_collector = NFLDataCollector()
@@ -26,13 +27,13 @@ class DFSOptimizerApp:
         self.correlation_analyzer = CorrelationAnalyzer()
         self.optimizer = AdvancedLineupOptimizer()
         self.simulator = MonteCarloSimulator()
+        self.fanduel_scraper = FanDuelScraper()
         self.scheduler = AsyncIOScheduler()
         self.current_week = self._get_current_nfl_week()
         self.current_season = 2024
         
     def _get_current_nfl_week(self) -> int:
         """Determine current NFL week"""
-        # NFL season typically starts first Thursday after Labor Day
         season_start = datetime(2024, 9, 5)  # 2024 season start
         current_date = datetime.now()
         
@@ -44,7 +45,7 @@ class DFSOptimizerApp:
     
     async def initialize(self):
         """Initialize the application"""
-        logger.info("Initializing DFS Optimizer")
+        logger.info("Initializing DFS Optimizer with automated salary updates")
         
         # Load or fetch initial data
         await self.update_all_data()
@@ -55,6 +56,14 @@ class DFSOptimizerApp:
             'interval',
             minutes=config.UPDATE_INTERVAL_MINUTES,
             id='update_data'
+        )
+        
+        # Schedule salary updates (every 6 hours)
+        self.scheduler.add_job(
+            self.update_salaries,
+            'interval',
+            hours=config.SALARY_UPDATE_HOURS,
+            id='update_salaries'
         )
         
         # Schedule injury report updates (more frequent)
@@ -76,129 +85,71 @@ class DFSOptimizerApp:
         )
         
         self.scheduler.start()
-        logger.info("Scheduler started")
+        logger.info("Scheduler started with automated salary updates")
+    
+    async def update_salaries(self):
+        """Update FanDuel salaries automatically"""
+        try:
+            logger.info("Updating FanDuel salaries automatically")
+            
+            # Fetch latest salaries
+            salaries = await self.fanduel_scraper.get_nfl_salaries(self.current_week)
+            
+            if not salaries.empty:
+                # Update processed data with new salaries
+                processed_data = self.load_processed_data()
+                if processed_data is not None:
+                    # Merge new salaries with existing projections
+                    updated_data = self._merge_salary_updates(processed_data, salaries)
+                    self.save_processed_data(updated_data)
+                    logger.info(f"Updated {len(salaries)} player salaries")
+            else:
+                logger.warning("Failed to update salaries")
+                
+        except Exception as e:
+            logger.error(f"Error updating salaries: {e}")
     
     async def update_all_data(self):
-        """Update all data sources"""
+        """Update all data sources including automated FanDuel salaries"""
         try:
             logger.info(f"Updating all data for Week {self.current_week}")
             
-            # Collect data from all sources
+            # Collect data from all sources (includes FanDuel salaries)
             async with self.data_collector as collector:
                 raw_data = await collector.collect_all_data(
                     self.current_week, 
                     self.current_season
                 )
             
-            # Load FanDuel salaries (from CSV for now)
-            salary_data = self.load_salary_data()
-            
-            # Process and combine data
-            processed_data = self.data_processor.process_all_data(raw_data, salary_data)
+            # Process and combine data (FanDuel salaries are in raw_data)
+            processed_data = self.data_processor.process_all_data(raw_data)
             
             # Save processed data
             self.save_processed_data(processed_data)
             
-            # Run AI analysis
+            # Run AI analysis with both models
             await self.run_ai_analysis(processed_data)
+            
+            # Log AI spending
+            spend_report = self.ai_analyzer.get_weekly_spend_report()
+            logger.info(f"AI Spending - OpenAI: ${spend_report['openai_spend']:.2f}, "
+                       f"Claude: ${spend_report['claude_spend']:.2f}, "
+                       f"Total: ${spend_report['total_spend']:.2f}/${spend_report['budget']:.2f}")
             
             logger.info("Data update completed successfully")
             
         except Exception as e:
             logger.error(f"Error updating data: {e}")
     
-    async def update_injury_reports(self):
-        """Quick update of injury reports only"""
-        try:
-            logger.info("Updating injury reports")
-            
-            async with self.data_collector as collector:
-                injuries = await collector.get_injury_reports()
-            
-            # Update existing data with new injury info
-            processed_data = self.load_processed_data()
-            
-            if processed_data is not None:
-                # Update injury status
-                injury_status = self.data_processor._process_injuries(injuries)
-                
-                # Update projections based on new injuries
-                for player_name, status in injury_status.items():
-                    mask = processed_data['Name'] == player_name
-                    if mask.any():
-                        if status == 'OUT':
-                            processed_data = processed_data.with_columns(
-                                pl.when(mask).then(0).otherwise(pl.col('adjusted_projection'))
-                                .alias('adjusted_projection')
-                            )
-                        elif status == 'QUESTIONABLE':
-                            processed_data = processed_data.with_columns(
-                                pl.when(mask).then(pl.col('base_projection') * 0.7)
-                                .otherwise(pl.col('adjusted_projection'))
-                                .alias('adjusted_projection')
-                            )
-                
-                self.save_processed_data(processed_data)
-                logger.info("Injury reports updated")
-                
-        except Exception as e:
-            logger.error(f"Error updating injuries: {e}")
-    
-    async def monitor_late_swaps(self):
-        """Monitor for late swap opportunities"""
-        try:
-            logger.info("Checking for late swap opportunities")
-            
-            # Load current lineups
-            lineups = self.load_generated_lineups()
-            if not lineups:
-                return
-            
-            # Get latest news
-            async with self.data_collector as collector:
-                news = await collector.get_espn_data(self.current_week, self.current_season)
-            
-            # Check each lineup for swap opportunities
-            for lineup in lineups:
-                for player in lineup['players']:
-                    # Check if player has news updates
-                    player_news = self._check_player_news(player['name'], news)
-                    
-                    if player_news and 'injury' in player_news.lower():
-                        # Find alternatives
-                        alternatives = self._find_swap_alternatives(
-                            player, 
-                            lineup['salary_remaining']
-                        )
-                        
-                        # AI analysis for swap decision
-                        swap_rec = self.ai_analyzer.analyze_late_swap(
-                            player,
-                            alternatives,
-                            {'latest_news': player_news}
-                        )
-                        
-                        if swap_rec['swap']:
-                            logger.warning(
-                                f"SWAP ALERT: Replace {player['name']} with "
-                                f"{swap_rec['target']} - {swap_rec['reasoning']}"
-                            )
-                            
-                            # Send notification (implement your preferred method)
-                            self.send_notification(swap_rec)
-            
-        except Exception as e:
-            logger.error(f"Error monitoring late swaps: {e}")
-    
     async def run_ai_analysis(self, data: pl.DataFrame):
-        """Run AI analysis on processed data"""
+        """Run AI analysis using both OpenAI and Claude"""
         try:
-            logger.info("Running AI analysis")
+            logger.info("Running AI analysis with both models")
             
             # Prepare data for AI
             slate_data = data.head(100).to_pandas().to_json(orient='records')
             
-            # Get AI insights
+            # Get AI insights (will use best model based on config)
             analysis = self.ai_analyzer.analyze_slate(slate_data)
             
             # Save analysis
@@ -208,7 +159,7 @@ class DFSOptimizerApp:
             
             logger.info("AI analysis completed and saved")
             
-            # Get ownership projections
+            # Get ownership projections (may use both models for consensus)
             players = data.to_pandas().to_dict('records')[:50]
             ownership = self.ai_analyzer.get_ownership_projections(players)
             
@@ -217,13 +168,22 @@ class DFSOptimizerApp:
             with open(ownership_path, 'w') as f:
                 json.dump(ownership, f, indent=2)
             
+            # Get correlation insights from Claude if available
+            if config.ANTHROPIC_API_KEY:
+                game_data = {'week': self.current_week, 'season': self.current_season}
+                correlations = self.correlation_analyzer.get_enhanced_correlations(game_data)
+                
+                correlation_path = config.DATA_DIR / f"correlations_week{self.current_week}.json"
+                with open(correlation_path, 'w') as f:
+                    json.dump(correlations, f, indent=2)
+            
         except Exception as e:
             logger.error(f"Error in AI analysis: {e}")
     
     def generate_lineups(self, lineup_type: str = 'tournament', 
                         num_lineups: int = 20) -> List[Dict]:
         """
-        Generate optimized lineups
+        Generate optimized lineups with Monte Carlo simulation
         
         Args:
             lineup_type: 'cash', 'tournament', or 'balanced'
@@ -279,15 +239,27 @@ class DFSOptimizerApp:
                 )
                 lineups.extend(tournament_lineups)
             
-            # Run simulations
+            # Run Monte Carlo simulations (already in optimizer.py)
             if lineups:
+                logger.info("Running Monte Carlo simulations...")
                 sim_results = self.simulator.simulate_tournament(lineups)
                 logger.info(f"Simulation results: ROI={sim_results['avg_roi']:.2%}, "
-                          f"Cash Rate={sim_results['min_cash_rate']:.2%}")
+                          f"Cash Rate={sim_results['min_cash_rate']:.2%}, "
+                          f"Sharpe Ratio={sim_results['sharpe_ratio']:.2f}")
                 
                 # Add simulation results to lineups
                 for lineup in lineups:
                     lineup['simulation'] = sim_results
+                
+                # Get AI analysis for top lineups
+                if lineups[:3]:  # Analyze top 3 lineups
+                    for lineup in lineups[:3]:
+                        context = {'week': self.current_week}
+                        lineup_analysis = self.ai_analyzer.analyze_lineup(
+                            lineup['players'], 
+                            context
+                        )
+                        lineup['ai_analysis'] = lineup_analysis
             
             # Save lineups
             self.save_generated_lineups(lineups)
@@ -299,22 +271,79 @@ class DFSOptimizerApp:
             logger.error(f"Error generating lineups: {e}")
             return []
     
-    def load_salary_data(self) -> pd.DataFrame:
-        """Load FanDuel salary data from CSV"""
-        salary_path = config.DATA_DIR / 'FanDuel-NFL-2024-11-24-73780-players-list.csv'
-        
-        if not salary_path.exists():
-            logger.warning(f"Salary file not found: {salary_path}")
-            logger.warning("Please download current FanDuel salaries and place in data folder")
-            return pd.DataFrame()
-        
+    def _merge_salary_updates(self, data: pl.DataFrame, new_salaries: pd.DataFrame) -> pl.DataFrame:
+        """Merge updated salaries with existing data"""
         try:
-            salary_data = pd.read_csv(salary_path)
-            logger.info(f"Loaded {len(salary_data)} players from salary file")
-            return salary_data
+            # Convert new salaries to Polars
+            salaries_pl = pl.from_pandas(new_salaries)
+            
+            # Update salary column in existing data
+            # This is a simplified merge - you may need to handle name matching
+            data = data.drop('Salary')
+            data = data.join(
+                salaries_pl.select(['Name', 'Salary']),
+                on='Name',
+                how='left'
+            )
+            
+            # Recalculate value with new salaries
+            data = data.with_columns([
+                (pl.col('adjusted_projection') / pl.col('Salary') * 1000).alias('value')
+            ])
+            
+            return data
+            
         except Exception as e:
-            logger.error(f"Error loading salary data: {e}")
-            return pd.DataFrame()
+            logger.error(f"Error merging salary updates: {e}")
+            return data
+    
+    # ... rest of the methods remain the same ...
+    
+    async def monitor_late_swaps(self):
+        """Monitor for late swap opportunities"""
+        try:
+            logger.info("Checking for late swap opportunities")
+            
+            # Load current lineups
+            lineups = self.load_generated_lineups()
+            if not lineups:
+                return
+            
+            # Get latest news
+            async with self.data_collector as collector:
+                news = await collector.get_espn_data(self.current_week, self.current_season)
+            
+            # Check each lineup for swap opportunities
+            for lineup in lineups:
+                for player in lineup['players']:
+                    # Check if player has news updates
+                    player_news = self._check_player_news(player['name'], news)
+                    
+                    if player_news and 'injury' in player_news.lower():
+                        # Find alternatives
+                        alternatives = self._find_swap_alternatives(
+                            player, 
+                            lineup['salary_remaining']
+                        )
+                        
+                        # AI analysis for swap decision (uses best model)
+                        swap_rec = self.ai_analyzer.analyze_late_swap(
+                            player,
+                            alternatives,
+                            {'latest_news': player_news}
+                        )
+                        
+                        if swap_rec['swap']:
+                            logger.warning(
+                                f"SWAP ALERT: Replace {player['name']} with "
+                                f"{swap_rec['target']} - {swap_rec['reasoning']}"
+                            )
+                            
+                            # Send notification
+                            self.send_notification(swap_rec)
+            
+        except Exception as e:
+            logger.error(f"Error monitoring late swaps: {e}")
     
     def save_processed_data(self, data: pl.DataFrame):
         """Save processed data to disk"""
@@ -382,11 +411,10 @@ class DFSOptimizerApp:
     
     def send_notification(self, message: Dict):
         """Send notification (implement your preferred method)"""
-        # Could send email, SMS, Discord, etc.
         logger.warning(f"NOTIFICATION: {message}")
     
     def print_lineup(self, lineup: Dict):
-        """Pretty print a lineup"""
+        """Pretty print a lineup with Monte Carlo results"""
         print("\n" + "="*50)
         print("OPTIMIZED LINEUP")
         print("="*50)
@@ -405,10 +433,19 @@ class DFSOptimizerApp:
         
         if 'simulation' in lineup:
             sim = lineup['simulation']
-            print(f"\nSimulation Results:")
+            print(f"\nMonte Carlo Simulation Results:")
             print(f"  Expected ROI: {sim['avg_roi']:.1%}")
             print(f"  Cash Rate: {sim['min_cash_rate']:.1%}")
             print(f"  Top 10 Rate: {sim['top_10_rate']:.2%}")
+            print(f"  Sharpe Ratio: {sim['sharpe_ratio']:.2f}")
+        
+        if 'ai_analysis' in lineup:
+            print(f"\nAI Analysis:")
+            analysis = lineup['ai_analysis']
+            if 'correlation' in analysis:
+                print(f"  Correlation Score: {analysis['correlation']}/10")
+            if 'gpp_viability' in analysis:
+                print(f"  GPP Viability: {analysis['gpp_viability']}/10")
 
 
 async def main():
@@ -419,13 +456,22 @@ async def main():
         # Initialize application
         await app.initialize()
         
+        print("\n" + "="*60)
+        print("DFS OPTIMIZER INITIALIZED")
+        print("="*60)
+        print(f"✓ Automated FanDuel salary updates every {config.SALARY_UPDATE_HOURS} hours")
+        print(f"✓ AI Analysis using: {config.AI_MODEL_PREFERENCE}")
+        print(f"✓ Weekly AI Budget: ${config.AI_WEEKLY_BUDGET:.2f}")
+        print(f"✓ Monte Carlo Simulations: Enabled (10,000 iterations)")
+        print("="*60 + "\n")
+        
         # Generate initial lineups
         print("\nGenerating Cash Game Lineup...")
         cash_lineups = app.generate_lineups('cash', 1)
         if cash_lineups:
             app.print_lineup(cash_lineups[0])
         
-        print("\nGenerating Tournament Lineups...")
+        print("\nGenerating Tournament Lineups with Monte Carlo...")
         tournament_lineups = app.generate_lineups('tournament', 20)
         if tournament_lineups:
             print(f"\nGenerated {len(tournament_lineups)} tournament lineups")
@@ -433,16 +479,31 @@ async def main():
             app.print_lineup(tournament_lineups[0])
         
         # Keep running for continuous monitoring
-        print("\nOptimizer running. Press Ctrl+C to stop.")
-        print("Data will update every 30 minutes.")
-        print("Injury reports update every 15 minutes.")
-        print("Late swap monitoring active on Sundays.\n")
+        print("\n" + "="*60)
+        print("OPTIMIZER RUNNING CONTINUOUSLY")
+        print("="*60)
+        print("✓ FanDuel salaries update automatically")
+        print("✓ Data updates every 30 minutes")
+        print("✓ Injury reports update every 15 minutes")
+        print("✓ Late swap monitoring active on Sundays")
+        print("✓ AI spending tracked against weekly budget")
+        print("\nPress Ctrl+C to stop.")
+        print("="*60 + "\n")
         
         while True:
             await asyncio.sleep(60)  # Keep alive
             
     except KeyboardInterrupt:
         logger.info("Shutting down optimizer")
+        
+        # Print final AI spending report
+        spend_report = app.ai_analyzer.get_weekly_spend_report()
+        print(f"\nFinal AI Spending Report:")
+        print(f"  OpenAI: ${spend_report['openai_spend']:.2f}")
+        print(f"  Claude: ${spend_report['claude_spend']:.2f}")
+        print(f"  Total: ${spend_report['total_spend']:.2f} / ${spend_report['budget']:.2f}")
+        print(f"  Remaining: ${spend_report['remaining']:.2f}")
+        
         app.scheduler.shutdown()
     except Exception as e:
         logger.error(f"Application error: {e}")

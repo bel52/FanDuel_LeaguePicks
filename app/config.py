@@ -1,35 +1,27 @@
-from __future__ import annotations
 import os
-from pathlib import Path
 from dotenv import load_dotenv
 
-ROOT = Path(__file__).resolve().parents[1]
-ENV_FILE = ROOT / ".env"
-if ENV_FILE.exists():
-    load_dotenv(ENV_FILE)
+# Load environment variables from a .env file if it exists
+load_dotenv()
 
-APP_PORT = int(os.getenv("APP_PORT", "8010"))
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-SALARY_CAP = int(os.getenv("SALARY_CAP", "60000"))
+# --- Base Directory ---
+# This determines the root of our application inside the container, which is /app
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(APP_DIR)
 
-ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
-OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+# --- Core Directory Paths ---
+# All other paths are built from these base paths
+DATA_DIR = os.path.join(ROOT_DIR, 'data')
+LOG_DIR = os.path.join(ROOT_DIR, 'logs')
+INPUT_DIR = os.path.join(DATA_DIR, 'input') # This is the correct path for your CSVs
 
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.1"))
-OPENAI_TIMEOUT_SECS = int(os.getenv("OPENAI_TIMEOUT_SECS", "40"))
+# --- API Keys & Configuration ---
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 
-ODDS_API_REGION = os.getenv("ODDS_API_REGION", "us")
-ODDS_API_MARKETS = os.getenv("ODDS_API_MARKETS", "h2h,totals,spreads")
-ODDS_API_SPORT = os.getenv("ODDS_API_SPORT", "americanfootball_nfl")
+# --- DFS Settings ---
+SALARY_CAP = 60000
 
-BASELINE_WEEK = int(os.getenv("BASELINE_WEEK", "0"))
-ODDS_IMPLIED_MULTIPLIER = float(os.getenv("ODDS_IMPLIED_MULTIPLIER", "0.08"))
-WEATHER_WIND_PENALTY = float(os.getenv("WEATHER_WIND_PENALTY", "0.03"))
-WEATHER_RAIN_PENALTY = float(os.getenv("WEATHER_RAIN_PENALTY", "0.04"))
-
-DATA_DIR = ROOT / "data"
-INPUT_DIR = DATA_DIR / "input"
-EXPORTS_DIR = DATA_DIR / "exports"
-LOG_DIR = ROOT / "logs"
+# --- Ensure log directory exists on startup ---
+os.makedirs(LOG_DIR, exist_ok=True)
