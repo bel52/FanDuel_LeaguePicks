@@ -1,0 +1,15 @@
+{
+  "timestamp": "2025-09-21T20:07:50.320065",
+  "lineup_counts": {
+    "tournament": 20,
+    "cash_game": 5,
+    "contrarian": 10
+  },
+  "data_quality": {
+    "player_count": 135,
+    "weather_stadiums": 32,
+    "injury_reports": 3
+  },
+  "weather_conditions": 32,
+  "injury_reports": 3
+}
