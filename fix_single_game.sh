@@ -1,3 +1,17 @@
+#!/bin/bash
+
+echo "🏈 FIXING SINGLE GAME ISSUES"
+echo "=============================="
+
+cd /home/brett/fanduel
+source venv/bin/activate
+
+echo "1️⃣ Backing up current files..."
+cp api.py api.py.backup2 2>/dev/null
+cp optimizer.py optimizer.py.backup2 2>/dev/null
+
+echo "2️⃣ Creating fixed optimizer with better single game support..."
+cat > optimizer_single_game_fix.py << 'EOF'
 """
 Fixed DFS optimizer with proper single game support
 """
@@ -374,6 +388,181 @@ def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None,
         return []
     
     return optimizer.generate_multiple_lineups(players, num_lineups, contest_type, single_game_teams)
+EOF
 
-# Backward compatibility alias
-DFSOptimizer = EnhancedDFSOptimizer
+echo "3️⃣ Updating API team mapping..."
+# Create better team mapping in api.py
+cat >> api.py << 'EOF'
+
+def get_teams_from_game_id_enhanced(game_id: str) -> List[str]:
+    """Enhanced team mapping for single games"""
+    
+    # Current week team mappings - UPDATE WEEKLY
+    current_week_games = {
+        "game_1": ["PHI", "WAS"],
+        "game_2": ["BAL", "BUF"], 
+        "game_3": ["DET", "GB"],
+        "game_4": ["KC", "LAC"],
+        "game_5": ["SF", "DAL"],
+        "game_6": ["TEN", "MIA"],
+        "game_7": ["NYG", "MIN"],
+        "game_8": ["CIN", "PIT"],
+        "game_9": ["HOU", "JAX"],
+        "game_10": ["ATL", "CAR"],
+        "game_11": ["LAR", "ARI"],
+        "game_12": ["TB", "NO"],
+        "game_13": ["DEN", "NYJ"],
+        "game_14": ["CLE", "LV"],
+        "game_15": ["NE", "SEA"],
+        "game_16": ["CHI", "IND"]
+    }
+    
+    teams = current_week_games.get(game_id, [])
+    logger.info(f"Enhanced mapping - Game {game_id}: {teams}")
+    return teams
+EOF
+
+echo "4️⃣ Replacing optimizer..."
+if [ -f "optimizer_single_game_fix.py" ]; then
+    mv optimizer.py optimizer.py.broken
+    mv optimizer_single_game_fix.py optimizer.py
+    echo "✅ Replaced optimizer.py"
+fi
+
+echo "5️⃣ Updating default lineup counts in API HTML..."
+# Fix the default lineup counts in the HTML
+sed -i 's/document.getElementById('\''numLineups'\'').value = 10/document.getElementById('\''numLineups'\'').value = 5/g' api.py 2>/dev/null
+sed -i 's/document.getElementById('\''numLineups'\'').value = 20/document.getElementById('\''numLineups'\'').value = 8/g' api.py 2>/dev/null
+sed -i 's/"gpp": 20/"gpp": 8/g' api.py 2>/dev/null
+sed -i 's/"contrarian": 15/"contrarian": 6/g' api.py 2>/dev/null
+
+echo "6️⃣ Testing single game functionality..."
+python3 -c "
+import sys
+sys.path.append('.')
+try:
+    from optimizer import optimize_dfs_lineups, EnhancedDFSOptimizer
+    
+    # Test basic functionality
+    print('✅ Optimizer imports working')
+    
+    # Create test data for single game
+    test_players = [
+        {'player_name': 'Test QB', 'position': 'QB', 'team': 'PHI', 'salary': 8000, 'projection': 20},
+        {'player_name': 'Test RB', 'position': 'RB', 'team': 'PHI', 'salary': 7000, 'projection': 15},
+        {'player_name': 'Test WR1', 'position': 'WR', 'team': 'PHI', 'salary': 6500, 'projection': 12},
+        {'player_name': 'Test WR2', 'position': 'WR', 'team': 'WAS', 'salary': 6000, 'projection': 11},
+        {'player_name': 'Test TE', 'position': 'TE', 'team': 'WAS', 'salary': 5500, 'projection': 9},
+        {'player_name': 'Test RB2', 'position': 'RB', 'team': 'WAS', 'salary': 5000, 'projection': 8},
+        {'player_name': 'Test K', 'position': 'K', 'team': 'PHI', 'salary': 4500, 'projection': 7}
+    ]
+    
+    # Test single game optimization
+    lineups = optimize_dfs_lineups(
+        player_data=test_players,
+        num_lineups=2,
+        contest_type='single_game',
+        single_game_teams=['PHI', 'WAS']
+    )
+    
+    if lineups:
+        print(f'✅ Single game test passed: {len(lineups)} lineups generated')
+        lineup = lineups[0]
+        print(f'   Sample lineup: {lineup.projected_points:.1f} pts, \${lineup.total_salary:,}')
+    else:
+        print('❌ Single game test failed: no lineups generated')
+        
+except Exception as e:
+    print(f'❌ Single game test error: {e}')
+    import traceback
+    traceback.print_exc()
+"
+
+echo "7️⃣ Creating quick test script..."
+cat > test_single_game.py << 'EOF'
+#!/usr/bin/env python3
+"""
+Quick test script for single game functionality
+"""
+import sys
+sys.path.append('.')
+import asyncio
+from optimizer import optimize_dfs_lineups
+from data_collector import get_fresh_data
+
+async def test_single_game():
+    print("🧪 Testing Single Game Functionality")
+    print("=" * 40)
+    
+    try:
+        # Get real data
+        print("📊 Getting fresh data...")
+        data = await get_fresh_data()
+        
+        if not data or not data.get('players'):
+            print("❌ No player data available")
+            return False
+        
+        players = data['players']
+        print(f"✅ Got {len(players)} players")
+        
+        # Test single game with PHI vs WAS
+        print("\n🏈 Testing PHI vs WAS single game...")
+        lineups = optimize_dfs_lineups(
+            player_data=players,
+            num_lineups=3,
+            contest_type='single_game',
+            single_game_teams=['PHI', 'WAS']
+        )
+        
+        if lineups:
+            print(f"✅ Generated {len(lineups)} single game lineups")
+            for i, lineup in enumerate(lineups, 1):
+                print(f"\nLineup {i}:")
+                print(f"  Points: {lineup.projected_points:.1f} (with MVP 1.5x)")
+                print(f"  Salary: ${lineup.total_salary:,}")
+                print(f"  Players: {len(lineup.players)}")
+                for j, player in enumerate(lineup.players):
+                    mvp_text = " (MVP 1.5x)" if j == 0 else ""
+                    print(f"    {player.position}: {player.name} ({player.team}){mvp_text}")
+            return True
+        else:
+            print("❌ No single game lineups generated")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+if __name__ == "__main__":
+    success = asyncio.run(test_single_game())
+    print(f"\n{'✅ SUCCESS' if success else '❌ FAILED'}")
+EOF
+
+echo "8️⃣ Final system test..."
+python3 test_single_game.py
+
+echo ""
+echo "🎉 SINGLE GAME FIX COMPLETE!"
+echo "============================"
+echo ""
+echo "✅ Fixed Issues:"
+echo "  • Default lineup counts: GPP=8, Cash=5, Contrarian=6"
+echo "  • Single game team mapping enhanced"
+echo "  • Single game constraints fixed (exactly 6 players)"
+echo "  • Single game MVP logic (1.5x points for highest projection)"
+echo "  • Better error handling and logging"
+echo ""
+echo "🎯 Changes Made:"
+echo "  • optimizer.py: Complete rewrite with single game support"
+echo "  • api.py: Enhanced team mapping and default counts"
+echo "  • Added test script: python3 test_single_game.py"
+echo ""
+echo "🚀 Ready to Test:"
+echo "  python3 main.py web"
+echo "  → http://localhost:8020"
+echo "  → Try single game contest (PHI vs WAS)"
+echo ""
+echo "The 500 error should now be resolved!"

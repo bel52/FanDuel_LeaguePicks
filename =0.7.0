@@ -1,0 +1,9 @@
+Collecting loguru
+  Downloading loguru-0.7.3-py3-none-any.whl.metadata (22 kB)
+Downloading loguru-0.7.3-py3-none-any.whl (61 kB)
+Installing collected packages: loguru
+  Attempting uninstall: loguru
+    Found existing installation: loguru 0.7.2
+    Uninstalling loguru-0.7.2:
+      Successfully uninstalled loguru-0.7.2
+Successfully installed loguru-0.7.3

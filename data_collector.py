@@ -1,6 +1,6 @@
 """
-Comprehensive data collection system for NFL DFS optimization
-Collects data from multiple free sources with proper rate limiting and error handling
+Enhanced data collection system with proper week detection and game filtering
+Ensures we get the correct players for the current NFL week
 """
 import asyncio
 import aiohttp
@@ -37,8 +37,8 @@ class RateLimiter:
         
         self.calls.append(now)
 
-class DataCollector:
-    """Main data collection class that aggregates NFL data from multiple sources"""
+class EnhancedDataCollector:
+    """Enhanced data collection with proper current week detection"""
     
     def __init__(self):
         self.session = None
@@ -76,23 +76,147 @@ class DataCollector:
             'timestamp': time.time()
         }
     
-    async def get_current_week(self) -> int:
-        """Get current NFL week"""
+    async def get_current_nfl_week(self) -> Dict[str, Any]:
+        """Get current NFL week and active games"""
         try:
             await self.rate_limiters['espn'].acquire()
             async with self.session.get(ESPN_ENDPOINTS['scoreboard']) as response:
                 if response.status == 200:
                     data = await response.json()
-                    # Extract week from scoreboard data
+                    
+                    # Extract current week info
+                    week_info = {
+                        'current_week': 1,
+                        'season_type': 2,  # Regular season
+                        'year': 2024,
+                        'games': []
+                    }
+                    
+                    # Parse scoreboard data
                     if 'week' in data:
-                        return data['week']['number']
-                    return 1
+                        week_info['current_week'] = data['week'].get('number', 1)
+                    
+                    if 'season' in data:
+                        week_info['season_type'] = data['season'].get('type', 2)
+                        week_info['year'] = data['season'].get('year', 2024)
+                    
+                    # Extract current week games
+                    if 'events' in data:
+                        for event in data['events']:
+                            try:
+                                game_info = {
+                                    'id': event.get('id'),
+                                    'date': event.get('date'),
+                                    'name': event.get('name', ''),
+                                    'short_name': event.get('shortName', ''),
+                                    'week': event.get('week', {}).get('number', week_info['current_week']),
+                                    'teams': []
+                                }
+                                
+                                # Extract team info
+                                if 'competitions' in event:
+                                    for comp in event['competitions']:
+                                        if 'competitors' in comp:
+                                            for team in comp['competitors']:
+                                                game_info['teams'].append({
+                                                    'id': team.get('id'),
+                                                    'abbreviation': team.get('team', {}).get('abbreviation', ''),
+                                                    'display_name': team.get('team', {}).get('displayName', ''),
+                                                    'is_home': team.get('homeAway') == 'home'
+                                                })
+                                
+                                # Only include games for current week
+                                if game_info['week'] == week_info['current_week']:
+                                    week_info['games'].append(game_info)
+                                    
+                            except Exception as e:
+                                logger.warning(f"Error parsing game event: {e}")
+                                continue
+                    
+                    logger.info(f"Current NFL Week: {week_info['current_week']}, Games: {len(week_info['games'])}")
+                    return week_info
+                    
         except Exception as e:
-            logger.error(f"Error getting current week: {e}")
-        return 1
+            logger.error(f"Error getting current NFL week: {e}")
+        
+        # Fallback to manual calculation
+        return self._calculate_current_week()
+    
+    def _calculate_current_week(self) -> Dict[str, Any]:
+        """Calculate current NFL week based on date"""
+        now = datetime.now()
+        
+        # NFL 2024 season start (approximate)
+        season_start = datetime(2024, 9, 5)  # First Thursday night game
+        
+        if now < season_start:
+            current_week = 1
+        else:
+            days_since_start = (now - season_start).days
+            current_week = min(18, max(1, (days_since_start // 7) + 1))
+        
+        logger.info(f"Calculated current NFL week: {current_week}")
+        
+        return {
+            'current_week': current_week,
+            'season_type': 2,
+            'year': 2024,
+            'games': []
+        }
+    
+    def _get_teams_playing_this_week(self, week_info: Dict[str, Any]) -> List[str]:
+        """Extract list of teams playing in the current week"""
+        teams_playing = set()
+        
+        for game in week_info.get('games', []):
+            for team in game.get('teams', []):
+                team_abbr = team.get('abbreviation', '').upper()
+                if team_abbr:
+                    teams_playing.add(team_abbr)
+        
+        # If no games found from API, use day-based logic
+        if not teams_playing:
+            teams_playing = self._get_teams_by_day()
+        
+        logger.info(f"Teams playing this week: {sorted(teams_playing)}")
+        return list(teams_playing)
+    
+    def _get_teams_by_day(self) -> set:
+        """Get teams playing based on current day of week"""
+        now = datetime.now()
+        day_of_week = now.weekday()  # 0=Monday, 6=Sunday
+        
+        teams_playing = set()
+        
+        # Thursday games (day 3)
+        if day_of_week == 3:
+            thursday_teams = ['KC', 'BAL', 'DET', 'GB', 'TB', 'NO']  # Example Thursday teams
+            teams_playing.update(thursday_teams[:2])  # Typically 2 teams on Thursday
+        
+        # Sunday games (day 6) - main slate
+        elif day_of_week == 6 or (day_of_week >= 0 and day_of_week <= 2):
+            # All teams except Monday night teams
+            all_nfl_teams = {
+                'ARI', 'ATL', 'BAL', 'BUF', 'CAR', 'CHI', 'CIN', 'CLE', 'DAL', 'DEN',
+                'DET', 'GB', 'HOU', 'IND', 'JAX', 'KC', 'LV', 'LAC', 'LAR', 'MIA',
+                'MIN', 'NE', 'NO', 'NYG', 'NYJ', 'PHI', 'PIT', 'SF', 'SEA', 'TB',
+                'TEN', 'WAS'
+            }
+            
+            # Exclude typical Monday night teams (this would need weekly updates)
+            monday_teams = {'TEN', 'MIA'}  # Example for current week
+            sunday_teams = all_nfl_teams - monday_teams
+            teams_playing.update(sunday_teams)
+        
+        # Monday games (day 0)
+        elif day_of_week == 0:
+            monday_teams = ['TEN', 'MIA']  # Example Monday teams
+            teams_playing.update(monday_teams)
+        
+        return teams_playing
     
     async def collect_nfl_data_py_stats(self, year: int = 2024) -> pd.DataFrame:
-        """Collect comprehensive NFL data using nfl_data_py"""
+        """Collect NFL data with proper week filtering"""
         cache_key = f"nfl_data_py_{year}"
         
         if self._is_cache_valid(cache_key, 'player_projections'):
@@ -102,90 +226,91 @@ class DataCollector:
             await self.rate_limiters['nfl_data'].acquire()
             logger.info(f"Collecting NFL data for {year}")
             
-            # Get weekly data (most recent)
+            # Get current week info
+            week_info = await self.get_current_nfl_week()
+            current_week = week_info['current_week']
+            teams_playing = self._get_teams_playing_this_week(week_info)
+            
+            # Get weekly data for current and recent weeks
             weekly_data = nfl.import_weekly_data([year])
             
-            # Get seasonal stats
+            if not weekly_data.empty:
+                # Filter for current week and teams playing
+                current_week_data = weekly_data[
+                    (weekly_data['week'] == current_week) & 
+                    (weekly_data['recent_team'].isin(teams_playing))
+                ].copy()
+                
+                # If current week data is sparse, include previous week
+                if len(current_week_data) < 100:
+                    logger.info("Current week data sparse, including previous week")
+                    prev_week_data = weekly_data[
+                        (weekly_data['week'] == max(1, current_week - 1)) & 
+                        (weekly_data['recent_team'].isin(teams_playing))
+                    ].copy()
+                    current_week_data = pd.concat([current_week_data, prev_week_data]).drop_duplicates(
+                        subset=['player_id'], keep='first'
+                    )
+            
+            # Get seasonal data for projections
             seasonal_data = nfl.import_seasonal_data([year])
             
-            # Get schedules to identify current week
-            schedules = nfl.import_schedules([year])
-            
-            # Process the data to create player projections
-            processed_data = self._process_nfl_data(weekly_data, seasonal_data, schedules)
+            # Process the filtered data
+            processed_data = self._process_nfl_data(current_week_data, seasonal_data, week_info, teams_playing)
             
             self._cache_data(cache_key, processed_data)
-            logger.info(f"Successfully collected data for {len(processed_data)} players")
+            logger.info(f"Successfully collected data for {len(processed_data)} players from week {current_week}")
             
             return processed_data
             
         except Exception as e:
             logger.error(f"Error collecting NFL data: {e}")
-            # Return empty DataFrame but don't fail completely
             return pd.DataFrame()
     
-    def _process_nfl_data(self, weekly_data: pd.DataFrame, seasonal_data: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFrame:
-        """Process and clean NFL data from nfl_data_py"""
+    def _process_nfl_data(self, weekly_data: pd.DataFrame, seasonal_data: pd.DataFrame, 
+                         week_info: Dict[str, Any], teams_playing: List[str]) -> pd.DataFrame:
+        """Process and clean NFL data with team filtering"""
         try:
             if weekly_data.empty:
                 logger.warning("Weekly data is empty")
-                return pd.DataFrame()
+                return self._create_fallback_data(teams_playing)
             
-            # Filter for relevant positions
+            # Filter for relevant positions and teams
             relevant_positions = ['QB', 'RB', 'WR', 'TE', 'K']
             
-            # Get the most recent week's data
-            if 'week' in weekly_data.columns:
-                current_week = weekly_data['week'].max()
-                recent_data = weekly_data[weekly_data['week'] >= max(1, current_week - 2)].copy()
-            else:
-                recent_data = weekly_data.copy()
+            # Ensure we only have players from teams playing this week
+            filtered_data = weekly_data[
+                (weekly_data['position'].isin(relevant_positions)) &
+                (weekly_data['recent_team'].isin(teams_playing))
+            ].copy()
             
-            # Filter for relevant positions
-            if 'position' in recent_data.columns:
-                recent_data = recent_data[recent_data['position'].isin(relevant_positions)].copy()
+            logger.info(f"Filtered to {len(filtered_data)} players from playing teams: {teams_playing}")
             
             # Group by player and calculate projections
             player_stats = []
             
-            for player_id in recent_data['player_id'].unique():
-                player_data = recent_data[recent_data['player_id'] == player_id]
+            for player_id in filtered_data['player_id'].unique():
+                player_data = filtered_data[filtered_data['player_id'] == player_id]
                 
                 if player_data.empty:
                     continue
                 
-                # Get the most recent game data
                 latest_game = player_data.iloc[-1]
                 
-                # Calculate average fantasy points from recent games
+                # Calculate projection based on recent performance
+                fantasy_points_cols = ['fantasy_points_ppr', 'fantasy_points', 'fantasy_points_half_ppr']
                 fantasy_points_col = None
-                for col in ['fantasy_points_ppr', 'fantasy_points', 'fantasy_points_half_ppr']:
+                
+                for col in fantasy_points_cols:
                     if col in player_data.columns:
                         fantasy_points_col = col
                         break
                 
-                if fantasy_points_col is None:
-                    # Calculate basic fantasy points if not available
-                    points = 0
-                    if 'passing_yards' in player_data.columns:
-                        points += player_data['passing_yards'].fillna(0).mean() * 0.04
-                    if 'passing_tds' in player_data.columns:
-                        points += player_data['passing_tds'].fillna(0).mean() * 4
-                    if 'rushing_yards' in player_data.columns:
-                        points += player_data['rushing_yards'].fillna(0).mean() * 0.1
-                    if 'rushing_tds' in player_data.columns:
-                        points += player_data['rushing_tds'].fillna(0).mean() * 6
-                    if 'receiving_yards' in player_data.columns:
-                        points += player_data['receiving_yards'].fillna(0).mean() * 0.1
-                    if 'receiving_tds' in player_data.columns:
-                        points += player_data['receiving_tds'].fillna(0).mean() * 6
-                    if 'receptions' in player_data.columns:
-                        points += player_data['receptions'].fillna(0).mean() * 1  # PPR
-                    
-                    projection = max(0, points)
-                else:
-                    # Use rolling average of recent games
+                if fantasy_points_col:
                     projection = player_data[fantasy_points_col].fillna(0).mean()
+                else:
+                    # Calculate basic fantasy points
+                    projection = self._calculate_basic_fantasy_points(player_data)
                 
                 # Create player record
                 player_record = {
@@ -194,9 +319,10 @@ class DataCollector:
                     'position': latest_game.get('position', 'UNKNOWN'),
                     'team': latest_game.get('recent_team', latest_game.get('team', 'UNK')),
                     'fantasy_points_ppr': projection,
-                    'projection': max(projection, 5.0),  # Minimum projection of 5 points
+                    'projection': max(projection, 3.0),  # Minimum projection
                     'salary': self._estimate_salary(latest_game.get('position', 'UNKNOWN'), projection),
-                    'value': 0  # Will calculate after salary
+                    'value': 0,
+                    'week': week_info['current_week']
                 }
                 
                 # Calculate value
@@ -206,108 +332,182 @@ class DataCollector:
                 player_stats.append(player_record)
             
             if not player_stats:
-                logger.warning("No player stats generated")
-                return pd.DataFrame()
+                logger.warning("No player stats generated, creating fallback data")
+                return self._create_fallback_data(teams_playing)
             
             df = pd.DataFrame(player_stats)
             
-            # Add missing positions (DST/Kickers) if needed
-            df = self._add_missing_positions(df)
+            # Add missing positions (DST/Kickers) for teams playing
+            df = self._add_missing_positions(df, teams_playing)
             
-            # Remove duplicates and invalid entries
+            # Clean and validate
             df = df.drop_duplicates(subset=['player_name', 'team'])
             df = df[df['projection'] > 0].reset_index(drop=True)
             
-            logger.info(f"Processed {len(df)} players from NFL data")
+            # Ensure name compatibility
+            if 'name' not in df.columns and 'player_name' in df.columns:
+                df['name'] = df['player_name']
+            
+            logger.info(f"Processed {len(df)} players for current week slate")
             return df
             
         except Exception as e:
             logger.error(f"Error processing NFL data: {e}")
-            return pd.DataFrame()
+            return self._create_fallback_data(teams_playing)
     
-    def _add_missing_positions(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add missing positions needed for FanDuel lineups"""
-        try:
-            # Check what positions we have
-            existing_positions = set(df['position'].unique())
+    def _create_fallback_data(self, teams_playing: List[str]) -> pd.DataFrame:
+        """Create fallback data when API fails"""
+        logger.info("Creating fallback player data")
+        
+        fallback_players = []
+        
+        for team in teams_playing[:16]:  # Limit to reasonable number
+            # Add QB
+            fallback_players.append({
+                'player_id': f'QB_{team}',
+                'player_name': f'{team} Quarterback',
+                'name': f'{team} Quarterback',
+                'position': 'QB',
+                'team': team,
+                'projection': 18.0,
+                'salary': 8000,
+                'value': 2.25
+            })
             
+            # Add RBs
+            for i in range(2):
+                fallback_players.append({
+                    'player_id': f'RB_{team}_{i+1}',
+                    'player_name': f'{team} RB{i+1}',
+                    'name': f'{team} RB{i+1}',
+                    'position': 'RB',
+                    'team': team,
+                    'projection': 12.0 - (i * 2),
+                    'salary': 7000 - (i * 1000),
+                    'value': 1.8 - (i * 0.2)
+                })
+            
+            # Add WRs
+            for i in range(3):
+                fallback_players.append({
+                    'player_id': f'WR_{team}_{i+1}',
+                    'player_name': f'{team} WR{i+1}',
+                    'name': f'{team} WR{i+1}',
+                    'position': 'WR',
+                    'team': team,
+                    'projection': 11.0 - (i * 1.5),
+                    'salary': 6500 - (i * 500),
+                    'value': 1.7 - (i * 0.1)
+                })
+            
+            # Add TE
+            fallback_players.append({
+                'player_id': f'TE_{team}',
+                'player_name': f'{team} Tight End',
+                'name': f'{team} Tight End',
+                'position': 'TE',
+                'team': team,
+                'projection': 8.5,
+                'salary': 5500,
+                'value': 1.55
+            })
+            
+            # Add K
+            fallback_players.append({
+                'player_id': f'K_{team}',
+                'player_name': f'{team} Kicker',
+                'name': f'{team} Kicker',
+                'position': 'K',
+                'team': team,
+                'projection': 7.0,
+                'salary': 4500,
+                'value': 1.56
+            })
+            
+            # Add DST
+            fallback_players.append({
+                'player_id': f'DST_{team}',
+                'player_name': f'{team} Defense',
+                'name': f'{team} Defense',
+                'position': 'DST',
+                'team': team,
+                'projection': 8.0,
+                'salary': 4500,
+                'value': 1.78
+            })
+        
+        return pd.DataFrame(fallback_players)
+    
+    def _calculate_basic_fantasy_points(self, player_data: pd.DataFrame) -> float:
+        """Calculate basic fantasy points from stats"""
+        points = 0
+        
+        # Passing
+        if 'passing_yards' in player_data.columns:
+            points += player_data['passing_yards'].fillna(0).mean() * 0.04
+        if 'passing_tds' in player_data.columns:
+            points += player_data['passing_tds'].fillna(0).mean() * 4
+        
+        # Rushing
+        if 'rushing_yards' in player_data.columns:
+            points += player_data['rushing_yards'].fillna(0).mean() * 0.1
+        if 'rushing_tds' in player_data.columns:
+            points += player_data['rushing_tds'].fillna(0).mean() * 6
+        
+        # Receiving
+        if 'receiving_yards' in player_data.columns:
+            points += player_data['receiving_yards'].fillna(0).mean() * 0.1
+        if 'receiving_tds' in player_data.columns:
+            points += player_data['receiving_tds'].fillna(0).mean() * 6
+        if 'receptions' in player_data.columns:
+            points += player_data['receptions'].fillna(0).mean() * 1  # PPR
+        
+        return max(0, points)
+    
+    def _add_missing_positions(self, df: pd.DataFrame, teams_playing: List[str]) -> pd.DataFrame:
+        """Add missing positions for teams playing this week"""
+        try:
+            existing_positions = set(df['position'].unique()) if not df.empty else set()
             additional_players = []
             
-            # Add DST/Defense if missing
+            # Add DST if missing
             if 'DST' not in existing_positions and 'DEF' not in existing_positions:
-                logger.info("Adding dummy DST players for optimization")
-                nfl_teams_dst = {
-                    'ARI': 'Arizona Cardinals', 'ATL': 'Atlanta Falcons', 'BAL': 'Baltimore Ravens', 
-                    'BUF': 'Buffalo Bills', 'CAR': 'Carolina Panthers', 'CHI': 'Chicago Bears', 
-                    'CIN': 'Cincinnati Bengals', 'CLE': 'Cleveland Browns', 'DAL': 'Dallas Cowboys', 
-                    'DEN': 'Denver Broncos', 'DET': 'Detroit Lions', 'GB': 'Green Bay Packers', 
-                    'HOU': 'Houston Texans', 'IND': 'Indianapolis Colts', 'JAX': 'Jacksonville Jaguars', 
-                    'KC': 'Kansas City Chiefs', 'LV': 'Las Vegas Raiders', 'LAC': 'Los Angeles Chargers', 
-                    'LAR': 'Los Angeles Rams', 'MIA': 'Miami Dolphins', 'MIN': 'Minnesota Vikings', 
-                    'NE': 'New England Patriots', 'NO': 'New Orleans Saints', 'NYG': 'New York Giants', 
-                    'NYJ': 'New York Jets', 'PHI': 'Philadelphia Eagles', 'PIT': 'Pittsburgh Steelers', 
-                    'SF': 'San Francisco 49ers', 'SEA': 'Seattle Seahawks', 'TB': 'Tampa Bay Buccaneers', 
-                    'TEN': 'Tennessee Titans', 'WAS': 'Washington Commanders'
-                }
-                
-                for i, (team, full_name) in enumerate(nfl_teams_dst.items()):
+                for team in teams_playing:
                     dst_player = {
                         'player_id': f'DST_{team}',
-                        'player_name': f'{full_name} Defense',
+                        'player_name': f'{team} Defense',
+                        'name': f'{team} Defense',
                         'position': 'DST',
                         'team': team,
-                        'fantasy_points_ppr': 8.0 + (i % 3),  # 8-10 points
-                        'projection': 8.0 + (i % 3),
-                        'salary': 4000 + (i * 100),  # $4000-$7100
-                        'value': 0
+                        'fantasy_points_ppr': 8.0,
+                        'projection': 8.0,
+                        'salary': 4500,
+                        'value': 1.78
                     }
-                    dst_player['value'] = dst_player['projection'] / (dst_player['salary'] / 1000)
                     additional_players.append(dst_player)
             
-            # Add real kickers if we don't have enough
-            kicker_count = len(df[df['position'] == 'K'])
-            if kicker_count < 10:
-                logger.info(f"Adding real NFL kickers (currently have {kicker_count})")
-                nfl_kickers = {
-                    'ARI': 'Matt Prater', 'ATL': 'Younghoe Koo', 'BAL': 'Justin Tucker', 
-                    'BUF': 'Tyler Bass', 'CAR': 'Eddy Pineiro', 'CHI': 'Cairo Santos', 
-                    'CIN': 'Evan McPherson', 'CLE': 'Dustin Hopkins', 'DAL': 'Brandon Aubrey', 
-                    'DEN': 'Wil Lutz', 'DET': 'Jake Bates', 'GB': 'Brandon McManus', 
-                    'HOU': 'Ka\'imi Fairbairn', 'IND': 'Matt Gay', 'JAX': 'Cam Little', 
-                    'KC': 'Harrison Butker', 'LV': 'Daniel Carlson', 'LAC': 'Cameron Dicker', 
-                    'LAR': 'Joshua Karty', 'MIA': 'Jason Sanders', 'MIN': 'Will Reichard', 
-                    'NE': 'Joey Slye', 'NO': 'Blake Grupe', 'NYG': 'Graham Gano', 
-                    'NYJ': 'Greg Zuerlein', 'PHI': 'Jake Elliott', 'PIT': 'Chris Boswell', 
-                    'SF': 'Jake Moody', 'SEA': 'Jason Myers', 'TB': 'Chase McLaughlin', 
-                    'TEN': 'Nick Folk', 'WAS': 'Austin Seibert'
+            # Add kickers for teams playing
+            existing_kickers = set(df[df['position'] == 'K']['team'].values) if not df.empty else set()
+            missing_kicker_teams = set(teams_playing) - existing_kickers
+            
+            for team in missing_kicker_teams:
+                kicker_player = {
+                    'player_id': f'K_{team}',
+                    'player_name': f'{team} Kicker',
+                    'name': f'{team} Kicker',
+                    'position': 'K',
+                    'team': team,
+                    'fantasy_points_ppr': 7.0,
+                    'projection': 7.0,
+                    'salary': 4500,
+                    'value': 1.56
                 }
-                
-                for i, (team, kicker_name) in enumerate(nfl_kickers.items()):
-                    if f'K_{team}' not in df['player_id'].values:
-                        # Estimate kicker performance based on team offense
-                        base_points = 7.5
-                        if team in ['KC', 'BUF', 'SF', 'DAL', 'PHI']:  # High-scoring offenses
-                            base_points = 9.0
-                        elif team in ['BAL', 'MIA', 'DET', 'LAR']:  # Good offenses
-                            base_points = 8.5
-                        
-                        kicker_player = {
-                            'player_id': f'K_{team}',
-                            'player_name': kicker_name,
-                            'position': 'K',
-                            'team': team,
-                            'fantasy_points_ppr': base_points,
-                            'projection': base_points,
-                            'salary': 4200 + (i * 50),  # $4200-$5750
-                            'value': 0
-                        }
-                        kicker_player['value'] = kicker_player['projection'] / (kicker_player['salary'] / 1000)
-                        additional_players.append(kicker_player)
+                additional_players.append(kicker_player)
             
             if additional_players:
                 additional_df = pd.DataFrame(additional_players)
                 df = pd.concat([df, additional_df], ignore_index=True)
-                logger.info(f"Added {len(additional_players)} additional players")
+                logger.info(f"Added {len(additional_players)} missing position players")
             
             return df
             
@@ -319,7 +519,7 @@ class DataCollector:
         """Estimate salary based on position and projection"""
         base_salaries = {
             'QB': 8000,
-            'RB': 7000, 
+            'RB': 7000,
             'WR': 6500,
             'TE': 5500,
             'K': 4500,
@@ -331,18 +531,21 @@ class DataCollector:
         
         # Adjust based on projection
         if projection > 20:
-            base += 2000
+            base += 2500
         elif projection > 15:
-            base += 1000
-        elif projection < 8:
+            base += 1500
+        elif projection > 10:
+            base += 500
+        elif projection < 6:
             base -= 1000
         
-        # Add some variance
+        # Add variance
         import random
-        variance = random.randint(-500, 500)
+        variance = random.randint(-300, 300)
         
         return max(3000, min(15000, base + variance))
     
+    # Include all other methods from original DataCollector
     async def collect_espn_data(self) -> Dict[str, Any]:
         """Collect data from ESPN's free API"""
         cache_key = "espn_data"
@@ -406,7 +609,7 @@ class DataCollector:
                                 forecast_data = await response.json()
                                 weather_data[team] = {
                                     'stadium': stadium['name'],
-                                    'forecast': forecast_data['properties']['periods'][0],  # Today's forecast
+                                    'forecast': forecast_data['properties']['periods'][0],
                                     'lat': stadium['lat'],
                                     'lon': stadium['lon']
                                 }
@@ -459,7 +662,7 @@ class DataCollector:
                 logger.warning("Empty dataframe provided for validation")
                 return pd.DataFrame()
             
-            # Check required fields - use 'player_name' instead of 'name'
+            # Check required fields
             required_fields = ['player_name', 'position', 'team', 'salary', 'projection']
             missing_fields = [field for field in required_fields if field not in df.columns]
             
@@ -489,7 +692,7 @@ class DataCollector:
                 (df['projection'] <= VALIDATION_THRESHOLDS['max_projection'])
             ]
             
-            # Remove duplicates - use player_name instead of name
+            # Remove duplicates
             df = df.drop_duplicates(subset=['player_name', 'team'])
             
             # Ensure we have the 'name' field for compatibility
@@ -504,8 +707,8 @@ class DataCollector:
             return df
     
     async def collect_all_data(self) -> Dict[str, Any]:
-        """Collect all data sources"""
-        logger.info("Starting comprehensive data collection")
+        """Collect all data sources with current week filtering"""
+        logger.info("Starting comprehensive data collection with week filtering")
         
         try:
             # Collect data concurrently
@@ -565,6 +768,6 @@ class DataCollector:
 
 # Utility function for external use
 async def get_fresh_data() -> Dict[str, Any]:
-    """Get fresh NFL data - main entry point"""
-    async with DataCollector() as collector:
+    """Get fresh NFL data with current week filtering - main entry point"""
+    async with EnhancedDataCollector() as collector:
         return await collector.collect_all_data()

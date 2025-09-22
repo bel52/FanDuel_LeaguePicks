@@ -1,19 +1,23 @@
 """
-Fixed DFS optimizer with proper single game support
+Enhanced DFS lineup optimization with proper contest type differentiation
+Fixed import issues
 """
 import pulp
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from loguru import logger
+import itertools
+from sklearn.ensemble import RandomForestRegressor
+import json
 import random
 
-from config import FANDUEL_POSITIONS, FANDUEL_SALARY_CAP
+from config import FANDUEL_POSITIONS, FANDUEL_SALARY_CAP, OPTIMIZATION_CONFIG, SINGLE_GAME_POSITIONS
 
 @dataclass
 class Player:
-    """Player data structure"""
+    """Player data structure for optimization"""
     id: str
     name: str
     position: str
@@ -28,12 +32,13 @@ class Player:
     
     def __post_init__(self):
         self.value = self.projection / (self.salary / 1000) if self.salary > 0 else 0
+        # Estimate variance based on position
         variance_multipliers = {'QB': 0.3, 'RB': 0.4, 'WR': 0.5, 'TE': 0.4, 'K': 0.6, 'DST': 0.5}
         self.variance = self.projection * variance_multipliers.get(self.position, 0.4)
 
 @dataclass
 class LineupResult:
-    """Lineup result structure"""
+    """Optimization result structure"""
     players: List[Player]
     total_salary: int
     projected_points: float
@@ -46,10 +51,13 @@ class LineupResult:
     floor_score: float = 0.0
 
 class EnhancedDFSOptimizer:
-    """Enhanced optimizer with fixed single game support"""
+    """Enhanced DFS optimization with proper contest differentiation"""
     
+    def __init__(self):
+        pass
+        
     def prepare_players(self, player_data: List[Dict], weather_data: Dict = None) -> List[Player]:
-        """Convert player data to Player objects"""
+        """Convert raw player data to Player objects"""
         players = []
         
         for data in player_data:
@@ -58,11 +66,12 @@ class EnhancedDFSOptimizer:
                     id=str(data.get('player_id', data.get('name', ''))),
                     name=data.get('player_name', data.get('name', '')),
                     position=data.get('position', ''),
-                    team=data.get('team', '').upper(),
+                    team=data.get('team', ''),
                     salary=int(data.get('salary', 5000)),
                     projection=float(data.get('projection', data.get('fantasy_points_ppr', 0)))
                 )
                 
+                # Calculate value
                 player.value = player.projection / (player.salary / 1000) if player.salary > 0 else 0
                 players.append(player)
                 
@@ -75,19 +84,17 @@ class EnhancedDFSOptimizer:
     
     def optimize_lineup(self, players: List[Player], contest_type: str = 'gpp',
                        single_game_teams: List[str] = None) -> Optional[LineupResult]:
-        """Main optimization function with single game support"""
+        """Optimize lineup with contest-specific strategies"""
         
         try:
-            logger.info(f"Starting optimization for {contest_type}")
-            
-            # Handle single game filtering
-            if single_game_teams and contest_type == 'single_game':
-                players = self._filter_single_game_players(players, single_game_teams)
+            # Filter for single game
+            if single_game_teams:
+                players = [p for p in players if p.team in single_game_teams]
                 if len(players) < 6:
-                    logger.error(f"Not enough players for single game: {len(players)} (need 6)")
+                    logger.error(f"Not enough players for single game: {len(players)}")
                     return None
             
-            # Project ownership
+            # Project ownership based on contest type
             for player in players:
                 player.ownership = self._predict_ownership(player, contest_type)
             
@@ -98,19 +105,16 @@ class EnhancedDFSOptimizer:
             for i, player in enumerate(players):
                 player_vars[i] = pulp.LpVariable(f"player_{i}", cat='Binary')
             
-            # Objective function
+            # Contest-specific objective function
             objective_terms = []
             for i, player in enumerate(players):
-                value = self._calculate_contest_value(player, contest_type)
-                objective_terms.append(value * player_vars[i])
+                points_value = self._calculate_contest_value(player, contest_type)
+                objective_terms.append(points_value * player_vars[i])
             
             prob += pulp.lpSum(objective_terms)
             
             # Add constraints
-            if contest_type == 'single_game':
-                self._add_single_game_constraints(prob, players, player_vars)
-            else:
-                self._add_regular_constraints(prob, players, player_vars)
+            self._add_constraints(prob, players, player_vars, contest_type, single_game_teams)
             
             # Solve
             prob.solve(pulp.PULP_CBC_CMD(msg=0))
@@ -123,40 +127,11 @@ class EnhancedDFSOptimizer:
                 
         except Exception as e:
             logger.error(f"Error in optimization: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
             return None
     
-    def _filter_single_game_players(self, players: List[Player], teams: List[str]) -> List[Player]:
-        """Filter players for single game contest"""
-        teams_upper = [t.upper() for t in teams]
-        logger.info(f"Filtering for single game teams: {teams_upper}")
-        
-        filtered = []
-        for player in players:
-            if player.team.upper() in teams_upper:
-                # Boost single game projections slightly
-                sg_player = Player(
-                    id=player.id, name=player.name, position=player.position,
-                    team=player.team, salary=player.salary, 
-                    projection=player.projection * 1.1,  # Single game boost
-                    ownership=player.ownership, weather_factor=player.weather_factor,
-                    injury_risk=player.injury_risk, value=player.value, variance=player.variance
-                )
-                sg_player.value = sg_player.projection / (sg_player.salary / 1000)
-                filtered.append(sg_player)
-        
-        # Log position breakdown
-        pos_count = {}
-        for p in filtered:
-            pos_count[p.position] = pos_count.get(p.position, 0) + 1
-        
-        logger.info(f"Single game players: {len(filtered)}, positions: {pos_count}")
-        return filtered
-    
     def _predict_ownership(self, player: Player, contest_type: str) -> float:
-        """Predict ownership percentage"""
-        base = max(1.0, player.salary / 300)
+        """Simple ownership prediction"""
+        base = player.salary / 300
         
         if contest_type == 'gpp':
             if player.value > 3.0:
@@ -166,84 +141,66 @@ class EnhancedDFSOptimizer:
         elif contest_type == 'contrarian':
             if player.value > 3.0:
                 base *= 0.6
-        elif contest_type == 'single_game':
-            base *= 1.2  # Higher ownership in single game
         
-        return min(50.0, base)
+        return max(1.0, min(50.0, base))
     
     def _calculate_contest_value(self, player: Player, contest_type: str) -> float:
-        """Calculate contest-specific player value"""
+        """Calculate contest-specific value"""
         base = player.projection
         
         if contest_type == 'gpp':
+            # Tournament: reward ceiling
             base += player.variance * 0.3
             if player.ownership > 25:
                 base -= (player.ownership - 25) * 0.05
         elif contest_type == 'cash':
+            # Cash: reward floor
             base -= player.variance * 0.1
             if player.ownership < 5:
                 base *= 0.9
         elif contest_type == 'contrarian':
+            # Contrarian: heavy ownership penalty
             base += player.variance * 0.4
             if player.ownership > 15:
                 base -= (player.ownership - 15) * 0.15
         elif contest_type == 'single_game':
-            # Reward high-upside players in single game
+            # Single game: game correlation
             if player.position in ['QB', 'WR', 'TE']:
-                base *= 1.2
-            base += player.variance * 0.2
+                base *= 1.1
         
         return base
     
-    def _add_single_game_constraints(self, prob, players: List[Player], player_vars: Dict):
-        """Add single game constraints"""
+    def _add_constraints(self, prob, players: List[Player], player_vars: Dict,
+                        contest_type: str, single_game_teams: List[str]):
+        """Add optimization constraints"""
         
         # Salary cap
         prob += pulp.lpSum([players[i].salary * player_vars[i] for i in range(len(players))]) <= FANDUEL_SALARY_CAP
         
-        # Exactly 6 players
-        prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == 6
-        
-        # Position diversity - at least one from each major position if available
-        position_groups = {}
-        for i, player in enumerate(players):
-            pos = player.position
-            if pos not in position_groups:
-                position_groups[pos] = []
-            position_groups[pos].append(i)
-        
-        # Ensure we have at least 1 QB if available (for MVP)
-        if 'QB' in position_groups and position_groups['QB']:
-            prob += pulp.lpSum([player_vars[i] for i in position_groups['QB']]) >= 1
-        
-        logger.info(f"Single game constraints added for {len(position_groups)} position groups")
-    
-    def _add_regular_constraints(self, prob, players: List[Player], player_vars: Dict):
-        """Add regular format constraints"""
-        
-        # Salary cap
-        prob += pulp.lpSum([players[i].salary * player_vars[i] for i in range(len(players))]) <= FANDUEL_SALARY_CAP
-        
-        # Position constraints
-        for position, count in FANDUEL_POSITIONS.items():
-            if position == 'FLEX':
-                flex_players = [i for i, p in enumerate(players) if p.position in ['RB', 'WR', 'TE']]
-                if flex_players:
-                    prob += pulp.lpSum([player_vars[i] for i in flex_players]) >= count
-            elif position == 'DST':
-                dst_players = [i for i, p in enumerate(players) if p.position in ['DST', 'DEF']]
-                if dst_players:
-                    prob += pulp.lpSum([player_vars[i] for i in dst_players]) == count
-            else:
-                pos_players = [i for i, p in enumerate(players) if p.position == position]
-                if pos_players:
-                    prob += pulp.lpSum([player_vars[i] for i in pos_players]) == count
-        
-        # Total roster size
-        prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == sum(FANDUEL_POSITIONS.values())
+        if single_game_teams:
+            # Single game: 6 players total
+            prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == 6
+        else:
+            # Regular format constraints
+            for position, count in FANDUEL_POSITIONS.items():
+                if position == 'FLEX':
+                    flex_players = [i for i, p in enumerate(players) if p.position in ['RB', 'WR', 'TE']]
+                    if flex_players:
+                        prob += pulp.lpSum([player_vars[i] for i in flex_players]) >= count
+                elif position == 'DST':
+                    dst_players = [i for i, p in enumerate(players) if p.position in ['DST', 'DEF']]
+                    if dst_players:
+                        prob += pulp.lpSum([player_vars[i] for i in dst_players]) == count
+                else:
+                    position_players = [i for i, p in enumerate(players) if p.position == position]
+                    if position_players:
+                        prob += pulp.lpSum([player_vars[i] for i in position_players]) == count
+            
+            # Total roster size
+            prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == sum(FANDUEL_POSITIONS.values())
     
     def _extract_result(self, prob, players: List[Player], player_vars: Dict, contest_type: str) -> LineupResult:
-        """Extract optimization results"""
+        """Extract results"""
         selected_players = []
         total_salary = 0
         total_ownership = 0
@@ -254,13 +211,11 @@ class EnhancedDFSOptimizer:
                 total_salary += player.salary
                 total_ownership += player.ownership
         
-        # Calculate projected points
+        # Calculate points
         if contest_type == 'single_game' and len(selected_players) == 6:
-            # Sort by projection for MVP selection
             selected_players.sort(key=lambda p: p.projection, reverse=True)
             mvp = selected_players[0]
             projected_points = mvp.projection * 1.5 + sum(p.projection for p in selected_players[1:])
-            logger.info(f"Single game MVP: {mvp.name} ({mvp.position}) - {mvp.projection:.1f} pts")
         else:
             projected_points = sum(p.projection for p in selected_players)
         
@@ -268,7 +223,7 @@ class EnhancedDFSOptimizer:
         ceiling = sum(p.projection + p.variance for p in selected_players)
         floor = sum(max(0, p.projection - p.variance) for p in selected_players)
         
-        if contest_type == 'single_game' and len(selected_players) >= 1:
+        if contest_type == 'single_game' and len(selected_players) == 6:
             mvp = max(selected_players, key=lambda p: p.projection)
             ceiling = ceiling - mvp.projection + (mvp.projection * 1.5)
             floor = floor - mvp.projection + (mvp.projection * 1.5)
@@ -279,22 +234,20 @@ class EnhancedDFSOptimizer:
             projected_points=projected_points,
             total_value=sum(p.value for p in selected_players),
             ownership_total=total_ownership,
-            correlation_score=0.5,
+            correlation_score=0.5,  # Simplified
             weather_impact=1.0,
             contest_type=contest_type,
             ceiling_score=ceiling,
             floor_score=floor
         )
     
-    def generate_multiple_lineups(self, players: List[Player], num_lineups: int = 5,
+    def generate_multiple_lineups(self, players: List[Player], num_lineups: int = 10,
                                  contest_type: str = 'gpp', single_game_teams: List[str] = None) -> List[LineupResult]:
         """Generate multiple lineups"""
-        logger.info(f"Generating {num_lineups} {contest_type} lineups")
-        
         lineups = []
         
         for i in range(num_lineups):
-            # Add randomization for diversity
+            # Add some randomization for diversity
             randomized_players = []
             for player in players:
                 new_player = Player(
@@ -303,19 +256,8 @@ class EnhancedDFSOptimizer:
                     ownership=player.ownership, weather_factor=player.weather_factor,
                     injury_risk=player.injury_risk, value=player.value, variance=player.variance
                 )
-                
-                # Add randomization for diversity
-                if contest_type == 'gpp':
-                    random_factor = random.uniform(0.95, 1.08)
-                elif contest_type == 'cash':
-                    random_factor = random.uniform(0.98, 1.02)
-                elif contest_type == 'contrarian':
-                    random_factor = random.uniform(0.90, 1.15)
-                elif contest_type == 'single_game':
-                    random_factor = random.uniform(0.95, 1.10)
-                else:
-                    random_factor = 1.0
-                
+                # Small random adjustment
+                random_factor = random.uniform(0.95, 1.05)
                 new_player.projection *= random_factor
                 new_player.value = new_player.projection / (new_player.salary / 1000)
                 randomized_players.append(new_player)
@@ -323,7 +265,6 @@ class EnhancedDFSOptimizer:
             lineup = self.optimize_lineup(randomized_players, contest_type, single_game_teams)
             if lineup:
                 lineups.append(lineup)
-                logger.info(f"Generated lineup {i+1}: {lineup.projected_points:.1f} pts, ${lineup.total_salary:,}")
         
         # Sort by appropriate metric
         if contest_type == 'cash':
@@ -331,7 +272,7 @@ class EnhancedDFSOptimizer:
         else:
             lineups.sort(key=lambda x: x.ceiling_score, reverse=True)
         
-        logger.info(f"Successfully generated {len(lineups)} {contest_type} lineups")
+        logger.info(f"Generated {len(lineups)} {contest_type} lineups")
         return lineups
     
     def export_lineups_to_csv(self, lineups: List[LineupResult], filename: str = None):
@@ -343,9 +284,11 @@ class EnhancedDFSOptimizer:
         for i, lineup in enumerate(lineups):
             lineup_row = {'Lineup': i + 1}
             
+            # Add players
             for j, player in enumerate(lineup.players):
                 lineup_row[f'Player_{j+1}'] = f"{player.name} ({player.position}) ${player.salary}"
             
+            # Add stats
             lineup_row.update({
                 'Total_Salary': lineup.total_salary,
                 'Projected_Points': round(lineup.projected_points, 2),
@@ -358,14 +301,11 @@ class EnhancedDFSOptimizer:
         df.to_csv(filename, index=False)
         return filename
 
+# Utility function
 def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None,
-                        num_lineups: int = 5, contest_type: str = 'gpp',
+                        num_lineups: int = 10, contest_type: str = 'gpp',
                         single_game_teams: List[str] = None) -> List[LineupResult]:
     """Main entry point for optimization"""
-    logger.info(f"Starting DFS optimization: {contest_type}, {num_lineups} lineups")
-    if single_game_teams:
-        logger.info(f"Single game teams: {single_game_teams}")
-    
     optimizer = EnhancedDFSOptimizer()
     players = optimizer.prepare_players(player_data, weather_data)
     
@@ -373,7 +313,5 @@ def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None,
         logger.error("No valid players for optimization")
         return []
     
+    logger.info(f"Optimizing {num_lineups} {contest_type} lineups")
     return optimizer.generate_multiple_lineups(players, num_lineups, contest_type, single_game_teams)
-
-# Backward compatibility alias
-DFSOptimizer = EnhancedDFSOptimizer
