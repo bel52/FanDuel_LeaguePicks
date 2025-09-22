@@ -246,17 +246,51 @@ async def read_root():
                     const select = document.getElementById('singleGame');
                     
                     select.innerHTML = '<option value="">Select a game...</option>';
-                    games.forEach(game => {
+                    
+                    if (!games || games.length === 0) {
+                        select.innerHTML = '<option value="">No games available</option>';
+                        return;
+                    }
+                    
+                    console.log(`Loading ${games.length} games:`, games);
+                    
+                    // Sort games by time (Thursday, then Sunday morning, afternoon, night, then Monday)
+                    const sortedGames = games.sort((a, b) => {
+                        const timeOrder = {
+                            'Thursday': 1,
+                            'Sunday 1:00': 2,
+                            'Sunday 4:05': 3,
+                            'Sunday 4:25': 4,
+                            'Sunday 8:20': 5,
+                            'Monday': 6
+                        };
+                        
+                        const getTimeKey = (time) => {
+                            if (time.includes('Thursday')) return 'Thursday';
+                            if (time.includes('Monday')) return 'Monday';
+                            if (time.includes('Sunday 1:00')) return 'Sunday 1:00';
+                            if (time.includes('Sunday 4:05')) return 'Sunday 4:05';
+                            if (time.includes('Sunday 4:25')) return 'Sunday 4:25';
+                            if (time.includes('Sunday 8:20')) return 'Sunday 8:20';
+                            return 'Sunday 1:00'; // default
+                        };
+                        
+                        return (timeOrder[getTimeKey(a.time)] || 99) - (timeOrder[getTimeKey(b.time)] || 99);
+                    });
+                    
+                    sortedGames.forEach(game => {
                         const option = document.createElement('option');
                         option.value = game.id;
                         option.textContent = `${game.away_team} @ ${game.home_team} - ${game.time} (${game.entry_range})`;
                         select.appendChild(option);
                     });
                     
-                    availableGames = games;
+                    availableGames = sortedGames;
+                    console.log(`Successfully loaded ${availableGames.length} games for single game selection`);
+                    
                 } catch (error) {
                     console.error('Error loading games:', error);
-                    document.getElementById('singleGame').innerHTML = '<option value="">Error loading games</option>';
+                    document.getElementById('singleGame').innerHTML = '<option value="">Error loading games - check console</option>';
                 }
             }
             
