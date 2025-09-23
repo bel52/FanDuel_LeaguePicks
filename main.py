@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 Enhanced main entry point for the NFL DFS Optimization System
-Fixed syntax errors and improved error handling
 """
 import asyncio
 import sys
@@ -18,7 +17,7 @@ try:
     from config import LOGS_DIR, LOGGING_CONFIG, API_PORT
     from scheduler import start_background_scheduler, stop_background_scheduler, get_scheduler
     from data_collector import get_fresh_data
-    from optimizer import optimize_dfs_lineups
+    from optimizer import optimize_dfs_lineups  # This should exist
 except ImportError as e:
     print(f"❌ Import error: {e}")
     print("🔧 Installing missing dependencies...")
@@ -40,7 +39,6 @@ except ImportError as e:
 
 def setup_logging():
     """Configure logging for the application"""
-    # Remove default handler
     logger.remove()
     
     # Add file logging
@@ -124,66 +122,13 @@ async def run_optimization_only():
             else:
                 logger.warning(f"❌ Failed to generate {display_name} lineups")
         
-        # Export lineups if any were generated
-        if all_lineups:
-            from optimizer import EnhancedDFSOptimizer
-            optimizer = EnhancedDFSOptimizer()
-            
-            for contest_type, lineups in all_lineups.items():
-                csv_file = optimizer.export_lineups_to_csv(
-                    lineups, 
-                    f"data/lineups/{contest_type}_lineups_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv"
-                )
-                logger.info(f"📄 {contest_type.upper()} lineups exported to {csv_file}")
-            
-            return True
-        else:
-            logger.error("❌ No lineups generated for any contest type")
-            return False
+        return len(all_lineups) > 0
             
     except Exception as e:
         logger.error(f"❌ Error in optimization: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return False
-
-def run_scheduler_mode():
-    """Run the automated scheduler"""
-    logger.info("🚀 Starting DFS Optimizer in scheduler mode...")
-    
-    # Setup signal handlers for graceful shutdown
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    try:
-        # Start the scheduler
-        scheduler = start_background_scheduler()
-        
-        logger.info("📅 Automated scheduler started successfully!")
-        logger.info("🌐 Web interface available at: http://localhost:8020")
-        logger.info("📊 API documentation at: http://localhost:8020/docs")
-        logger.info("⏹️  Press Ctrl+C to stop")
-        
-        # Keep the main thread alive
-        while True:
-            try:
-                import time
-                time.sleep(1)
-                
-                # Periodically log status
-                if hasattr(scheduler, 'last_update') and scheduler.last_update:
-                    pass  # Status updates handled by web interface
-                    
-            except KeyboardInterrupt:
-                break
-                
-    except Exception as e:
-        logger.error(f"❌ Error in scheduler mode: {e}")
-        return False
-    finally:
-        stop_background_scheduler()
-        
-    return True
 
 def run_web_api():
     """Run the web API server"""
@@ -192,12 +137,11 @@ def run_web_api():
     try:
         import uvicorn
         
-        # Import the fixed API
+        # Import the API
         try:
             from api import app
-        except SyntaxError as e:
-            logger.error(f"❌ Syntax error in api.py: {e}")
-            logger.error("Please check your api.py file for syntax errors")
+        except Exception as e:
+            logger.error(f"❌ Error importing API: {e}")
             return False
         
         # Start the background scheduler
@@ -213,7 +157,7 @@ def run_web_api():
         )
         
     except Exception as e:
-        logger.error(f"❌ Error starting web API: {e}")
+        logger.error(f"❌ Web API failed to start: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return False
@@ -222,45 +166,68 @@ def run_web_api():
     
     return True
 
+def test_system():
+    """Run system tests"""
+    logger.info("🧪 Running system tests...")
+    
+    try:
+        # Test imports
+        import pandas as pd
+        from data_collector import EnhancedDataCollector
+        from optimizer import EnhancedDFSOptimizer
+        from config import get_current_nfl_week, is_game_day
+        logger.info("✅ All imports successful")
+        
+        # Test current week detection
+        current_week = get_current_nfl_week()
+        game_day = is_game_day()
+        logger.info(f"✅ Current NFL week: {current_week}, Game day: {game_day}")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ System test failed: {e}")
+        return False
+
 def display_welcome():
     """Display welcome message and system info"""
     welcome_message = """
 🏈 NFL DFS OPTIMIZER v2.1 - ENHANCED
-====================================
+====================================================
 
 🎯 Enhanced Features:
-• Proper contest type differentiation (GPP vs Cash vs Contrarian)
-• Current week game detection and filtering
-• Advanced correlation modeling with weather integration
-• Real-time ownership projection with contest-specific adjustments
-• Single game format support (MVP + 5 FLEX)
-• Enhanced weather impact for outdoor stadiums only
+- Proper contest type differentiation (GPP vs Cash vs Contrarian)
+- Current week game detection and filtering
+- Advanced correlation modeling with weather integration
+- Real-time ownership projection with contest-specific adjustments
+- Single game format support (MVP + 5 FLEX)
+- Enhanced weather impact for outdoor stadiums only
 
 📊 Data Sources:
-• NFL-data-py (comprehensive player stats with week filtering)
-• ESPN API (real-time scores and current week games)
-• Weather.gov (stadium weather conditions for outdoor venues)
-• Enhanced injury report monitoring
+- NFL-data-py (comprehensive player stats with week filtering)
+- ESPN API (real-time scores and current week games)
+- Weather.gov (stadium weather conditions for outdoor venues)
+- Enhanced injury report monitoring
 
 ⚡ Optimization Engine:
-• Contest-specific strategies that actually differ
-• Proper single game team filtering
-• Enhanced correlation matrices with game context
-• Monte Carlo simulation for ceiling/floor projections
-• Advanced diversification algorithms
+- Contest-specific strategies that actually differ
+- Proper single game team filtering
+- Enhanced correlation matrices with game context
+- Monte Carlo simulation for ceiling/floor projections
+- Advanced diversification algorithms
 
 🎮 Contest Types:
-• Tournament/GPP: High-ceiling, correlation stacking, ownership leverage
-• Cash Game: High-floor, consistent plays, minimal stacking
-• Contrarian: Low-ownership fades, unconventional stacks
-• Single Game: MVP selection + game-specific correlation plays
+- Tournament/GPP: High-ceiling, correlation stacking, ownership leverage
+- Cash Game: High-floor, consistent plays, minimal stacking
+- Contrarian: Low-ownership fades, unconventional stacks
+- Single Game: MVP selection + game-specific correlation plays
 
 🔧 Technical Improvements:
-• Fixed syntax errors and import issues
-• Enhanced error handling and logging
-• Proper async/await patterns
-• Multi-level caching with intelligent invalidation
-• Real-time current week detection
+- Fixed syntax errors and import issues
+- Enhanced error handling and logging
+- Proper async/await patterns
+- Multi-level caching with intelligent invalidation
+- Real-time current week detection
 """
     print(welcome_message)
 
@@ -306,29 +273,7 @@ def main():
         elif args.mode == 'optimize':
             success = asyncio.run(run_optimization_only())
         elif args.mode == 'test':
-            # Run system tests
-            logger.info("🧪 Running system tests...")
-            success = True
-            
-            # Test imports
-            try:
-                import pandas as pd
-                from data_collector import EnhancedDataCollector
-                from optimizer import EnhancedDFSOptimizer
-                from config import get_current_nfl_week, is_game_day
-                logger.info("✅ All imports successful")
-            except Exception as e:
-                logger.error(f"❌ Import test failed: {e}")
-                success = False
-            
-            # Test current week detection
-            try:
-                current_week = get_current_nfl_week()
-                game_day = is_game_day()
-                logger.info(f"✅ Current NFL week: {current_week}, Game day: {game_day}")
-            except Exception as e:
-                logger.error(f"❌ Week detection failed: {e}")
-                success = False
+            success = test_system()
             
     except KeyboardInterrupt:
         logger.info("👋 Interrupted by user")
@@ -345,6 +290,39 @@ def main():
     else:
         logger.error("❌ Operation failed")
         sys.exit(1)
+
+def run_scheduler_mode():
+    """Run the automated scheduler"""
+    logger.info("🚀 Starting DFS Optimizer in scheduler mode...")
+    
+    # Setup signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        # Start the scheduler
+        scheduler = start_background_scheduler()
+        
+        logger.info("📅 Automated scheduler started successfully!")
+        logger.info("🌐 Web interface available at: http://localhost:8020")
+        logger.info("⏹️  Press Ctrl+C to stop")
+        
+        # Keep the main thread alive
+        while True:
+            try:
+                import time
+                time.sleep(1)
+                    
+            except KeyboardInterrupt:
+                break
+                
+    except Exception as e:
+        logger.error(f"❌ Error in scheduler mode: {e}")
+        return False
+    finally:
+        stop_background_scheduler()
+        
+    return True
 
 if __name__ == "__main__":
     main()

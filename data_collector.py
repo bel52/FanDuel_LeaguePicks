@@ -100,7 +100,7 @@ class EnhancedDataCollector:
             from fanduel_salary_scraper import get_fanduel_salaries
             salary_data = await get_fanduel_salaries()
             
-            if salary_data.empty or len(salary_data) < 50:
+            if not salary_data or len(salary_data) < 50:
                 logger.error("❌ CRITICAL: No valid FanDuel salaries found!")
                 raise Exception("Cannot proceed without real FanDuel salaries")
             
