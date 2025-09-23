@@ -987,30 +987,3 @@ if __name__ == "__main__":
         reload=False,
         log_level="info"
     )
-
-def get_teams_from_game_id_enhanced(game_id: str) -> List[str]:
-    """Enhanced team mapping for single games"""
-    
-    # Current week team mappings - UPDATE WEEKLY
-    current_week_games = {
-        "game_1": ["PHI", "WAS"],
-        "game_2": ["BAL", "BUF"], 
-        "game_3": ["DET", "GB"],
-        "game_4": ["KC", "LAC"],
-        "game_5": ["SF", "DAL"],
-        "game_6": ["TEN", "MIA"],
-        "game_7": ["NYG", "MIN"],
-        "game_8": ["CIN", "PIT"],
-        "game_9": ["HOU", "JAX"],
-        "game_10": ["ATL", "CAR"],
-        "game_11": ["LAR", "ARI"],
-        "game_12": ["TB", "NO"],
-        "game_13": ["DEN", "NYJ"],
-        "game_14": ["CLE", "LV"],
-        "game_15": ["NE", "SEA"],
-        "game_16": ["CHI", "IND"]
-    }
-    
-    teams = current_week_games.get(game_id, [])
-    logger.info(f"Enhanced mapping - Game {game_id}: {teams}")
-    return teams

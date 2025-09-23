@@ -1,5 +1,5 @@
 """
-Fixed DFS optimizer with proper single game support
+Fixed DFS optimizer with proper single game support and late-swap functionality
 """
 import pulp
 import pandas as pd
@@ -25,6 +25,7 @@ class Player:
     injury_risk: float = 0.0
     value: float = 0.0
     variance: float = 0.0
+    is_locked: bool = False  # NEW: For late-swap functionality
     
     def __post_init__(self):
         self.value = self.projection / (self.salary / 1000) if self.salary > 0 else 0
@@ -44,13 +45,16 @@ class LineupResult:
     contest_type: str
     ceiling_score: float = 0.0
     floor_score: float = 0.0
+    locked_players: List[str] = None  # NEW: Track locked players for late swap
 
 class EnhancedDFSOptimizer:
-    """Enhanced optimizer with fixed single game support"""
+    """Enhanced optimizer with fixed single game support and late-swap functionality"""
     
-    def prepare_players(self, player_data: List[Dict], weather_data: Dict = None) -> List[Player]:
-        """Convert player data to Player objects"""
+    def prepare_players(self, player_data: List[Dict], weather_data: Dict = None, 
+                       locked_players: List[str] = None) -> List[Player]:
+        """Convert player data to Player objects with late-swap locking support"""
         players = []
+        locked_set = set(locked_players or [])
         
         for data in player_data:
             try:
@@ -60,18 +64,226 @@ class EnhancedDFSOptimizer:
                     position=data.get('position', ''),
                     team=data.get('team', '').upper(),
                     salary=int(data.get('salary', 5000)),
-                    projection=float(data.get('projection', data.get('fantasy_points_ppr', 0)))
+                    projection=float(data.get('projection', data.get('fantasy_points_ppr', 0))),
+                    is_locked=data.get('player_name', data.get('name', '')) in locked_set
                 )
                 
                 player.value = player.projection / (player.salary / 1000) if player.salary > 0 else 0
                 players.append(player)
                 
+                if player.is_locked:
+                    logger.debug(f"🔒 Player locked for late swap: {player.name}")
+                
             except Exception as e:
                 logger.error(f"Error processing player {data}: {e}")
                 continue
         
-        logger.info(f"Prepared {len(players)} players for optimization")
+        logger.info(f"Prepared {len(players)} players for optimization ({len(locked_set)} locked)")
         return players
+
+    # ============================================================================
+    # LATE-SWAP FUNCTIONALITY (NEW)
+    # ============================================================================
+    
+    def lock_started_players(self, lineups: List[LineupResult], started_games: List[Dict]) -> List[LineupResult]:
+        """Lock players from started games in existing lineups"""
+        if not started_games:
+            logger.info("No started games to lock players from")
+            return lineups
+        
+        started_teams = set()
+        for game in started_games:
+            started_teams.update(game.get('teams', []))
+        
+        logger.info(f"🔒 Locking players from started teams: {started_teams}")
+        
+        locked_lineups = []
+        for lineup in lineups:
+            locked_players = []
+            for player in lineup.players:
+                if player.team.upper() in started_teams:
+                    player.is_locked = True
+                    locked_players.append(player.name)
+            
+            # Update lineup with locked player info
+            new_lineup = LineupResult(
+                players=lineup.players,
+                total_salary=lineup.total_salary,
+                projected_points=lineup.projected_points,
+                total_value=lineup.total_value,
+                ownership_total=lineup.ownership_total,
+                correlation_score=lineup.correlation_score,
+                weather_impact=lineup.weather_impact,
+                contest_type=lineup.contest_type,
+                ceiling_score=lineup.ceiling_score,
+                floor_score=lineup.floor_score,
+                locked_players=locked_players
+            )
+            
+            locked_lineups.append(new_lineup)
+            logger.debug(f"Lineup locked {len(locked_players)} players: {locked_players[:3]}...")
+        
+        return locked_lineups
+    
+    def generate_late_swap_lineups(self, available_players: List[Player], 
+                                  locked_lineup: LineupResult, 
+                                  contest_type: str = 'gpp') -> List[LineupResult]:
+        """Generate new lineups for late slate while keeping locked players"""
+        logger.info(f"🔄 Generating late swap lineups for {contest_type}")
+        
+        if not locked_lineup.locked_players:
+            logger.warning("No locked players found, treating as normal optimization")
+            return self.generate_multiple_lineups(available_players, 5, contest_type)
+        
+        # Separate locked and available players
+        locked_players = [p for p in locked_lineup.players if p.is_locked]
+        unlocked_positions = []
+        
+        # Determine which positions need to be filled
+        total_positions = ['QB', 'RB', 'RB', 'WR', 'WR', 'WR', 'TE', 'FLEX', 'DST']
+        used_positions = []
+        
+        for player in locked_players:
+            if player.position in total_positions:
+                used_positions.append(player.position)
+                if used_positions.count(player.position) <= total_positions.count(player.position):
+                    total_positions.remove(player.position)
+        
+        remaining_positions = total_positions
+        logger.info(f"🎯 Need to fill positions: {remaining_positions}")
+        
+        if not remaining_positions:
+            logger.warning("All positions already filled by locked players")
+            return [locked_lineup]
+        
+        # Filter available players to late slate only
+        late_slate_players = [p for p in available_players if not p.is_locked]
+        
+        if len(late_slate_players) < len(remaining_positions):
+            logger.error(f"Not enough late slate players ({len(late_slate_players)}) for remaining positions ({len(remaining_positions)})")
+            return [locked_lineup]
+        
+        # Generate optimized lineups with locked players as constraints
+        late_swap_lineups = []
+        
+        for i in range(5):  # Generate 5 late swap options
+            try:
+                # Create optimization problem
+                prob = pulp.LpProblem("Late_Swap_DFS", pulp.LpMaximize)
+                
+                player_vars = {}
+                for j, player in enumerate(late_slate_players):
+                    player_vars[j] = pulp.LpVariable(f"player_{j}", cat='Binary')
+                
+                # Objective function
+                objective_terms = []
+                for j, player in enumerate(late_slate_players):
+                    value = self._calculate_contest_value(player, contest_type)
+                    # Add randomization for diversity
+                    random_factor = random.uniform(0.95, 1.08)
+                    objective_terms.append(value * random_factor * player_vars[j])
+                
+                prob += pulp.lpSum(objective_terms)
+                
+                # Salary constraint (subtract locked players' salaries)
+                locked_salary = sum(p.salary for p in locked_players)
+                remaining_salary = FANDUEL_SALARY_CAP - locked_salary
+                
+                prob += pulp.lpSum([late_slate_players[j].salary * player_vars[j] 
+                                  for j in range(len(late_slate_players))]) <= remaining_salary
+                
+                # Position constraints for remaining positions
+                prob += pulp.lpSum([player_vars[j] for j in range(len(late_slate_players))]) == len(remaining_positions)
+                
+                # Solve
+                prob.solve(pulp.PULP_CBC_CMD(msg=0))
+                
+                if prob.status == pulp.LpStatusOptimal:
+                    selected_late_players = []
+                    for j, player in enumerate(late_slate_players):
+                        if player_vars[j].varValue == 1:
+                            selected_late_players.append(player)
+                    
+                    # Combine locked and selected players
+                    combined_players = locked_players + selected_late_players
+                    
+                    # Calculate new lineup metrics
+                    total_salary = sum(p.salary for p in combined_players)
+                    projected_points = sum(p.projection for p in combined_players)
+                    ownership_total = sum(p.ownership for p in combined_players)
+                    
+                    late_swap_lineup = LineupResult(
+                        players=combined_players,
+                        total_salary=total_salary,
+                        projected_points=projected_points,
+                        total_value=sum(p.value for p in combined_players),
+                        ownership_total=ownership_total,
+                        correlation_score=0.5,  # Simplified for late swap
+                        weather_impact=1.0,
+                        contest_type=f"{contest_type}_late_swap",
+                        ceiling_score=sum(p.projection + p.variance for p in combined_players),
+                        floor_score=sum(max(0, p.projection - p.variance) for p in combined_players),
+                        locked_players=[p.name for p in locked_players]
+                    )
+                    
+                    late_swap_lineups.append(late_swap_lineup)
+                    logger.info(f"✅ Late swap lineup {i+1}: {projected_points:.1f} pts, ${total_salary:,}")
+                
+            except Exception as e:
+                logger.error(f"Error generating late swap lineup {i+1}: {e}")
+                continue
+        
+        if not late_swap_lineups:
+            logger.warning("No late swap lineups generated, returning original")
+            return [locked_lineup]
+        
+        # Sort by appropriate metric
+        if contest_type == 'cash':
+            late_swap_lineups.sort(key=lambda x: x.floor_score, reverse=True)
+        else:
+            late_swap_lineups.sort(key=lambda x: x.ceiling_score, reverse=True)
+        
+        logger.info(f"🔄 Generated {len(late_swap_lineups)} late swap lineups")
+        return late_swap_lineups
+    
+    def assess_late_swap_value(self, current_lineup: LineupResult, 
+                              alternative_lineups: List[LineupResult]) -> Dict[str, Any]:
+        """Assess whether late swap provides value over current lineup"""
+        if not alternative_lineups:
+            return {
+                'recommendation': 'keep_current',
+                'reason': 'No viable alternatives',
+                'expected_value_change': 0.0
+            }
+        
+        best_alternative = max(alternative_lineups, key=lambda x: x.projected_points)
+        value_change = best_alternative.projected_points - current_lineup.projected_points
+        
+        # Consider ownership leverage
+        ownership_change = best_alternative.ownership_total - current_lineup.ownership_total
+        
+        recommendation = 'keep_current'
+        reason = 'Current lineup is optimal'
+        
+        if value_change > 1.0:  # More than 1 point improvement
+            recommendation = 'swap_recommended'
+            reason = f'Expected +{value_change:.1f} points improvement'
+        elif value_change > 0.5 and ownership_change < -5:  # Small improvement but better leverage
+            recommendation = 'swap_for_leverage'
+            reason = f'Slight improvement (+{value_change:.1f} pts) with better ownership leverage'
+        
+        return {
+            'recommendation': recommendation,
+            'reason': reason,
+            'expected_value_change': value_change,
+            'ownership_change': ownership_change,
+            'best_alternative': best_alternative,
+            'current_lineup': current_lineup
+        }
+
+    # ============================================================================
+    # EXISTING OPTIMIZATION METHODS (PRESERVED)
+    # ============================================================================
     
     def optimize_lineup(self, players: List[Player], contest_type: str = 'gpp',
                        single_game_teams: List[str] = None) -> Optional[LineupResult]:
@@ -141,7 +353,8 @@ class EnhancedDFSOptimizer:
                     team=player.team, salary=player.salary, 
                     projection=player.projection * 1.1,  # Single game boost
                     ownership=player.ownership, weather_factor=player.weather_factor,
-                    injury_risk=player.injury_risk, value=player.value, variance=player.variance
+                    injury_risk=player.injury_risk, value=player.value, variance=player.variance,
+                    is_locked=player.is_locked
                 )
                 sg_player.value = sg_player.projection / (sg_player.salary / 1000)
                 filtered.append(sg_player)
@@ -283,7 +496,8 @@ class EnhancedDFSOptimizer:
             weather_impact=1.0,
             contest_type=contest_type,
             ceiling_score=ceiling,
-            floor_score=floor
+            floor_score=floor,
+            locked_players=[p.name for p in selected_players if p.is_locked]
         )
     
     def generate_multiple_lineups(self, players: List[Player], num_lineups: int = 5,
@@ -301,7 +515,8 @@ class EnhancedDFSOptimizer:
                     id=player.id, name=player.name, position=player.position,
                     team=player.team, salary=player.salary, projection=player.projection,
                     ownership=player.ownership, weather_factor=player.weather_factor,
-                    injury_risk=player.injury_risk, value=player.value, variance=player.variance
+                    injury_risk=player.injury_risk, value=player.value, variance=player.variance,
+                    is_locked=player.is_locked
                 )
                 
                 # Add randomization for diversity
@@ -349,7 +564,8 @@ class EnhancedDFSOptimizer:
             lineup_row.update({
                 'Total_Salary': lineup.total_salary,
                 'Projected_Points': round(lineup.projected_points, 2),
-                'Contest_Type': lineup.contest_type
+                'Contest_Type': lineup.contest_type,
+                'Locked_Players': len(lineup.locked_players or [])
             })
             
             lineup_data.append(lineup_row)
@@ -360,14 +576,17 @@ class EnhancedDFSOptimizer:
 
 def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None,
                         num_lineups: int = 5, contest_type: str = 'gpp',
-                        single_game_teams: List[str] = None) -> List[LineupResult]:
-    """Main entry point for optimization"""
+                        single_game_teams: List[str] = None, 
+                        locked_players: List[str] = None) -> List[LineupResult]:
+    """Main entry point for optimization with late-swap support"""
     logger.info(f"Starting DFS optimization: {contest_type}, {num_lineups} lineups")
     if single_game_teams:
         logger.info(f"Single game teams: {single_game_teams}")
+    if locked_players:
+        logger.info(f"Locked players: {locked_players}")
     
     optimizer = EnhancedDFSOptimizer()
-    players = optimizer.prepare_players(player_data, weather_data)
+    players = optimizer.prepare_players(player_data, weather_data, locked_players)
     
     if not players:
         logger.error("No valid players for optimization")
