@@ -112,7 +112,7 @@ class EnhancedDataCollector:
             return []
         
         # Filter salary data to only playing teams
-        valid_salary_data = salary_data[salary_data['Team'].str.upper().isin(playing_teams)]
+        valid_salary_data = [p for p in salary_data if p.get('team', '').upper() in playing_teams]
         
         if len(valid_salary_data) < 20:
             logger.error(f"❌ Only {len(valid_salary_data)} players with valid salaries for playing teams")
@@ -121,16 +121,16 @@ class EnhancedDataCollector:
         
         # Convert salary data to player format
         players = []
-        for _, row in valid_salary_data.iterrows():
+        for row in valid_salary_data:
             try:
                 player = {
-                    'player_id': f"fd_{row.get('Name', '')}",
-                    'player_name': row.get('Name', ''),
-                    'name': row.get('Name', ''),
-                    'position': row.get('Position', ''),
-                    'team': row.get('Team', '').upper(),
-                    'salary': int(row.get('Salary', 0)),
-                    'projection': float(row.get('FPPG', 10.0)),  # Use their projection if available
+                    'player_id': f"fd_{row.get('name', '')}",
+                    'player_name': row.get('name', ''),
+                    'name': row.get('name', ''),
+                    'position': row.get('position', ''),
+                    'team': row.get('team', '').upper(),
+                    'salary': int(row.get('salary', 0)),
+                    'projection': float(row.get('projected_points', 10.0)),  # Use their projection if available
                     'value': 0.0,  # Will calculate after
                     'source': 'fanduel_exact'
                 }
