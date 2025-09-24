@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Tuple, Union
 from loguru import logger
 import math
+import csv
+from pathlib import Path
 
 # FanDuel constraints - CORRECTED for actual FanDuel format
 FANDUEL_SALARY_CAP = 60000
@@ -42,9 +44,14 @@ class LineupResult:
     players: List[Player] = field(default_factory=list)
     total_salary: int = 0
     projected_points: float = 0.0
-    expected_ownership: float = 0.0
-    ceiling: float = 0.0
-    floor: float = 0.0
+    ownership_total: float = 0.0
+    correlation_score: float = 0.0
+    ceiling_score: float = 0.0
+    floor_score: float = 0.0
+    contest_type: str = 'gpp'
+    expected_ownership: float = 0.0  # Alias for ownership_total
+    ceiling: float = 0.0             # Alias for ceiling_score  
+    floor: float = 0.0               # Alias for floor_score
 
 class DFSOptimizer:
     """Enhanced DFS optimizer with late-swap support"""
@@ -67,6 +74,55 @@ class DFSOptimizer:
             logger.info(f"🏈 Single game mode: {single_game_teams}")
             
         return self.generate_multiple_lineups(players, contest_type, num_lineups, single_game_teams)
+    
+    def export_lineups_to_csv(self, lineups: List[LineupResult], filename: str):
+        """Export lineups to CSV format for FanDuel upload"""
+        try:
+            filepath = Path(filename)
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(filepath, 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                
+                # Write header
+                writer.writerow(['QB', 'RB', 'RB', 'WR', 'WR', 'WR', 'TE', 'FLEX', 'D'])
+                
+                # Write each lineup
+                for lineup in lineups:
+                    row = [''] * 9
+                    positions_filled = {'QB': 0, 'RB': 0, 'WR': 0, 'TE': 0, 'D': 0}
+                    flex_candidates = []
+                    
+                    for player in lineup.players:
+                        pos = player.position
+                        if pos == 'QB' and positions_filled['QB'] < 1:
+                            row[0] = player.name
+                            positions_filled['QB'] += 1
+                        elif pos == 'RB' and positions_filled['RB'] < 2:
+                            row[1 + positions_filled['RB']] = player.name
+                            positions_filled['RB'] += 1
+                        elif pos == 'WR' and positions_filled['WR'] < 3:
+                            row[3 + positions_filled['WR']] = player.name
+                            positions_filled['WR'] += 1
+                        elif pos == 'TE' and positions_filled['TE'] < 1:
+                            row[6] = player.name
+                            positions_filled['TE'] += 1
+                        elif pos == 'D' and positions_filled['D'] < 1:
+                            row[8] = player.name
+                            positions_filled['D'] += 1
+                        elif pos in ['RB', 'WR', 'TE']:
+                            flex_candidates.append(player)
+                    
+                    # Fill FLEX position with remaining player
+                    if flex_candidates and row[7] == '':
+                        row[7] = flex_candidates[0].name
+                    
+                    writer.writerow(row)
+                    
+            logger.info(f"📄 Exported {len(lineups)} lineups to {filepath}")
+            
+        except Exception as e:
+            logger.error(f"Error exporting lineups to CSV: {e}")
     
     def prepare_players(self, player_data: Union[List[Player], List[Dict]], 
                        weather_data: Dict = None, locked_players: List[Player] = None) -> List[Player]:
@@ -173,84 +229,10 @@ class DFSOptimizer:
         prob.solve(pulp.PULP_CBC_CMD(msg=0))
         
         # Extract results
-        return self._extract_result(prob, players, player_vars)
-    
-    def optimize_late_swap(self, current_lineup: List[Player], locked_players: List[Player],
-                          available_players: List[Player], contest_type: str = 'gpp') -> LineupResult:
-        """Optimize lineup with locked players from started games"""
-        logger.info(f"🔄 Late swap optimization: {len(locked_players)} locked players")
-        
-        # Calculate locked salary and positions
-        locked_salary = sum(p.salary for p in locked_players)
-        locked_positions = {}
-        for player in locked_players:
-            locked_positions[player.position] = locked_positions.get(player.position, 0) + 1
-        
-        remaining_salary = FANDUEL_SALARY_CAP - locked_salary
-        remaining_positions = {}
-        for pos, count in FANDUEL_POSITIONS.items():
-            remaining_positions[pos] = count - locked_positions.get(pos, 0)
-        
-        # Filter available players by remaining constraints
-        valid_players = []
-        for player in available_players:
-            if (player.salary <= remaining_salary and 
-                remaining_positions.get(player.position, 0) > 0):
-                valid_players.append(player)
-        
-        if not valid_players:
-            logger.warning("⚠️  No valid players for late swap")
-            return LineupResult(players=locked_players)
-        
-        # Create optimization problem
-        prob = pulp.LpProblem("Late_Swap_Optimization", pulp.LpMaximize)
-        player_vars = {}
-        
-        for player in valid_players:
-            player_vars[player.id] = pulp.LpVariable(f"player_{player.id}", cat='Binary')
-        
-        # Objective function based on contest type
-        if contest_type == 'cash':
-            prob += pulp.lpSum([
-                player_vars[player.id] * player.floor for player in valid_players
-            ])
-        else:
-            prob += pulp.lpSum([
-                player_vars[player.id] * player.ceiling for player in valid_players
-            ])
-        
-        # Salary constraint
-        prob += pulp.lpSum([
-            player_vars[player.id] * player.salary for player in valid_players
-        ]) <= remaining_salary
-        
-        # Position constraints
-        for position, needed in remaining_positions.items():
-            if needed > 0:
-                position_players = [p for p in valid_players if p.position == position]
-                prob += pulp.lpSum([
-                    player_vars[player.id] for player in position_players
-                ]) == needed
-        
-        # Solve
-        prob.solve(pulp.PULP_CBC_CMD(msg=0))
-        
-        # Combine locked + optimized players
-        selected_players = locked_players.copy()
-        if prob.status == pulp.LpStatusOptimal:
-            for player in valid_players:
-                if player_vars[player.id].varValue == 1:
-                    selected_players.append(player)
-        
-        result = LineupResult(players=selected_players)
-        result.total_salary = sum(p.salary for p in selected_players)
-        result.projected_points = sum(p.projected_points for p in selected_players)
-        
-        logger.info(f"✅ Late swap complete: {len(selected_players)} players, ${result.total_salary}")
-        return result
+        return self._extract_result(prob, players, player_vars, contest_type)
     
     def _extract_result(self, prob, players: List[Player], player_vars: Dict, 
-                       locked_players: List[Player] = None) -> LineupResult:
+                       contest_type: str = 'gpp', locked_players: List[Player] = None) -> LineupResult:
         """Extract lineup result from solved optimization problem"""
         
         if prob.status != pulp.LpStatusOptimal:
@@ -271,15 +253,24 @@ class DFSOptimizer:
         # Calculate totals
         total_salary = sum(p.salary for p in selected_players)
         projected_points = sum(p.projected_points for p in selected_players)
-        ceiling = sum(p.ceiling for p in selected_players)
-        floor = sum(p.floor for p in selected_players)
+        ceiling_score = sum(p.ceiling for p in selected_players)
+        floor_score = sum(p.floor for p in selected_players)
+        ownership_total = sum(p.ownership or 10.0 for p in selected_players) / len(selected_players)
+        correlation_score = 0.5  # Default correlation score
         
         return LineupResult(
             players=selected_players,
             total_salary=total_salary,
             projected_points=projected_points,
-            ceiling=ceiling,
-            floor=floor
+            ceiling_score=ceiling_score,
+            floor_score=floor_score,
+            ownership_total=ownership_total,
+            correlation_score=correlation_score,
+            contest_type=contest_type,
+            # Set aliases
+            expected_ownership=ownership_total,
+            ceiling=ceiling_score,
+            floor=floor_score
         )
     
     def _add_regular_constraints(self, prob, players: List[Player], player_vars: Dict):

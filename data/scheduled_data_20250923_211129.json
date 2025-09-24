@@ -1,0 +1,1462 @@
+{
+  "players": [
+    {
+      "player_id": "fd_Derrick Henry",
+      "player_name": "Derrick Henry",
+      "name": "Derrick Henry",
+      "position": "RB",
+      "team": "BAL",
+      "salary": 9000,
+      "projection": 14.733333587646484,
+      "value": 1.6370370652940538,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Josh Allen",
+      "player_name": "Josh Allen",
+      "name": "Josh Allen",
+      "position": "QB",
+      "team": "BUF",
+      "salary": 9000,
+      "projection": 25.53333282470703,
+      "value": 2.8370369805230036,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Amon-Ra St. Brown",
+      "player_name": "Amon-Ra St. Brown",
+      "name": "Amon-Ra St. Brown",
+      "position": "WR",
+      "team": "DET",
+      "salary": 8800,
+      "projection": 20.46666717529297,
+      "value": 2.325757633556019,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Lamar Jackson",
+      "player_name": "Lamar Jackson",
+      "name": "Lamar Jackson",
+      "position": "QB",
+      "team": "BAL",
+      "salary": 8700,
+      "projection": 27.56000010172526,
+      "value": 3.167816103646582,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Saquon Barkley",
+      "player_name": "Saquon Barkley",
+      "name": "Saquon Barkley",
+      "position": "RB",
+      "team": "PHI",
+      "salary": 8700,
+      "projection": 13.433333079020182,
+      "value": 1.5440612734505956,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_James Cook III",
+      "player_name": "James Cook III",
+      "name": "James Cook III",
+      "position": "RB",
+      "team": "BUF",
+      "salary": 8500,
+      "projection": 23.33333333333333,
+      "value": 2.745098039215686,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Jalen Hurts",
+      "player_name": "Jalen Hurts",
+      "name": "Jalen Hurts",
+      "position": "QB",
+      "team": "PHI",
+      "salary": 8500,
+      "projection": 21.62000020345052,
+      "value": 2.5435294357000613,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Jahmyr Gibbs",
+      "player_name": "Jahmyr Gibbs",
+      "name": "Jahmyr Gibbs",
+      "position": "RB",
+      "team": "DET",
+      "salary": 8300,
+      "projection": 17.433333079020183,
+      "value": 2.1004015757855643,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Jayden Daniels",
+      "player_name": "Jayden Daniels",
+      "name": "Jayden Daniels",
+      "position": "QB",
+      "team": "WAS",
+      "salary": 8200,
+      "projection": 19.90999984741211,
+      "value": 2.4280487618795257,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_A.J. Brown",
+      "player_name": "A.J. Brown",
+      "name": "A.J. Brown",
+      "position": "WR",
+      "team": "PHI",
+      "salary": 8000,
+      "projection": 9.799999872843424,
+      "value": 1.224999984105428,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Jared Goff",
+      "player_name": "Jared Goff",
+      "name": "Jared Goff",
+      "position": "QB",
+      "team": "DET",
+      "salary": 7600,
+      "projection": 20.513333638509117,
+      "value": 2.6991228471722524,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Zay Flowers",
+      "player_name": "Zay Flowers",
+      "name": "Zay Flowers",
+      "position": "WR",
+      "team": "BAL",
+      "salary": 7300,
+      "projection": 13.766666412353516,
+      "value": 1.8858447140210295,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Jameson Williams",
+      "player_name": "Jameson Williams",
+      "name": "Jameson Williams",
+      "position": "WR",
+      "team": "DET",
+      "salary": 6800,
+      "projection": 10.233333587646484,
+      "value": 1.5049019981833065,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_David Montgomery",
+      "player_name": "David Montgomery",
+      "name": "David Montgomery",
+      "position": "RB",
+      "team": "DET",
+      "salary": 6700,
+      "projection": 16.933333079020183,
+      "value": 2.5273631461224153,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_DeVonta Smith",
+      "player_name": "DeVonta Smith",
+      "name": "DeVonta Smith",
+      "position": "WR",
+      "team": "PHI",
+      "salary": 6600,
+      "projection": 8.799999872843424,
+      "value": 1.3333333140671855,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Marcus Mariota",
+      "player_name": "Marcus Mariota",
+      "name": "Marcus Mariota",
+      "position": "QB",
+      "team": "WAS",
+      "salary": 6600,
+      "projection": 20.280000686645508,
+      "value": 3.072727376764471,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Deebo Samuel Sr.",
+      "player_name": "Deebo Samuel Sr.",
+      "name": "Deebo Samuel Sr.",
+      "position": "WR",
+      "team": "WAS",
+      "salary": 6400,
+      "projection": 12.300000508626304,
+      "value": 1.92187507947286,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Terry McLaurin",
+      "player_name": "Terry McLaurin",
+      "name": "Terry McLaurin",
+      "position": "WR",
+      "team": "WAS",
+      "salary": 6200,
+      "projection": 6.633333206176758,
+      "value": 1.0698924526091544,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Kyle McCord",
+      "player_name": "Kyle McCord",
+      "name": "Kyle McCord",
+      "position": "QB",
+      "team": "PHI",
+      "salary": 6000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Sam Howell",
+      "player_name": "Sam Howell",
+      "name": "Sam Howell",
+      "position": "QB",
+      "team": "PHI",
+      "salary": 6000,
+      "projection": 0.0799999982118606,
+      "value": 0.0133333330353101,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Sam LaPorta",
+      "player_name": "Sam LaPorta",
+      "name": "Sam LaPorta",
+      "position": "TE",
+      "team": "DET",
+      "salary": 6000,
+      "projection": 6.766666412353516,
+      "value": 1.1277777353922527,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Shane Buechele",
+      "player_name": "Shane Buechele",
+      "name": "Shane Buechele",
+      "position": "QB",
+      "team": "BUF",
+      "salary": 6000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_C.J. Beathard",
+      "player_name": "C.J. Beathard",
+      "name": "C.J. Beathard",
+      "position": "QB",
+      "team": "DET",
+      "salary": 6000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Tyler Huntley",
+      "player_name": "Tyler Huntley",
+      "name": "Tyler Huntley",
+      "position": "QB",
+      "team": "BAL",
+      "salary": 6000,
+      "projection": 12.731999969482422,
+      "value": 2.121999994913737,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Tanner McKee",
+      "player_name": "Tanner McKee",
+      "name": "Tanner McKee",
+      "position": "QB",
+      "team": "PHI",
+      "salary": 6000,
+      "projection": 7.204999923706055,
+      "value": 1.2008333206176758,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Sam Hartman",
+      "player_name": "Sam Hartman",
+      "name": "Sam Hartman",
+      "position": "QB",
+      "team": "WAS",
+      "salary": 6000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Cooper Rush",
+      "player_name": "Cooper Rush",
+      "name": "Cooper Rush",
+      "position": "QB",
+      "team": "BAL",
+      "salary": 6000,
+      "projection": -0.4000000059604645,
+      "value": -0.06666666766007741,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Mitchell Trubisky",
+      "player_name": "Mitchell Trubisky",
+      "name": "Mitchell Trubisky",
+      "position": "QB",
+      "team": "BUF",
+      "salary": 6000,
+      "projection": 0.9800000190734864,
+      "value": 0.16333333651224774,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Malik Cunningham",
+      "player_name": "Malik Cunningham",
+      "name": "Malik Cunningham",
+      "position": "QB",
+      "team": "DET",
+      "salary": 6000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Josh Johnson",
+      "player_name": "Josh Johnson",
+      "name": "Josh Johnson",
+      "position": "QB",
+      "team": "WAS",
+      "salary": 6000,
+      "projection": 0.1949999928474426,
+      "value": 0.0324999988079071,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Kyle Allen",
+      "player_name": "Kyle Allen",
+      "name": "Kyle Allen",
+      "position": "QB",
+      "team": "DET",
+      "salary": 6000,
+      "projection": 0.3799999952316284,
+      "value": 0.06333333253860474,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Khalil Shakir",
+      "player_name": "Khalil Shakir",
+      "name": "Khalil Shakir",
+      "position": "WR",
+      "team": "BUF",
+      "salary": 5900,
+      "projection": 7.866666793823242,
+      "value": 1.3333333548852953,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Keon Coleman",
+      "player_name": "Keon Coleman",
+      "name": "Keon Coleman",
+      "position": "WR",
+      "team": "BUF",
+      "salary": 5700,
+      "projection": 10.59999974568685,
+      "value": 1.8596490781906754,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Chris Rodriguez Jr.",
+      "player_name": "Chris Rodriguez Jr.",
+      "name": "Chris Rodriguez Jr.",
+      "position": "RB",
+      "team": "WAS",
+      "salary": 5600,
+      "projection": 3.900000095367432,
+      "value": 0.6964285884584701,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Dalton Kincaid",
+      "player_name": "Dalton Kincaid",
+      "name": "Dalton Kincaid",
+      "position": "TE",
+      "team": "BUF",
+      "salary": 5600,
+      "projection": 11.199999491373696,
+      "value": 1.9999999091738743,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Rashod Bateman",
+      "player_name": "Rashod Bateman",
+      "name": "Rashod Bateman",
+      "position": "WR",
+      "team": "BAL",
+      "salary": 5600,
+      "projection": 6.433333079020183,
+      "value": 1.1488094783964613,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_DeAndre Hopkins",
+      "player_name": "DeAndre Hopkins",
+      "name": "DeAndre Hopkins",
+      "position": "WR",
+      "team": "BAL",
+      "salary": 5500,
+      "projection": 8.566666920979818,
+      "value": 1.5575758038145124,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Jacory Croskey-Merritt",
+      "player_name": "Jacory Croskey-Merritt",
+      "name": "Jacory Croskey-Merritt",
+      "position": "RB",
+      "team": "WAS",
+      "salary": 5500,
+      "projection": 8.5,
+      "value": 1.5454545454545454,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Jeremy McNichols",
+      "player_name": "Jeremy McNichols",
+      "name": "Jeremy McNichols",
+      "position": "RB",
+      "team": "WAS",
+      "salary": 5400,
+      "projection": 8.149999618530273,
+      "value": 1.5092591886167173,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Mark Andrews",
+      "player_name": "Mark Andrews",
+      "name": "Mark Andrews",
+      "position": "TE",
+      "team": "BAL",
+      "salary": 5300,
+      "projection": 8.666666666666666,
+      "value": 1.6352201257861634,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Justice Hill",
+      "player_name": "Justice Hill",
+      "name": "Justice Hill",
+      "position": "RB",
+      "team": "BAL",
+      "salary": 5300,
+      "projection": 3.133333206176758,
+      "value": 0.5911949445616524,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Joshua Palmer",
+      "player_name": "Joshua Palmer",
+      "name": "Joshua Palmer",
+      "position": "WR",
+      "team": "BUF",
+      "salary": 5200,
+      "projection": 5.100000063578288,
+      "value": 0.9807692429958246,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Dallas Goedert",
+      "player_name": "Dallas Goedert",
+      "name": "Dallas Goedert",
+      "position": "TE",
+      "team": "PHI",
+      "salary": 5100,
+      "projection": 8.850000381469727,
+      "value": 1.7352941924450445,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Zach Ertz",
+      "player_name": "Zach Ertz",
+      "name": "Zach Ertz",
+      "position": "TE",
+      "team": "WAS",
+      "salary": 5000,
+      "projection": 10.266666412353516,
+      "value": 2.053333282470703,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Buffalo Bills",
+      "player_name": "Buffalo Bills",
+      "name": "Buffalo Bills",
+      "position": "D",
+      "team": "BUF",
+      "salary": 5000,
+      "projection": 4.0,
+      "value": 0.8,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Elijah Moore",
+      "player_name": "Elijah Moore",
+      "name": "Elijah Moore",
+      "position": "WR",
+      "team": "BUF",
+      "salary": 5000,
+      "projection": 5.633333206176758,
+      "value": 1.1266666412353517,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Detroit Lions",
+      "player_name": "Detroit Lions",
+      "name": "Detroit Lions",
+      "position": "D",
+      "team": "DET",
+      "salary": 4900,
+      "projection": 5.333333333333333,
+      "value": 1.0884353741496597,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Isaiah Likely",
+      "player_name": "Isaiah Likely",
+      "name": "Isaiah Likely",
+      "position": "TE",
+      "team": "BAL",
+      "salary": 4800,
+      "projection": 7.100000169542101,
+      "value": 1.4791667019879378,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Isaac TeSlaa",
+      "player_name": "Isaac TeSlaa",
+      "name": "Isaac TeSlaa",
+      "position": "WR",
+      "team": "DET",
+      "salary": 4700,
+      "projection": 3.733333269755045,
+      "value": 0.7943262276074563,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Ray Davis",
+      "player_name": "Ray Davis",
+      "name": "Ray Davis",
+      "position": "RB",
+      "team": "BUF",
+      "salary": 4700,
+      "projection": 1.0,
+      "value": 0.2127659574468085,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Luke McCaffrey",
+      "player_name": "Luke McCaffrey",
+      "name": "Luke McCaffrey",
+      "position": "WR",
+      "team": "WAS",
+      "salary": 4600,
+      "projection": 5.833333333333333,
+      "value": 1.2681159420289856,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Washington Commanders",
+      "player_name": "Washington Commanders",
+      "name": "Washington Commanders",
+      "position": "D",
+      "team": "WAS",
+      "salary": 4600,
+      "projection": 7.333333333333333,
+      "value": 1.5942028985507246,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Tylan Wallace",
+      "player_name": "Tylan Wallace",
+      "name": "Tylan Wallace",
+      "position": "WR",
+      "team": "BAL",
+      "salary": 4600,
+      "projection": 4.75,
+      "value": 1.032608695652174,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Ty Johnson",
+      "player_name": "Ty Johnson",
+      "name": "Ty Johnson",
+      "position": "RB",
+      "team": "BUF",
+      "salary": 4600,
+      "projection": 1.8666666348775227,
+      "value": 0.4057970945385919,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Baltimore Ravens",
+      "player_name": "Baltimore Ravens",
+      "name": "Baltimore Ravens",
+      "position": "D",
+      "team": "BAL",
+      "salary": 4500,
+      "projection": 2.6666666666666665,
+      "value": 0.5925925925925926,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Rasheen Ali",
+      "player_name": "Rasheen Ali",
+      "name": "Rasheen Ali",
+      "position": "RB",
+      "team": "BAL",
+      "salary": 4500,
+      "projection": 0.25,
+      "value": 0.05555555555555555,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Curtis Samuel",
+      "player_name": "Curtis Samuel",
+      "name": "Curtis Samuel",
+      "position": "WR",
+      "team": "BUF",
+      "salary": 4500,
+      "projection": 4.194117826573989,
+      "value": 0.9320261836831087,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Jackson Hawes",
+      "player_name": "Jackson Hawes",
+      "name": "Jackson Hawes",
+      "position": "TE",
+      "team": "BUF",
+      "salary": 4500,
+      "projection": 3.799999872843424,
+      "value": 0.8444444161874275,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Brock Wright",
+      "player_name": "Brock Wright",
+      "name": "Brock Wright",
+      "position": "TE",
+      "team": "DET",
+      "salary": 4500,
+      "projection": 10.300000190734863,
+      "value": 2.288888931274414,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Noah Brown",
+      "player_name": "Noah Brown",
+      "name": "Noah Brown",
+      "position": "WR",
+      "team": "WAS",
+      "salary": 4500,
+      "projection": 2.549999952316284,
+      "value": 0.5666666560702853,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Jahan Dotson",
+      "player_name": "Jahan Dotson",
+      "name": "Jahan Dotson",
+      "position": "WR",
+      "team": "PHI",
+      "salary": 4400,
+      "projection": 3.1666666666666665,
+      "value": 0.7196969696969696,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Tank Bigsby",
+      "player_name": "Tank Bigsby",
+      "name": "Tank Bigsby",
+      "position": "RB",
+      "team": "PHI",
+      "salary": 4400,
+      "projection": 0.6000000238418579,
+      "value": 0.13636364178224042,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Kalif Raymond",
+      "player_name": "Kalif Raymond",
+      "name": "Kalif Raymond",
+      "position": "WR",
+      "team": "DET",
+      "salary": 4400,
+      "projection": 2.100000063578288,
+      "value": 0.47727274172233813,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Devontez Walker",
+      "player_name": "Devontez Walker",
+      "name": "Devontez Walker",
+      "position": "WR",
+      "team": "BAL",
+      "salary": 4400,
+      "projection": 9.75,
+      "value": 2.215909090909091,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Will Shipley",
+      "player_name": "Will Shipley",
+      "name": "Will Shipley",
+      "position": "RB",
+      "team": "PHI",
+      "salary": 4400,
+      "projection": 2.5999999046325684,
+      "value": 0.5909090692346746,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Dawson Knox",
+      "player_name": "Dawson Knox",
+      "name": "Dawson Knox",
+      "position": "TE",
+      "team": "BUF",
+      "salary": 4300,
+      "projection": 2.950000047683716,
+      "value": 0.6860465227171433,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Charlie Kolar",
+      "player_name": "Charlie Kolar",
+      "name": "Charlie Kolar",
+      "position": "TE",
+      "team": "BAL",
+      "salary": 4300,
+      "projection": 3.200000047683716,
+      "value": 0.7441860576008642,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Jaylin Lane",
+      "player_name": "Jaylin Lane",
+      "name": "Jaylin Lane",
+      "position": "WR",
+      "team": "WAS",
+      "salary": 4300,
+      "projection": 2.866666793823242,
+      "value": 0.6666666962379634,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Craig Reynolds",
+      "player_name": "Craig Reynolds",
+      "name": "Craig Reynolds",
+      "position": "RB",
+      "team": "DET",
+      "salary": 4300,
+      "projection": 0.4000000059604645,
+      "value": 0.09302325720010803,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_John Metchie III",
+      "player_name": "John Metchie III",
+      "name": "John Metchie III",
+      "position": "WR",
+      "team": "PHI",
+      "salary": 4200,
+      "projection": 0.5999999841054281,
+      "value": 0.14285713907272096,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Tyrell Shavers",
+      "player_name": "Tyrell Shavers",
+      "name": "Tyrell Shavers",
+      "position": "WR",
+      "team": "BUF",
+      "salary": 4200,
+      "projection": 1.7000000476837158,
+      "value": 0.40476191611517043,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Ben Sinnott",
+      "player_name": "Ben Sinnott",
+      "name": "Ben Sinnott",
+      "position": "TE",
+      "team": "WAS",
+      "salary": 4100,
+      "projection": 1.2000000476837158,
+      "value": 0.29268293845944293,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Ross Dwelley",
+      "player_name": "Ross Dwelley",
+      "name": "Ross Dwelley",
+      "position": "TE",
+      "team": "DET",
+      "salary": 4100,
+      "projection": 1.0,
+      "value": 0.24390243902439027,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Philadelphia Eagles",
+      "player_name": "Philadelphia Eagles",
+      "name": "Philadelphia Eagles",
+      "position": "D",
+      "team": "PHI",
+      "salary": 4100,
+      "projection": 7.0,
+      "value": 1.707317073170732,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Grant Calcaterra",
+      "player_name": "Grant Calcaterra",
+      "name": "Grant Calcaterra",
+      "position": "TE",
+      "team": "PHI",
+      "salary": 4100,
+      "projection": 1.100000023841858,
+      "value": 0.2682926887419166,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_A.J. Dillon",
+      "player_name": "A.J. Dillon",
+      "name": "A.J. Dillon",
+      "position": "RB",
+      "team": "PHI",
+      "salary": 4100,
+      "projection": 1.4500000476837158,
+      "value": 0.3536585482155405,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_John Bates",
+      "player_name": "John Bates",
+      "name": "John Bates",
+      "position": "TE",
+      "team": "WAS",
+      "salary": 4000,
+      "projection": 1.1538461538461535,
+      "value": 0.2884615384615384,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Kye Robichaux",
+      "player_name": "Kye Robichaux",
+      "name": "Kye Robichaux",
+      "position": "RB",
+      "team": "DET",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Frank Gore Jr.",
+      "player_name": "Frank Gore Jr.",
+      "name": "Frank Gore Jr.",
+      "position": "RB",
+      "team": "BUF",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Lucas Scott",
+      "player_name": "Lucas Scott",
+      "name": "Lucas Scott",
+      "position": "RB",
+      "team": "BAL",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Austin Ekeler",
+      "player_name": "Austin Ekeler",
+      "name": "Austin Ekeler",
+      "position": "RB",
+      "team": "WAS",
+      "salary": 4000,
+      "projection": 5.300000190734863,
+      "value": 1.3250000476837158,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Dayton Wade",
+      "player_name": "Dayton Wade",
+      "name": "Dayton Wade",
+      "position": "WR",
+      "team": "BAL",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Chase Edmonds",
+      "player_name": "Chase Edmonds",
+      "name": "Chase Edmonds",
+      "position": "RB",
+      "team": "WAS",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Sione Vaki",
+      "player_name": "Sione Vaki",
+      "name": "Sione Vaki",
+      "position": "RB",
+      "team": "DET",
+      "salary": 4000,
+      "projection": 1.3199999809265135,
+      "value": 0.3299999952316284,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Lawrence Cager",
+      "player_name": "Lawrence Cager",
+      "name": "Lawrence Cager",
+      "position": "TE",
+      "team": "WAS",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_E.J. Jenkins",
+      "player_name": "E.J. Jenkins",
+      "name": "E.J. Jenkins",
+      "position": "TE",
+      "team": "PHI",
+      "salary": 4000,
+      "projection": 2.3999999364217124,
+      "value": 0.5999999841054281,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_D'Ernest Johnson",
+      "player_name": "D'Ernest Johnson",
+      "name": "D'Ernest Johnson",
+      "position": "RB",
+      "team": "BAL",
+      "salary": 4000,
+      "projection": 2.491666634877523,
+      "value": 0.6229166587193807,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Kristian Wilkerson",
+      "player_name": "Kristian Wilkerson",
+      "name": "Kristian Wilkerson",
+      "position": "WR",
+      "team": "BUF",
+      "salary": 4000,
+      "projection": 8.800000190734863,
+      "value": 2.200000047683716,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Jackson Meeks",
+      "player_name": "Jackson Meeks",
+      "name": "Jackson Meeks",
+      "position": "WR",
+      "team": "DET",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Ronnie Bell",
+      "player_name": "Ronnie Bell",
+      "name": "Ronnie Bell",
+      "position": "WR",
+      "team": "DET",
+      "salary": 4000,
+      "projection": 0.6400000095367432,
+      "value": 0.1600000023841858,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Keleki Latu",
+      "player_name": "Keleki Latu",
+      "name": "Keleki Latu",
+      "position": "TE",
+      "team": "BUF",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Chris Moore",
+      "player_name": "Chris Moore",
+      "name": "Chris Moore",
+      "position": "WR",
+      "team": "WAS",
+      "salary": 4000,
+      "projection": 3.700000047683716,
+      "value": 0.925000011920929,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Stephen Gosnell",
+      "player_name": "Stephen Gosnell",
+      "name": "Stephen Gosnell",
+      "position": "WR",
+      "team": "BUF",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Shane Zylstra",
+      "player_name": "Shane Zylstra",
+      "name": "Shane Zylstra",
+      "position": "TE",
+      "team": "DET",
+      "salary": 4000,
+      "projection": 1.350000023841858,
+      "value": 0.3375000059604645,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Zaire Mitchell-Paden",
+      "player_name": "Zaire Mitchell-Paden",
+      "name": "Zaire Mitchell-Paden",
+      "position": "TE",
+      "team": "BAL",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Tyree Jackson",
+      "player_name": "Tyree Jackson",
+      "name": "Tyree Jackson",
+      "position": "TE",
+      "team": "WAS",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Cameron Latu",
+      "player_name": "Cameron Latu",
+      "name": "Cameron Latu",
+      "position": "TE",
+      "team": "PHI",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_LaJohntay Wester",
+      "player_name": "LaJohntay Wester",
+      "name": "LaJohntay Wester",
+      "position": "WR",
+      "team": "BAL",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Patrick Ricard",
+      "player_name": "Patrick Ricard",
+      "name": "Patrick Ricard",
+      "position": "RB",
+      "team": "BAL",
+      "salary": 4000,
+      "projection": 2.616666634877523,
+      "value": 0.6541666587193807,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Tyler Ott",
+      "player_name": "Tyler Ott",
+      "name": "Tyler Ott",
+      "position": "TE",
+      "team": "WAS",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Audric Estime",
+      "player_name": "Audric Estime",
+      "name": "Audric Estime",
+      "position": "RB",
+      "team": "PHI",
+      "salary": 4000,
+      "projection": 3.553846212533804,
+      "value": 0.888461553133451,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Jacob Saylors",
+      "player_name": "Jacob Saylors",
+      "name": "Jacob Saylors",
+      "position": "RB",
+      "team": "DET",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Nick Bellore",
+      "player_name": "Nick Bellore",
+      "name": "Nick Bellore",
+      "position": "RB",
+      "team": "WAS",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Kylen Granson",
+      "player_name": "Kylen Granson",
+      "name": "Kylen Granson",
+      "position": "TE",
+      "team": "PHI",
+      "salary": 4000,
+      "projection": 0.800000011920929,
+      "value": 0.20000000298023224,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Javon Baker",
+      "player_name": "Javon Baker",
+      "name": "Javon Baker",
+      "position": "WR",
+      "team": "PHI",
+      "salary": 4000,
+      "projection": 0.2833333412806193,
+      "value": 0.07083333532015483,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Darius Cooper",
+      "player_name": "Darius Cooper",
+      "name": "Darius Cooper",
+      "position": "WR",
+      "team": "PHI",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Dominic Lovett",
+      "player_name": "Dominic Lovett",
+      "name": "Dominic Lovett",
+      "position": "WR",
+      "team": "DET",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Britain Covey",
+      "player_name": "Britain Covey",
+      "name": "Britain Covey",
+      "position": "WR",
+      "team": "PHI",
+      "salary": 4000,
+      "projection": 1.3800000190734862,
+      "value": 0.34500000476837156,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Tay Martin",
+      "player_name": "Tay Martin",
+      "name": "Tay Martin",
+      "position": "WR",
+      "team": "WAS",
+      "salary": 4000,
+      "projection": 11.399999618530272,
+      "value": 2.849999904632568,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Jacoby Jones",
+      "player_name": "Jacoby Jones",
+      "name": "Jacoby Jones",
+      "position": "WR",
+      "team": "WAS",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Terrace Marshall",
+      "player_name": "Terrace Marshall",
+      "name": "Terrace Marshall",
+      "position": "WR",
+      "team": "PHI",
+      "salary": 4000,
+      "projection": 1.1199999809265138,
+      "value": 0.27999999523162844,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Colson Yankoff",
+      "player_name": "Colson Yankoff",
+      "name": "Colson Yankoff",
+      "position": "TE",
+      "team": "WAS",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Reggie Gilliam",
+      "player_name": "Reggie Gilliam",
+      "name": "Reggie Gilliam",
+      "position": "RB",
+      "team": "BUF",
+      "salary": 4000,
+      "projection": 0.3499999940395355,
+      "value": 0.08749999850988388,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Ja'Corey Brooks",
+      "player_name": "Ja'Corey Brooks",
+      "name": "Ja'Corey Brooks",
+      "position": "WR",
+      "team": "WAS",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Cornelius Johnson",
+      "player_name": "Cornelius Johnson",
+      "name": "Cornelius Johnson",
+      "position": "WR",
+      "team": "BAL",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Keaton Mitchell",
+      "player_name": "Keaton Mitchell",
+      "name": "Keaton Mitchell",
+      "position": "RB",
+      "team": "BAL",
+      "salary": 4000,
+      "projection": 1.2600000381469727,
+      "value": 0.3150000095367432,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Johnny Wilson",
+      "player_name": "Johnny Wilson",
+      "name": "Johnny Wilson",
+      "position": "WR",
+      "team": "PHI",
+      "salary": 4000,
+      "projection": 1.2300000190734863,
+      "value": 0.3075000047683716,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Zach Horton",
+      "player_name": "Zach Horton",
+      "name": "Zach Horton",
+      "position": "TE",
+      "team": "DET",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Keith Kirkwood",
+      "player_name": "Keith Kirkwood",
+      "name": "Keith Kirkwood",
+      "position": "WR",
+      "team": "BAL",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Tom Kennedy",
+      "player_name": "Tom Kennedy",
+      "name": "Tom Kennedy",
+      "position": "WR",
+      "team": "DET",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Anthony Miller",
+      "player_name": "Anthony Miller",
+      "name": "Anthony Miller",
+      "position": "WR",
+      "team": "BAL",
+      "salary": 4000,
+      "projection": 2.300000031789144,
+      "value": 0.575000007947286,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Kenny Yeboah",
+      "player_name": "Kenny Yeboah",
+      "name": "Kenny Yeboah",
+      "position": "TE",
+      "team": "DET",
+      "salary": 4000,
+      "projection": 2.199999968210856,
+      "value": 0.549999992052714,
+      "source": "fanduel_exact"
+    },
+    {
+      "player_id": "fd_Donovan Edwards",
+      "player_name": "Donovan Edwards",
+      "name": "Donovan Edwards",
+      "position": "RB",
+      "team": "WAS",
+      "salary": 4000,
+      "projection": 0.0,
+      "value": 0.0,
+      "source": "fanduel_exact"
+    }
+  ],
+  "games_info": {
+    "current_week": 18,
+    "all_games": [
+      {
+        "id": "game_1",
+        "teams": [
+          "PHI",
+          "WAS"
+        ],
+        "time_slot": "sunday_early"
+      },
+      {
+        "id": "game_2",
+        "teams": [
+          "BAL",
+          "BUF"
+        ],
+        "time_slot": "sunday_early"
+      },
+      {
+        "id": "game_3",
+        "teams": [
+          "DET",
+          "GB"
+        ],
+        "time_slot": "sunday_early"
+      },
+      {
+        "id": "game_4",
+        "teams": [
+          "TEN",
+          "MIA"
+        ],
+        "time_slot": "monday"
+      }
+    ],
+    "main_slate": [
+      {
+        "id": "game_1",
+        "teams": [
+          "PHI",
+          "WAS"
+        ],
+        "time_slot": "sunday_early"
+      },
+      {
+        "id": "game_2",
+        "teams": [
+          "BAL",
+          "BUF"
+        ],
+        "time_slot": "sunday_early"
+      },
+      {
+        "id": "game_3",
+        "teams": [
+          "DET",
+          "GB"
+        ],
+        "time_slot": "sunday_early"
+      }
+    ],
+    "single_games": [
+      {
+        "id": "game_1",
+        "teams": [
+          "PHI",
+          "WAS"
+        ],
+        "time_slot": "sunday_early"
+      },
+      {
+        "id": "game_2",
+        "teams": [
+          "BAL",
+          "BUF"
+        ],
+        "time_slot": "sunday_early"
+      },
+      {
+        "id": "game_3",
+        "teams": [
+          "DET",
+          "GB"
+        ],
+        "time_slot": "sunday_early"
+      },
+      {
+        "id": "game_4",
+        "teams": [
+          "TEN",
+          "MIA"
+        ],
+        "time_slot": "monday"
+      }
+    ]
+  },
+  "weather": {},
+  "last_updated": "2025-09-23T21:11:29.740287",
+  "data_quality": {
+    "player_count": 123,
+    "total_games": 4,
+    "main_slate_games": 3,
+    "current_week": 18
+  }
+}
