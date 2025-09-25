@@ -306,3 +306,387 @@ def stop_background_scheduler():
     """Stop the background scheduler"""
     scheduler = get_scheduler()
     scheduler.stop_scheduler()
+
+class NFLWeeklyCadence:
+    """Implements proper NFL weekly cadence scheduling"""
+    
+    def __init__(self, scheduler):
+        self.scheduler = scheduler
+        self.locked_players = set()
+        self.early_game_results = {}
+        
+    def setup_nfl_schedule(self):
+        """Setup NFL-specific weekly cadence"""
+        import schedule
+        
+        # Wednesday 9:00 AM - Deep build with baseline lineups
+        schedule.every().wednesday.at("09:00").do(self.wednesday_baseline_build)
+        
+        # Thursday-Saturday: Daily refreshes
+        schedule.every().thursday.at("10:00").do(self.daily_refresh)
+        schedule.every().friday.at("10:00").do(self.daily_refresh)
+        schedule.every().saturday.at("10:00").do(self.daily_refresh)
+        
+        # Sunday Morning 11:30 AM - Final early slate
+        schedule.every().sunday.at("11:30").do(self.sunday_am_finalization)
+        
+        # Sunday 2:15 PM - Mid-slate analysis (lock early games)
+        schedule.every().sunday.at("14:15").do(self.mid_slate_lock_and_analyze)
+        
+        # Sunday 3:55 PM - Final late swap opportunities
+        schedule.every().sunday.at("15:55").do(self.final_late_swap)
+        
+        logger.info("🏈 NFL Weekly Cadence Schedule Configured")
+    
+    def wednesday_baseline_build(self):
+        """Wednesday: Deep build with AI analysis"""
+        logger.info("📅 WEDNESDAY: Building baseline lineups + exposure plan")
+        try:
+            # Force fresh data collection
+            asyncio.run(self.scheduler.collect_and_update_data())
+            
+            # Generate baseline lineups for all contest types
+            asyncio.run(self.scheduler.optimize_lineups())
+            
+            # Save as baseline for the week
+            self._save_weekly_baseline()
+            
+        except Exception as e:
+            logger.error(f"Wednesday baseline build failed: {e}")
+    
+    def daily_refresh(self):
+        """Thu-Sat: Refresh data and refine exposures"""
+        day = datetime.now().strftime('%A')
+        logger.info(f"📅 {day.upper()}: Daily refresh + exposure refinement")
+        
+        try:
+            # Refresh data
+            asyncio.run(self.scheduler.collect_and_update_data())
+            
+            # Refine lineups based on new data
+            asyncio.run(self.scheduler.optimize_lineups())
+            
+        except Exception as e:
+            logger.error(f"{day} daily refresh failed: {e}")
+    
+    def sunday_am_finalization(self):
+        """Sunday AM: Final early slate preparation"""
+        logger.info("📅 SUNDAY AM: Finalizing early-slate lineups")
+        
+        try:
+            # Full data refresh
+            asyncio.run(self.scheduler.collect_and_update_data())
+            
+            # Process inactives
+            self._process_sunday_inactives()
+            
+            # Finalize early slate lineups
+            asyncio.run(self.scheduler.optimize_lineups())
+            
+        except Exception as e:
+            logger.error(f"Sunday AM finalization failed: {e}")
+    
+    def mid_slate_lock_and_analyze(self):
+        """Sunday Mid-Early: Lock started players + analyze early results"""
+        logger.info("📅 SUNDAY MID-SLATE: Locking started players + ingesting early results")
+        
+        try:
+            # Lock players from started games
+            self._lock_started_games()
+            
+            # Ingest early game results vs projections
+            self._analyze_early_game_results()
+            
+            # Refactor late slate based on early results
+            self._refactor_late_slate()
+            
+        except Exception as e:
+            logger.error(f"Mid-slate analysis failed: {e}")
+    
+    def final_late_swap(self):
+        """Sunday Final: Last chance swaps with leverage logic"""
+        logger.info("📅 SUNDAY FINAL: Final swap opportunities with leverage")
+        
+        try:
+            # Final data check
+            asyncio.run(self.scheduler.collect_and_update_data())
+            
+            # Generate final late slate pivots
+            self._generate_late_slate_pivots()
+            
+        except Exception as e:
+            logger.error(f"Final late swap failed: {e}")
+    
+    def _lock_started_games(self):
+        """Lock players from games that have started"""
+        # Get current game times and lock started players
+        # Implementation needed
+        pass
+    
+    def _analyze_early_game_results(self):
+        """Analyze early game performance vs projections"""
+        # Compare actual vs projected for chalk plays
+        # Implementation needed
+        pass
+    
+    def _refactor_late_slate(self):
+        """Refactor late slate lineups based on early results"""
+        # Use early game data to pivot late slate strategy
+        # Implementation needed
+        pass
+    
+    def _process_sunday_inactives(self):
+        """Process Sunday inactive players"""
+        # Handle late scratches and replacements
+        # Implementation needed
+        pass
+    
+    def _save_weekly_baseline(self):
+        """Save Wednesday baseline for comparison"""
+        # Implementation needed
+        pass
+    
+    def _generate_late_slate_pivots(self):
+        """Generate final pivot opportunities"""
+        # Implementation needed
+        pass
+
+import requests
+from datetime import datetime, timedelta
+import pytz
+
+class GameLockingEngine:
+    """Handles game start times and player locking"""
+    
+    def __init__(self):
+        self.eastern = pytz.timezone('America/New_York')
+        self.locked_players = set()
+        self.game_times = {}
+        self.early_results = {}
+    
+    def get_current_game_times(self):
+        """Get real-time game start times from ESPN"""
+        try:
+            url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                game_times = {}
+                
+                for event in data.get('events', []):
+                    date_str = event.get('date')
+                    if date_str:
+                        game_time = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                        game_time = game_time.astimezone(self.eastern)
+                        
+                        # Get team abbreviations
+                        competitors = event.get('competitions', [{}])[0].get('competitors', [])
+                        teams = [comp.get('team', {}).get('abbreviation') for comp in competitors]
+                        
+                        if len(teams) == 2:
+                            game_id = f"{teams[0]}_vs_{teams[1]}"
+                            game_times[game_id] = {
+                                'start_time': game_time,
+                                'teams': teams,
+                                'status': event.get('status', {}).get('type', {}).get('name', 'scheduled')
+                            }
+                
+                self.game_times = game_times
+                logger.info(f"🕐 Updated game times for {len(game_times)} games")
+                return game_times
+                
+        except Exception as e:
+            logger.error(f"Failed to get game times: {e}")
+            return {}
+    
+    def get_started_games(self):
+        """Get games that have already started"""
+        current_time = datetime.now(self.eastern)
+        started_games = []
+        
+        for game_id, game_info in self.game_times.items():
+            start_time = game_info['start_time']
+            status = game_info['status']
+            
+            # Game has started if current time > start time OR status indicates in progress
+            if (current_time > start_time or 
+                status.lower() in ['in progress', 'halftime', 'final']):
+                started_games.append(game_id)
+        
+        return started_games
+    
+    def lock_players_from_started_games(self, all_players):
+        """Lock players from games that have started"""
+        started_games = self.get_started_games()
+        newly_locked = set()
+        
+        for player in all_players:
+            player_team = player.get('team', '')
+            
+            # Check if player's team is in a started game
+            for game_id in started_games:
+                teams = self.game_times[game_id]['teams']
+                if player_team in teams:
+                    player_id = player.get('player_id', player.get('name'))
+                    if player_id not in self.locked_players:
+                        newly_locked.add(player_id)
+                        self.locked_players.add(player_id)
+        
+        if newly_locked:
+            logger.info(f"🔒 Locked {len(newly_locked)} players from {len(started_games)} started games")
+        
+        return list(newly_locked)
+    
+    def get_early_game_results(self):
+        """Get real-time results from early games"""
+        try:
+            url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                results = {}
+                
+                for event in data.get('events', []):
+                    competitors = event.get('competitions', [{}])[0].get('competitors', [])
+                    
+                    for competitor in competitors:
+                        team_abbr = competitor.get('team', {}).get('abbreviation')
+                        team_stats = competitor.get('statistics', [])
+                        
+                        if team_abbr and team_stats:
+                            results[team_abbr] = {
+                                'score': competitor.get('score', 0),
+                                'statistics': team_stats
+                            }
+                
+                self.early_results = results
+                return results
+                
+        except Exception as e:
+            logger.error(f"Failed to get early game results: {e}")
+            return {}
+
+
+class LateSwapEngine:
+    """Handles late swap decisions and leverage pivots"""
+    
+    def __init__(self, game_locker):
+        self.game_locker = game_locker
+        self.swap_history = []
+    
+    def analyze_chalk_performance(self, early_results):
+        """Analyze how chalk plays performed in early games"""
+        chalk_analysis = {}
+        
+        # This would analyze high-ownership players vs their actual performance
+        # For now, we'll create a framework
+        
+        for team, stats in early_results.items():
+            score = stats.get('score', 0)
+            
+            # Simple logic: if team scored >21 points, their players likely hit
+            if score > 21:
+                chalk_analysis[team] = 'outperformed'
+            elif score < 14:
+                chalk_analysis[team] = 'underperformed'
+            else:
+                chalk_analysis[team] = 'neutral'
+        
+        logger.info(f"📊 Chalk analysis: {chalk_analysis}")
+        return chalk_analysis
+    
+    def generate_late_slate_pivots(self, available_players, chalk_analysis):
+        """Generate pivot recommendations for late slate"""
+        pivot_recommendations = []
+        
+        # If early chalk failed, pivot to late slate contrarian plays
+        underperforming_early = [team for team, result in chalk_analysis.items() 
+                               if result == 'underperformed']
+        
+        if len(underperforming_early) > 1:
+            strategy = 'contrarian'
+            logger.info("🔄 Early chalk failed - recommending contrarian late slate")
+        else:
+            strategy = 'balanced'
+            logger.info("📈 Early chalk performed - maintaining balanced approach")
+        
+        return {
+            'strategy': strategy,
+            'pivot_count': len(underperforming_early),
+            'recommended_approach': self._get_strategy_approach(strategy)
+        }
+    
+    def _get_strategy_approach(self, strategy):
+        """Get specific approach for strategy"""
+        approaches = {
+            'contrarian': {
+                'ownership_threshold': 10.0,
+                'variance_weight': 0.5,
+                'stacking_preference': 'unconventional'
+            },
+            'balanced': {
+                'ownership_threshold': 25.0,
+                'variance_weight': 0.3,
+                'stacking_preference': 'traditional'
+            }
+        }
+        return approaches.get(strategy, approaches['balanced'])
+
+# Update the NFLWeeklyCadence class methods
+def _lock_started_games(self):
+    """Lock players from games that have started"""
+    if not hasattr(self, 'game_locker'):
+        self.game_locker = GameLockingEngine()
+    
+    # Get current game times
+    self.game_locker.get_current_game_times()
+    
+    # Lock players from started games
+    if self.scheduler.current_data and 'players' in self.scheduler.current_data:
+        locked = self.game_locker.lock_players_from_started_games(
+            self.scheduler.current_data['players']
+        )
+        logger.info(f"🔒 Game locking complete: {len(locked)} players locked")
+
+def _analyze_early_game_results(self):
+    """Analyze early game performance vs projections"""
+    if not hasattr(self, 'game_locker'):
+        self.game_locker = GameLockingEngine()
+    
+    # Get early game results
+    early_results = self.game_locker.get_early_game_results()
+    
+    if early_results:
+        # Initialize late swap engine
+        if not hasattr(self, 'swap_engine'):
+            self.swap_engine = LateSwapEngine(self.game_locker)
+        
+        # Analyze chalk performance
+        chalk_analysis = self.swap_engine.analyze_chalk_performance(early_results)
+        
+        # Store for late slate decisions
+        self.early_game_analysis = chalk_analysis
+        logger.info("📊 Early game analysis complete")
+
+def _refactor_late_slate(self):
+    """Refactor late slate lineups based on early results"""
+    if hasattr(self, 'early_game_analysis') and hasattr(self, 'swap_engine'):
+        # Generate pivot recommendations
+        pivots = self.swap_engine.generate_late_slate_pivots(
+            self.scheduler.current_data.get('players', []),
+            self.early_game_analysis
+        )
+        
+        # Apply pivot strategy to late slate optimization
+        late_slate_params = {
+            'contest_type': pivots['strategy'],
+            'num_lineups': 10,
+            'ownership_threshold': pivots['recommended_approach']['ownership_threshold']
+        }
+        
+        logger.info(f"🔄 Refactoring late slate with {pivots['strategy']} strategy")
+        
+        # Re-optimize with new strategy
+        asyncio.run(self.scheduler.optimize_lineups())

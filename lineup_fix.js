@@ -1,4 +1,4 @@
-# Replace the displayLineups function in your existing api.py with this corrected version
+// Replace the displayLineups function in app.py with this corrected version
 function displayLineups(lineups, contestType) {
     const section = document.getElementById('lineups-section');
     const content = document.getElementById('lineups-content');

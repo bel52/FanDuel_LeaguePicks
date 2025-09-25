@@ -1,19 +1,19 @@
 """
-Enhanced DFS lineup optimization with proper contest type differentiation
-Fixed import issues
+Enhanced DFS lineup optimization with proper FLEX position support
+Fixed for tournament play with proper FanDuel format
 """
 import pulp
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from loguru import logger
-import itertools
-from sklearn.ensemble import RandomForestRegressor
-import json
 import random
 
-from config import FANDUEL_POSITIONS, FANDUEL_SALARY_CAP, OPTIMIZATION_CONFIG, SINGLE_GAME_POSITIONS
+from config import FANDUEL_POSITIONS, FANDUEL_SALARY_CAP, OPTIMIZATION_CONFIG
+
+# Real AI Integration
+from ai_integration_fix import RealAIAnalyzer
 
 @dataclass
 class Player:
@@ -33,7 +33,7 @@ class Player:
     def __post_init__(self):
         self.value = self.projection / (self.salary / 1000) if self.salary > 0 else 0
         # Estimate variance based on position
-        variance_multipliers = {'QB': 0.3, 'RB': 0.4, 'WR': 0.5, 'TE': 0.4, 'K': 0.6, 'DST': 0.5}
+        variance_multipliers = {'QB': 0.3, 'RB': 0.4, 'WR': 0.5, 'TE': 0.4, 'K': 0.6, 'DST': 0.5, 'D': 0.5}
         self.variance = self.projection * variance_multipliers.get(self.position, 0.4)
 
 @dataclass
@@ -51,10 +51,10 @@ class LineupResult:
     floor_score: float = 0.0
 
 class EnhancedDFSOptimizer:
-    """Enhanced DFS optimization with proper contest differentiation"""
+    """Enhanced DFS optimization with proper FLEX position support"""
     
     def __init__(self):
-        pass
+        self.ai_analyzer = RealAIAnalyzer()
         
     def prepare_players(self, player_data: List[Dict], weather_data: Dict = None) -> List[Player]:
         """Convert raw player data to Player objects"""
@@ -62,16 +62,33 @@ class EnhancedDFSOptimizer:
         
         for data in player_data:
             try:
+                # Handle different data formats
+                player_name = data.get('player_name', data.get('name', ''))
+                position = data.get('position', '')
+                team = data.get('team', '')
+                salary = int(data.get('salary', 5000))
+                projection = float(data.get('projection', data.get('projected_points', 0)))
+                
+                # Normalize defense position names
+                if position in ['DST', 'DEF', 'D/ST']:
+                    position = 'D'
+                
                 player = Player(
-                    id=str(data.get('player_id', data.get('name', ''))),
-                    name=data.get('player_name', data.get('name', '')),
-                    position=data.get('position', ''),
-                    team=data.get('team', ''),
-                    salary=int(data.get('salary', 5000)),
-                    projection=float(data.get('projection', data.get('fantasy_points_ppr', 0)))
+                    id=str(data.get('player_id', data.get('id', player_name))),
+                    name=player_name,
+                    position=position,
+                    team=team,
+                    salary=salary,
+                    projection=projection
                 )
                 
-                # Calculate value
+                # Apply weather adjustments if available
+                if weather_data and team in weather_data:
+                    weather_factor = weather_data[team].get('factor', 1.0)
+                    player.weather_factor = weather_factor
+                    player.projection *= weather_factor
+                
+                # Calculate value after adjustments
                 player.value = player.projection / (player.salary / 1000) if player.salary > 0 else 0
                 players.append(player)
                 
@@ -84,7 +101,7 @@ class EnhancedDFSOptimizer:
     
     def optimize_lineup(self, players: List[Player], contest_type: str = 'gpp',
                        single_game_teams: List[str] = None) -> Optional[LineupResult]:
-        """Optimize lineup with contest-specific strategies"""
+        """Optimize lineup with proper FanDuel FLEX position support"""
         
         try:
             # Filter for single game
@@ -130,7 +147,7 @@ class EnhancedDFSOptimizer:
             return None
     
     def _predict_ownership(self, player: Player, contest_type: str) -> float:
-        """Simple ownership prediction"""
+        """Simple ownership prediction based on salary and contest type"""
         base = player.salary / 300
         
         if contest_type == 'gpp':
@@ -145,7 +162,7 @@ class EnhancedDFSOptimizer:
         return max(1.0, min(50.0, base))
     
     def _calculate_contest_value(self, player: Player, contest_type: str) -> float:
-        """Calculate contest-specific value"""
+        """Calculate contest-specific player value"""
         base = player.projection
         
         if contest_type == 'gpp':
@@ -172,35 +189,66 @@ class EnhancedDFSOptimizer:
     
     def _add_constraints(self, prob, players: List[Player], player_vars: Dict,
                         contest_type: str, single_game_teams: List[str]):
-        """Add optimization constraints"""
+        """Add optimization constraints with proper FLEX support"""
         
         # Salary cap
         prob += pulp.lpSum([players[i].salary * player_vars[i] for i in range(len(players))]) <= FANDUEL_SALARY_CAP
         
         if single_game_teams:
-            # Single game: 6 players total
+            # Single game: 6 players total (MVP + 5 FLEX)
             prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == 6
-        else:
-            # Regular format constraints
-            for position, count in FANDUEL_POSITIONS.items():
-                if position == 'FLEX':
-                    flex_players = [i for i, p in enumerate(players) if p.position in ['RB', 'WR', 'TE']]
-                    if flex_players:
-                        prob += pulp.lpSum([player_vars[i] for i in flex_players]) >= count
-                elif position == 'DST':
-                    dst_players = [i for i, p in enumerate(players) if p.position in ['DST', 'DEF']]
-                    if dst_players:
-                        prob += pulp.lpSum([player_vars[i] for i in dst_players]) == count
-                else:
-                    position_players = [i for i, p in enumerate(players) if p.position == position]
-                    if position_players:
-                        prob += pulp.lpSum([player_vars[i] for i in position_players]) == count
             
-            # Total roster size
-            prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == sum(FANDUEL_POSITIONS.values())
+        else:
+            # Regular FanDuel format with FLEX: QB, RB, RB, WR, WR, WR, TE, FLEX, D
+            
+            # Position constraints
+            qb_players = [i for i, p in enumerate(players) if p.position == 'QB']
+            rb_players = [i for i, p in enumerate(players) if p.position == 'RB']
+            wr_players = [i for i, p in enumerate(players) if p.position == 'WR']
+            te_players = [i for i, p in enumerate(players) if p.position == 'TE']
+            d_players = [i for i, p in enumerate(players) if p.position == 'D']
+            
+            # Core positions (must have exactly these amounts)
+            if qb_players:
+                prob += pulp.lpSum([player_vars[i] for i in qb_players]) == 1  # 1 QB
+            if rb_players:
+                prob += pulp.lpSum([player_vars[i] for i in rb_players]) >= 2  # At least 2 RB
+            if wr_players:
+                prob += pulp.lpSum([player_vars[i] for i in wr_players]) >= 3  # At least 3 WR
+            if te_players:
+                prob += pulp.lpSum([player_vars[i] for i in te_players]) >= 1  # At least 1 TE
+            if d_players:
+                prob += pulp.lpSum([player_vars[i] for i in d_players]) == 1  # 1 D
+            
+            # FLEX constraint: Total RB + WR + TE = 6 (2 RB + 3 WR + 1 TE base = 6, +1 FLEX = 7)
+            flex_players = rb_players + wr_players + te_players
+            if flex_players:
+                prob += pulp.lpSum([player_vars[i] for i in flex_players]) == 7  # 2+3+1+1 = 7 flex-eligible players
+            
+            # Total roster size: 9 players (QB + 7 flex-eligible + D)
+            prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == 9
+            
+            # Position maximums to prevent all WRs
+            if rb_players:
+                prob += pulp.lpSum([player_vars[i] for i in rb_players]) <= 3  # Max 3 RB
+            if wr_players:
+                prob += pulp.lpSum([player_vars[i] for i in wr_players]) <= 4  # Max 4 WR  
+            if te_players:
+                prob += pulp.lpSum([player_vars[i] for i in te_players]) <= 2  # Max 2 TE
+        
+        # Team diversity constraints
+        team_counts = {}
+        for i, player in enumerate(players):
+            if player.team not in team_counts:
+                team_counts[player.team] = []
+            team_counts[player.team].append(i)
+        
+        max_per_team = 3 if contest_type == 'cash' else 4
+        for team, player_indices in team_counts.items():
+            prob += pulp.lpSum([player_vars[i] for i in player_indices]) <= max_per_team
     
     def _extract_result(self, prob, players: List[Player], player_vars: Dict, contest_type: str) -> LineupResult:
-        """Extract results"""
+        """Extract results from optimization"""
         selected_players = []
         total_salary = 0
         total_ownership = 0
@@ -211,7 +259,7 @@ class EnhancedDFSOptimizer:
                 total_salary += player.salary
                 total_ownership += player.ownership
         
-        # Calculate points
+        # Calculate points with MVP multiplier for single game
         if contest_type == 'single_game' and len(selected_players) == 6:
             selected_players.sort(key=lambda p: p.projection, reverse=True)
             mvp = selected_players[0]
@@ -234,8 +282,8 @@ class EnhancedDFSOptimizer:
             projected_points=projected_points,
             total_value=sum(p.value for p in selected_players),
             ownership_total=total_ownership,
-            correlation_score=0.5,  # Simplified
-            weather_impact=1.0,
+            correlation_score=0.5,  # Simplified correlation
+            weather_impact=np.mean([p.weather_factor for p in selected_players]),
             contest_type=contest_type,
             ceiling_score=ceiling,
             floor_score=floor
@@ -243,11 +291,12 @@ class EnhancedDFSOptimizer:
     
     def generate_multiple_lineups(self, players: List[Player], num_lineups: int = 10,
                                  contest_type: str = 'gpp', single_game_teams: List[str] = None) -> List[LineupResult]:
-        """Generate multiple lineups"""
+        """Generate multiple diverse lineups"""
         lineups = []
+        used_combinations = set()
         
         for i in range(num_lineups):
-            # Add some randomization for diversity
+            # Add randomization for diversity
             randomized_players = []
             for player in players:
                 new_player = Player(
@@ -256,7 +305,7 @@ class EnhancedDFSOptimizer:
                     ownership=player.ownership, weather_factor=player.weather_factor,
                     injury_risk=player.injury_risk, value=player.value, variance=player.variance
                 )
-                # Small random adjustment
+                # Small random adjustment for diversity
                 random_factor = random.uniform(0.95, 1.05)
                 new_player.projection *= random_factor
                 new_player.value = new_player.projection / (new_player.salary / 1000)
@@ -264,7 +313,11 @@ class EnhancedDFSOptimizer:
             
             lineup = self.optimize_lineup(randomized_players, contest_type, single_game_teams)
             if lineup:
-                lineups.append(lineup)
+                # Check for duplicate lineups
+                player_combo = tuple(sorted([p.id for p in lineup.players]))
+                if player_combo not in used_combinations:
+                    lineups.append(lineup)
+                    used_combinations.add(player_combo)
         
         # Sort by appropriate metric
         if contest_type == 'cash':
@@ -272,11 +325,43 @@ class EnhancedDFSOptimizer:
         else:
             lineups.sort(key=lambda x: x.ceiling_score, reverse=True)
         
-        logger.info(f"Generated {len(lineups)} {contest_type} lineups")
+        logger.info(f"Generated {len(lineups)} unique {contest_type} lineups")
         return lineups
+
+# Utility function for external use
+def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None,
+                        num_lineups: int = 10, contest_type: str = 'gpp',
+                        single_game_teams: List[str] = None) -> List[LineupResult]:
+    """Main entry point for lineup optimization with proper FLEX support"""
+    optimizer = EnhancedDFSOptimizer()
+
+        # Get AI analysis of the slate
+        ai_recommendations = self.ai_analyzer.analyze_slate_for_optimization(
+            player_data, weather_data, contest_type
+        )
+        logger.info(f"AI Strategy: {ai_recommendations.get('strategy', 'basic')}")
+        
+        # Apply AI recommendations to optimization
+        if ai_recommendations.get('strategy') == 'contrarian':
+            contest_type = 'contrarian'
+        elif ai_recommendations.get('strategy') == 'chalky':
+            # Use more mainstream plays
+            pass
+
+    players = optimizer.prepare_players(player_data, weather_data)
     
+    if not players:
+        logger.error("No valid players for optimization")
+        return []
+    
+    logger.info(f"Optimizing {num_lineups} {contest_type} lineups with FLEX position support")
+    if single_game_teams:
+        logger.info(f"Single game teams: {single_game_teams}")
+    
+    return optimizer.generate_multiple_lineups(players, num_lineups, contest_type, single_game_teams)
+
     def export_lineups_to_csv(self, lineups: List[LineupResult], filename: str = None):
-        """Export lineups to CSV"""
+        """Export lineups to CSV with proper FanDuel formatting"""
         if not filename:
             filename = f"lineups_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
@@ -284,34 +369,138 @@ class EnhancedDFSOptimizer:
         for i, lineup in enumerate(lineups):
             lineup_row = {'Lineup': i + 1}
             
-            # Add players
-            for j, player in enumerate(lineup.players):
-                lineup_row[f'Player_{j+1}'] = f"{player.name} ({player.position}) ${player.salary}"
+            if lineup.contest_type == 'single_game':
+                # Single Game format: MVP + FLEX positions
+                sorted_players = sorted(lineup.players, key=lambda p: p.projection, reverse=True)
+                lineup_row['MVP'] = f"{sorted_players[0].name}"
+                for j in range(5):
+                    if j + 1 < len(sorted_players):
+                        lineup_row[f'FLEX{j+1}'] = f"{sorted_players[j+1].name}"
+                    else:
+                        lineup_row[f'FLEX{j+1}'] = ""
+            else:
+                # Regular FanDuel format with proper FLEX
+                by_position = {}
+                for player in lineup.players:
+                    pos = player.position
+                    if pos not in by_position:
+                        by_position[pos] = []
+                    by_position[pos].append(player)
+                
+                # Fill positions in FanDuel order
+                lineup_row['QB'] = by_position.get('QB', [None])[0].name if by_position.get('QB') else ""
+                
+                # RBs
+                rbs = by_position.get('RB', [])
+                lineup_row['RB1'] = rbs[0].name if len(rbs) >= 1 else ""
+                lineup_row['RB2'] = rbs[1].name if len(rbs) >= 2 else ""
+                
+                # WRs
+                wrs = by_position.get('WR', [])
+                lineup_row['WR1'] = wrs[0].name if len(wrs) >= 1 else ""
+                lineup_row['WR2'] = wrs[1].name if len(wrs) >= 2 else ""
+                lineup_row['WR3'] = wrs[2].name if len(wrs) >= 3 else ""
+                
+                # TE
+                lineup_row['TE'] = by_position.get('TE', [None])[0].name if by_position.get('TE') else ""
+                
+                # FLEX - find the extra RB/WR/TE
+                used_players = []
+                if rbs: used_players.extend(rbs[:2])
+                if wrs: used_players.extend(wrs[:3])
+                if by_position.get('TE'): used_players.extend(by_position['TE'][:1])
+                
+                flex_candidates = rbs + wrs + by_position.get('TE', [])
+                flex_player = None
+                for candidate in flex_candidates:
+                    if candidate not in used_players:
+                        flex_player = candidate
+                        break
+                lineup_row['FLEX'] = flex_player.name if flex_player else ""
+                
+                # Defense
+                lineup_row['D'] = by_position.get('D', [None])[0].name if by_position.get('D') else ""
             
-            # Add stats
+            # Add summary stats
             lineup_row.update({
+                'Contest_Type': lineup.contest_type,
                 'Total_Salary': lineup.total_salary,
                 'Projected_Points': round(lineup.projected_points, 2),
-                'Contest_Type': lineup.contest_type
+                'Ceiling': round(lineup.ceiling_score, 2),
+                'Floor': round(lineup.floor_score, 2),
+                'Ownership_Total': round(lineup.ownership_total, 1)
             })
             
             lineup_data.append(lineup_row)
         
         df = pd.DataFrame(lineup_data)
         df.to_csv(filename, index=False)
+        logger.info(f"Exported {len(lineups)} {lineups[0].contest_type if lineups else 'unknown'} lineups to {filename}")
         return filename
 
-# Utility function
+# Add AI Integration to Optimizer
+import os
+from ai_integration_simple import SimpleAIAnalyzer
+
+class AIEnhancedDFSOptimizer(EnhancedDFSOptimizer):
+    """Optimizer with real AI analysis integration"""
+    
+    def __init__(self):
+        super().__init__()
+        self.ai_analyzer = SimpleAIAnalyzer()
+    
+    def optimize_lineup(self, players: List[Player], contest_type: str = 'gpp',
+                       single_game_teams: List[str] = None) -> Optional[LineupResult]:
+        """Enhanced optimization with AI analysis"""
+        
+        # Get AI analysis before optimization
+        player_data_for_ai = [
+            {
+                'name': p.name,
+                'position': p.position,
+                'salary': p.salary,
+                'projection': p.projection,
+                'team': p.team
+            }
+            for p in players
+        ]
+        
+        ai_analysis = self.ai_analyzer.analyze_slate_for_optimization(
+            player_data_for_ai, {}, {}, contest_type
+        )
+        
+        # Apply AI strategy recommendations
+        if ai_analysis.get('strategy') == 'contrarian':
+            logger.info("AI recommends CONTRARIAN strategy")
+            contest_type = 'contrarian'
+        elif ai_analysis.get('strategy') == 'chalky':
+            logger.info("AI recommends CHALKY strategy")
+            # Boost high-salary players
+            for player in players:
+                if player.salary > 8000:
+                    player.projection *= 1.1
+        else:
+            logger.info("AI recommends BALANCED strategy")
+        
+        # Proceed with enhanced optimization
+        return super().optimize_lineup(players, contest_type, single_game_teams)
+
+# Replace the main optimization function
 def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None,
                         num_lineups: int = 10, contest_type: str = 'gpp',
                         single_game_teams: List[str] = None) -> List[LineupResult]:
-    """Main entry point for optimization"""
-    optimizer = EnhancedDFSOptimizer()
+    """AI-Enhanced optimization entry point"""
+    
+    # Use AI-enhanced optimizer
+    optimizer = AIEnhancedDFSOptimizer()
     players = optimizer.prepare_players(player_data, weather_data)
     
     if not players:
         logger.error("No valid players for optimization")
         return []
     
-    logger.info(f"Optimizing {num_lineups} {contest_type} lineups")
+    logger.info(f"AI-Enhanced optimization: {num_lineups} {contest_type} lineups")
+    if single_game_teams:
+        logger.info(f"Single game teams: {single_game_teams}")
+    
     return optimizer.generate_multiple_lineups(players, num_lineups, contest_type, single_game_teams)

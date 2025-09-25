@@ -328,44 +328,6 @@ class EnhancedDFSOptimizer:
         logger.info(f"Generated {len(lineups)} unique {contest_type} lineups")
         return lineups
 
-
-    def export_lineups_to_csv(self, lineups: List[LineupResult], filename: str = None):
-        """Export lineups to CSV"""
-        if not filename:
-            filename = f"data/lineups_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        lineup_data = []
-        for i, lineup in enumerate(lineups):
-            lineup_row = {'Lineup': i + 1}
-            for j, player in enumerate(lineup.players):
-                lineup_row[f'Player_{j+1}'] = f"{player.name} ({player.position}) ${player.salary}"
-            lineup_row.update({
-                'Total_Salary': lineup.total_salary,
-                'Projected_Points': round(lineup.projected_points, 2),
-                'Contest_Type': lineup.contest_type
-            })
-            lineup_data.append(lineup_row)
-        df = pd.DataFrame(lineup_data)
-        df.to_csv(filename, index=False)
-        return filename
-
-    def export_lineups_to_csv(self, lineups: List[LineupResult], filename: str = None):
-        """Export lineups to CSV"""
-        if not filename:
-            filename = f"data/lineups_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        lineup_data = []
-        for i, lineup in enumerate(lineups):
-            lineup_row = {'Lineup': i + 1}
-            for j, player in enumerate(lineup.players):
-                lineup_row[f'Player_{j+1}'] = f"{player.name} ({player.position}) ${player.salary}"
-            lineup_row.update({
-                'Total_Salary': lineup.total_salary,
-                'Projected_Points': round(lineup.projected_points, 2),
-                'Contest_Type': lineup.contest_type
-            })
-            lineup_data.append(lineup_row)
-        df = pd.DataFrame(lineup_data)
-        df.to_csv(filename, index=False)
-        return filename
 # Utility function for external use
 def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None,
                         num_lineups: int = 10, contest_type: str = 'gpp',
@@ -376,30 +338,6 @@ def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None,
         # Get AI analysis of the slate
 
 # Clean AI Integration
-
-    def export_lineups_to_csv(self, lineups: List[LineupResult], filename: str = None):
-        """Export lineups to CSV with proper formatting"""
-        if not filename:
-            filename = f"data/lineups_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        
-        lineup_data = []
-        for i, lineup in enumerate(lineups):
-            lineup_row = {'Lineup': i + 1}
-            for j, player in enumerate(lineup.players):
-                lineup_row[f'Player_{j+1}'] = f"{player.name} ({player.position}) ${player.salary}"
-            lineup_row.update({
-                'Total_Salary': lineup.total_salary,
-                'Projected_Points': round(lineup.projected_points, 2),
-                'Contest_Type': lineup.contest_type
-            })
-            lineup_data.append(lineup_row)
-        
-        df = pd.DataFrame(lineup_data)
-        df.to_csv(filename, index=False)
-        logger.info(f"Exported {len(lineups)} lineups to {filename}")
-        return filename
-
-# Main optimization function with AI integration
 def optimize_dfs_lineups_with_ai(player_data: List[Dict], weather_data: Dict = None,
                         num_lineups: int = 10, contest_type: str = 'gpp',
                         single_game_teams: List[str] = None) -> List[LineupResult]:
@@ -435,5 +373,50 @@ def optimize_dfs_lineups_with_ai(player_data: List[Dict], weather_data: Dict = N
     
     return optimizer.generate_multiple_lineups(players, num_lineups, contest_type, single_game_teams)
 
-# Replace the main function
+# Keep original function as backup
+optimize_dfs_lineups_original = optimize_dfs_lineups
+
+# Replace with AI-enhanced version
 optimize_dfs_lineups = optimize_dfs_lineups_with_ai
+
+    def export_lineups_to_csv(self, lineups: List[LineupResult], filename: str = None):
+        """Export lineups to CSV"""
+        if not filename:
+            filename = f"data/lineups_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        
+        lineup_data = []
+        for i, lineup in enumerate(lineups):
+            lineup_row = {'Lineup': i + 1}
+            for j, player in enumerate(lineup.players):
+                lineup_row[f'Player_{j+1}'] = f"{player.name} ({player.position}) ${player.salary}"
+            lineup_row.update({
+                'Total_Salary': lineup.total_salary,
+                'Projected_Points': round(lineup.projected_points, 2),
+                'Contest_Type': lineup.contest_type
+            })
+            lineup_data.append(lineup_row)
+        
+        df = pd.DataFrame(lineup_data)
+        df.to_csv(filename, index=False)
+        return filename
+
+    def export_lineups_to_csv(self, lineups: List[LineupResult], filename: str = None):
+        """Export lineups to CSV"""
+        if not filename:
+            filename = f"data/lineups_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        
+        lineup_data = []
+        for i, lineup in enumerate(lineups):
+            lineup_row = {'Lineup': i + 1}
+            for j, player in enumerate(lineup.players):
+                lineup_row[f'Player_{j+1}'] = f"{player.name} ({player.position}) ${player.salary}"
+            lineup_row.update({
+                'Total_Salary': lineup.total_salary,
+                'Projected_Points': round(lineup.projected_points, 2),
+                'Contest_Type': lineup.contest_type
+            })
+            lineup_data.append(lineup_row)
+        
+        df = pd.DataFrame(lineup_data)
+        df.to_csv(filename, index=False)
+        return filename

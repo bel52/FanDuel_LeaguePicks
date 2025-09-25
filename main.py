@@ -139,7 +139,7 @@ def run_web_api():
         
         # Import the API
         try:
-            from api import app
+            from app import app
         except Exception as e:
             logger.error(f"❌ Error importing API: {e}")
             return False
@@ -149,7 +149,7 @@ def run_web_api():
         
         # Run the API server
         uvicorn.run(
-            "api:app",
+            "app:app",
             host="0.0.0.0",
             port=API_PORT,
             reload=False,
