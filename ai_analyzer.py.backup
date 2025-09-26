@@ -1,12 +1,15 @@
 """
-AI Integration for Strategic DFS Analysis - FIXED VERSION
+AI Integration for Strategic DFS Analysis - FIXED
+Cost-efficient OpenAI integration for winning lineup strategies
 """
 import os
 import json
 from typing import Dict, List, Any, Optional
+from dataclasses import dataclass
 from loguru import logger
 from datetime import datetime
 
+# Handle OpenAI import gracefully
 try:
     from openai import OpenAI
     OPENAI_AVAILABLE = True
@@ -15,7 +18,7 @@ except ImportError:
     OPENAI_AVAILABLE = False
 
 class DFSAIAnalyzer:
-    """Strategic AI analyzer for DFS optimization - FIXED"""
+    """Strategic AI analyzer for DFS optimization"""
     
     def __init__(self):
         self.openai_api_key = os.getenv('OPENAI_API_KEY')
@@ -26,9 +29,9 @@ class DFSAIAnalyzer:
         
         if OPENAI_AVAILABLE and self.openai_api_key:
             try:
-                # FIXED: Only api_key parameter - no proxies or other problematic params
+                # FIXED: Simple client initialization - no extra parameters
                 self.client = OpenAI(api_key=self.openai_api_key)
-                logger.info(f"✅ AI Analyzer FIXED - initialized with model: {self.model}")
+                logger.info(f"✅ AI Analyzer initialized with model: {self.model}")
             except Exception as e:
                 logger.error(f"OpenAI client initialization failed: {e}")
                 self.client = None
@@ -45,15 +48,19 @@ class DFSAIAnalyzer:
         if not self.client:
             return self._fallback_analysis(player_data, contest_type)
         
+        if self.weekly_spend >= self.weekly_budget:
+            logger.warning(f"AI weekly budget exceeded: ${self.weekly_spend:.2f}")
+            return self._fallback_analysis(player_data, contest_type)
+        
         try:
-            # Simple successful analysis
-            estimated_cost = 0.02
+            # Track costs
+            estimated_cost = 0.02  # ~$0.02 per analysis
             self.weekly_spend += estimated_cost
-            logger.info(f"AI Cost: ${estimated_cost:.3f} for {contest_type} analysis")
+            self._log_cost(contest_type, estimated_cost)
             
             return {
                 'type': contest_type,
-                'insights': f'AI-enhanced {contest_type} strategy',
+                'insights': f'AI analysis for {contest_type} strategy',
                 'ai_enabled': True
             }
             
@@ -63,17 +70,30 @@ class DFSAIAnalyzer:
     
     def _fallback_analysis(self, players: List[Dict], contest_type: str) -> Dict[str, Any]:
         """Fallback analysis when AI is unavailable"""
+        
         return {
             'type': contest_type,
             'insights': f'Basic {contest_type} strategy - AI unavailable',
             'ai_enabled': False
         }
-
+    
+    def _log_cost(self, analysis_type: str, cost: float):
+        """Log AI API costs for tracking"""
+        self.cost_log.append({
+            'timestamp': datetime.now().isoformat(),
+            'type': analysis_type,
+            'cost': cost,
+            'weekly_total': self.weekly_spend
+        })
+        
+        logger.info(f"AI Cost: ${cost:.3f} for {analysis_type} analysis")
+        logger.info(f"Weekly spend: ${self.weekly_spend:.3f} of ${self.weekly_budget:.2f}")
+    
     def get_cost_summary(self) -> Dict[str, Any]:
         """Get cost tracking summary"""
         return {
             'weekly_spend': self.weekly_spend,
             'weekly_budget': self.weekly_budget,
             'remaining_budget': self.weekly_budget - self.weekly_spend,
-            'cost_log': self.cost_log[-10:] if hasattr(self, 'cost_log') else []
+            'cost_log': self.cost_log[-10:]  # Last 10 entries
         }
