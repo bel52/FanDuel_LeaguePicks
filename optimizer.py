@@ -63,7 +63,7 @@ class EnhancedDFSOptimizer:
         pass
         
     def prepare_players(self, player_data: List[Dict], weather_data: Dict = None) -> List[Player]:
-        """Convert and FILTER player data"""
+        """Convert and FILTER player data - FIXED LOGIC"""
         players = []
         
         for data in player_data:
@@ -74,20 +74,30 @@ class EnhancedDFSOptimizer:
                 salary = int(data.get('salary', 5000))
                 projection = float(data.get('projection', data.get('projected_points', 0)))
                 
-                # CRITICAL: Filter out clearly inactive players
-                if salary < 4500:  # Skip minimum salary players
+                # BETTER FILTERING - keep more players but filter obvious junk
+                
+                # Skip players with no name
+                if not player_name or len(player_name.strip()) < 3:
+                    continue
+                
+                # Skip very low salary players (likely practice squad)
+                if salary < 3500:
                     continue
                     
-                if not player_name or len(player_name.split()) < 2:  # Skip incomplete names
+                # Skip players with negative projections
+                if projection < 0:
                     continue
-                    
-                if projection < 5:  # Skip unrealistic projections
+                
+                # For expensive players with 0 projection, skip them
+                if salary > 6000 and projection == 0:
+                    logger.warning(f"Skipping expensive player with 0 projection: {player_name} (${salary})")
                     continue
                 
                 # Normalize defense position
                 if position in ['DST', 'DEF', 'D/ST']:
                     position = 'D'
                 
+                # Keep all valid players with some projection
                 player = Player(
                     id=str(data.get('player_id', data.get('id', player_name))),
                     name=player_name,
@@ -114,7 +124,7 @@ class EnhancedDFSOptimizer:
         positions = {}
         for p in players:
             positions[p.position] = positions.get(p.position, 0) + 1
-        logger.info(f"Filtered players by position: {positions}")
+        logger.info(f"FIXED filtering - players by position: {positions}")
         
         return players
 
@@ -342,43 +352,53 @@ class EnhancedDFSOptimizer:
         return max(2.0, min(50.0, base))
     
     def _calculate_contest_value(self, player: Player, contest_type: str) -> float:
-        """Calculate contest-specific value with better differentiation"""
+        """Calculate contest-specific value - FIXED FOR LEAGUE PLAY"""
         
         base_value = player.projection
         
+        # LEAGUE STRATEGY: Pure ceiling focus, ignore ownership completely
         if contest_type == 'gpp':
-            # Tournament: Reward high ceiling and unique plays
-            ceiling_bonus = player.variance * 0.4
-            ownership_penalty = max(0, (player.ownership - 20) * 0.1)
+            # For small leagues: ONLY care about ceiling, not ownership
+            ceiling_bonus = player.variance * 0.8  # Much higher ceiling bonus
             
-            # Bonus for elite players at key positions
+            # MAJOR bonus for elite players (these win leagues)
             if player.position == 'QB' and player.salary > 8500:
-                ceiling_bonus *= 1.3
+                ceiling_bonus *= 2.0  # Massive bonus for elite QBs
             elif player.position in ['RB', 'WR'] and player.salary > 8000:
-                ceiling_bonus *= 1.2
+                ceiling_bonus *= 1.5  # Big bonus for premium skill players
             
-            return base_value + ceiling_bonus - ownership_penalty
+            # Penalty for players with 0 projection (avoid Tyler Shough types)
+            if player.projection <= 3:
+                return base_value * 0.1  # Make them essentially unusable
+            
+            # Reward high salary + high projection (the best players)
+            if player.salary > 7000 and player.projection > 15:
+                ceiling_bonus *= 1.3
+            
+            return base_value + ceiling_bonus
             
         elif contest_type == 'cash':
-            # Cash: Reward high floor and safety
-            floor_bonus = -player.variance * 0.2  # Penalize variance
-            safety_bonus = max(0, (40 - player.ownership) * 0.05)  # Reward medium ownership
+            # Cash: Still want floor but don't avoid good players
+            floor_bonus = -player.variance * 0.1  # Small variance penalty
             
-            return base_value + floor_bonus + safety_bonus
+            # Still reward good players in cash
+            if player.projection > 15:
+                floor_bonus += 2.0
+            
+            return base_value + floor_bonus
             
         elif contest_type == 'contrarian':
-            # Contrarian: Heavy ownership penalty, reward upside
-            ownership_penalty = max(0, (player.ownership - 10) * 0.2)
-            upside_bonus = player.variance * 0.5
+            # Contrarian for leagues: High upside players that others might avoid
+            upside_bonus = player.variance * 0.6
             
-            return base_value + upside_bonus - ownership_penalty
+            # Bonus for mid-tier salary guys with high projections
+            if 6000 <= player.salary <= 7500 and player.projection > 12:
+                upside_bonus += 3.0
+            
+            return base_value + upside_bonus
             
         else:  # single_game
-            # Single game: Reward game correlation
-            if player.position in ['QB', 'WR', 'TE']:
-                return base_value * 1.15
-            else:
-                return base_value
+            return base_value * 1.15
     
     def _extract_result(self, prob, players: List[Player], player_vars: Dict, contest_type: str) -> LineupResult:
         """Extract lineup results with proper FanDuel ordering"""

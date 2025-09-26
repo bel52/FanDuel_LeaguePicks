@@ -246,13 +246,6 @@ class EnhancedDataCollector:
         logger.warning(f"Using date-based fallback: Week {current_week}")
         
         # Generate likely games based on typical NFL schedule
-        # This is a temporary fallback - should be replaced with manual data if needed
-        typical_teams = ['BUF', 'MIA', 'NYJ', 'NE', 'BAL', 'CIN', 'CLE', 'PIT', 
-                        'HOU', 'IND', 'JAX', 'TEN', 'DEN', 'KC', 'LV', 'LAC',
-                        'DAL', 'NYG', 'PHI', 'WAS', 'CHI', 'DET', 'GB', 'MIN',
-                        'ATL', 'CAR', 'NO', 'TB', 'ARI', 'LAR', 'SF', 'SEA']
-        
-        # Create some example Sunday games (this is obviously not ideal)
         example_games = [
             {'id': 'BUF_vs_MIA', 'teams': ['BUF', 'MIA'], 'time_slot': 'sunday_early', 'time': 'Sunday 1:00 PM ET'},
             {'id': 'PHI_vs_WAS', 'teams': ['PHI', 'WAS'], 'time_slot': 'sunday_early', 'time': 'Sunday 1:00 PM ET'},
@@ -398,7 +391,7 @@ class EnhancedDataCollector:
         return weather_data
 
     async def collect_players_for_slate(self, games_info: Dict[str, Any], contest_type: str = 'gpp') -> List[Dict]:
-        """Collect players with better filtering"""
+        """Collect players with REAL FPPG projections"""
         current_week = games_info['current_week']
         
         # Get teams playing in the slate
@@ -418,7 +411,7 @@ class EnhancedDataCollector:
             logger.warning("No teams found in slate, using all available players")
             playing_teams = None  # Will include all players
         
-        # Get FanDuel salaries
+        # Get FanDuel salaries with REAL FPPG data
         try:
             from fanduel_salary_scraper import get_fanduel_salaries
             salary_data = await get_fanduel_salaries()
@@ -427,46 +420,28 @@ class EnhancedDataCollector:
                 logger.error("No FanDuel salary data")
                 return []
             
-            # Filter by playing teams (if we have teams)
-            if playing_teams:
-                filtered_data = [
-                    p for p in salary_data 
-                    if p.get('team', '').upper() in playing_teams
-                ]
-                logger.info(f"Filtered to {len(filtered_data)} players from slate teams")
-            else:
-                filtered_data = salary_data
-                logger.info(f"Using all {len(filtered_data)} players (no team filter)")
-            
-        except Exception as e:
-            logger.error(f"Error getting salary data: {e}")
-            return []
-        
-        # Get projections
-        projections = await self.get_nfl_projections()
-        
-        # Get weather
-        weather_data = await self.get_weather_for_games(games_info)
-        
-        # Enhance players
-        enhanced_players = []
-        
-        for player_data in filtered_data:
-            try:
+            # CRITICAL: Use REAL FPPG from FanDuel CSV, not salary estimates
+            winning_players = []
+            for player_data in salary_data:
                 name = player_data.get('name', '')
                 position = player_data.get('position', '')
                 team = player_data.get('team', '').upper()
                 salary = int(player_data.get('salary', 5000))
                 
-                # Get projection
-                projection = projections.get(name, 0.0)
+                # Use REAL FPPG from FanDuel data (this is based on actual performance)
+                fppg = player_data.get('projected_points', 0)
                 
-                # Salary-based fallback projection
-                if projection <= 0:
+                if fppg > 0:
+                    # This is REAL projection data from FanDuel
+                    projection = fppg
+                    logger.debug(f"✅ {name}: Using real FPPG {fppg}")
+                else:
+                    # Only fallback if no FPPG data available
+                    logger.warning(f"⚠️ {name}: No FPPG data, using salary estimate")
                     if position == 'QB':
-                        projection = max(16, (salary - 6000) / 150 + 20)
+                        projection = max(18, (salary - 6000) / 150 + 22)
                     elif position == 'RB':
-                        projection = max(12, (salary - 4500) / 200 + 14)
+                        projection = max(12, (salary - 4500) / 200 + 15)
                     elif position == 'WR':
                         projection = max(10, (salary - 4000) / 250 + 12)
                     elif position == 'TE':
@@ -476,33 +451,51 @@ class EnhancedDataCollector:
                     else:
                         projection = 10
                 
-                # Apply weather
-                weather_factor = weather_data.get(team, {}).get('factor', 1.0)
-                final_projection = projection * weather_factor
+                # Filter by teams (if applicable)
+                if playing_teams and team not in playing_teams:
+                    continue
                 
-                enhanced_player = {
+                winning_players.append({
                     'player_id': f"fd_{player_data.get('id', name)}",
                     'name': name,
                     'position': position,
                     'team': team,
                     'salary': salary,
-                    'projected_points': round(final_projection, 2),
-                    'projection': round(final_projection, 2),
-                    'ceiling': round(final_projection * 1.4, 2),
-                    'floor': round(final_projection * 0.7, 2),
-                    'weather_factor': weather_factor,
+                    'projected_points': round(projection, 2),
+                    'projection': round(projection, 2),
+                    'fppg_source': 'real' if fppg > 0 else 'estimated',
+                    'ceiling': round(projection * 1.4, 2),
+                    'floor': round(projection * 0.7, 2),
+                    'weather_factor': 1.0,
                     'ownership': np.random.uniform(5.0, 35.0),
                     'opponent': player_data.get('opponent', ''),
-                    'value': round(final_projection / (salary / 1000), 2) if salary > 0 else 0
-                }
-                
-                enhanced_players.append(enhanced_player)
-                
-            except Exception as e:
-                logger.warning(f"Error enhancing player {player_data.get('name')}: {e}")
-        
-        logger.info(f"✅ Enhanced {len(enhanced_players)} players")
-        return enhanced_players
+                    'value': round(projection / (salary / 1000), 2) if salary > 0 else 0
+                })
+            
+            # Apply weather adjustments
+            weather_data = await self.get_weather_for_games(games_info)
+            for player in winning_players:
+                team = player['team']
+                if team in weather_data:
+                    weather_factor = weather_data[team].get('factor', 1.0)
+                    player['weather_factor'] = weather_factor
+                    player['projected_points'] *= weather_factor
+                    player['projection'] *= weather_factor
+                    player['ceiling'] *= weather_factor
+                    player['floor'] *= weather_factor
+            
+            logger.info(f"✅ Enhanced {len(winning_players)} players with REAL projections")
+            
+            # Log projection source breakdown
+            real_count = sum(1 for p in winning_players if p['fppg_source'] == 'real')
+            estimated_count = len(winning_players) - real_count
+            logger.info(f"📊 Projection sources: {real_count} real FPPG, {estimated_count} estimated")
+            
+            return winning_players
+            
+        except Exception as e:
+            logger.error(f"Error collecting players: {e}")
+            return []
 
 # Main entry point
 async def get_fresh_data() -> Dict[str, Any]:
@@ -511,7 +504,7 @@ async def get_fresh_data() -> Dict[str, Any]:
         # Get games info
         games_info = await collector.get_current_week_games()
         
-        # Get players
+        # Get players with REAL projections
         players = await collector.collect_players_for_slate(games_info, 'gpp')
         
         if not players:
@@ -534,6 +527,8 @@ async def get_fresh_data() -> Dict[str, Any]:
                 'main_slate_games': len(games_info['main_slate']),
                 'current_week': games_info['current_week'],
                 'avg_projection': sum(p['projected_points'] for p in players) / len(players) if players else 0,
-                'teams_in_slate': sorted(set(p['team'] for p in players))
+                'teams_in_slate': sorted(set(p['team'] for p in players)),
+                'real_projections': sum(1 for p in players if p.get('fppg_source') == 'real'),
+                'estimated_projections': sum(1 for p in players if p.get('fppg_source') == 'estimated')
             }
         }
