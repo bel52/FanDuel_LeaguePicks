@@ -440,54 +440,6 @@ class EnhancedDFSOptimizer:
         else:  # bestball
             return base_value + (player.variance * 1.0)
 
-    def _predict_friends_league_ownership(self, player: Player, contest_type: str) -> float:
-        """SIMPLE: Realistic ownership for 12-person friends league"""
-
-        # Start with realistic base
-        ownership = 20.0  # 20% = ~2-3 people out of 12
-
-        # Salary-based (friends are salary obsessed)
-        if player.salary >= 9500:
-            ownership = 45.0  # Jonathan Taylor type - 5-6 people pick him
-        elif player.salary >= 8500:
-            ownership = 35.0  # James Cook type - 4-5 people
-        elif player.salary >= 7500:
-            ownership = 28.0  # Solid players - 3-4 people
-        elif player.salary >= 6000:
-            ownership = 22.0  # Mid tier - 2-3 people
-        elif player.salary <= 4500:
-            ownership = 15.0  # Cheap plays - 1-2 people
-        else:
-            ownership = 18.0  # Boring mid tier - 2 people
-
-        # Position adjustments (friends have clear biases)
-        if player.position == 'QB':
-            if player.salary >= 8500:
-                ownership += 8  # Elite QBs very popular
-            elif player.salary <= 6500:
-                ownership += 5  # Cheap QB lottery tickets
-        elif player.position == 'RB':
-            ownership += 5  # Everyone loves RBs
-        elif player.position == 'TE':
-            ownership -= 8  # Friends hate TEs
-        elif player.position == 'D':
-            ownership -= 10  # Friends really hate defenses
-
-        # Value boost (friends spot obvious value)
-        if player.value >= 4.0:
-            ownership += 10  # Clear value gets picked
-        elif player.value < 2.5:
-            ownership -= 8  # Poor value avoided
-
-        # Team popularity
-        if player.team in ['KC', 'BUF', 'DAL', 'BAL']:
-            ownership += 5
-        elif player.team in ['JAX', 'TEN', 'CAR']:
-            ownership -= 5
-
-        # STRICT bounds for 12-person league
-        return max(8.0, min(55.0, ownership))
-
     def _extract_result(self, prob, players: List[Player], player_vars: Dict, contest_type: str) -> LineupResult:
         """Extract lineup results with proper FanDuel ordering"""
         selected_players = []
