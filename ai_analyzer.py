@@ -38,13 +38,7 @@ class DualAIDFSAnalyzer:
         if OPENAI_AVAILABLE and self.openai_api_key:
             try:
                 self.openai_client = OpenAI(api_key=self.openai_api_key)
-                # Test the connection
-                test_response = self.openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": "test"}],
-                    max_tokens=1
-                )
-                logger.info("OpenAI client initialized and tested successfully")
+                logger.info("OpenAI client initialized successfully")
             except Exception as e:
                 logger.warning(f"OpenAI initialization failed: {e}")
                 self.openai_client = None
@@ -436,21 +430,3 @@ Be specific with player names and actionable advice."""
 
 # Backwards compatibility
 WinningDFSAIAnalyzer = DualAIDFSAnalyzer
-def analyze_for_season_long(self, player_data, contest_type='cash'):
-    """Season-long league strategy - consistency over ceiling"""
-    
-    # Prioritize floor over ceiling for season-long
-    strategy_adjustments = {
-        'floor_weight': 0.7,      # Emphasize consistent scoring
-        'ceiling_weight': 0.3,    # Reduce boom/bust chasing  
-        'injury_penalty': 2.0,    # Heavily penalize injury risk
-        'weather_caution': 1.5,   # More conservative in bad weather
-        'chalk_tolerance': 0.8    # More willing to play obvious good plays
-    }
-    
-    return {
-        'contest_focus': 'season_consistency',
-        'target_finish': '4th-6th place weekly',
-        'avoid_risks': ['injury_prone', 'weather_dependent', 'boom_bust'],
-        'strategy': 'Prioritize 15+ point floor over 30+ point ceiling'
-    }

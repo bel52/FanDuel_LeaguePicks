@@ -64,16 +64,16 @@ def convert_fanduel_format(df: pd.DataFrame) -> List[Dict[str, Any]]:
                 fppg_val = 0.0
             else:
                 fppg_val = float(fppg_val)
-            
-            # Clean injury status - CONSERVATIVE handling
+
+            # Preserve injury status exactly as from FanDuel
             injury_indicator = str(row.get('Injury Indicator', '')).strip()
             injury_details = str(row.get('Injury Details', '')).strip()
-            
-            # Combine injury info - only include meaningful data
+
+            # Keep FanDuel injury indicators: IR, O, Q
             injury_status = ''
-            if injury_indicator and injury_indicator.upper() not in ['NAN', 'NONE', '', 'NULL']:
-                injury_status = injury_indicator
-                if injury_details and injury_details.upper() not in ['NAN', 'NONE', '', 'NULL']:
+            if injury_indicator and injury_indicator not in ['nan', 'NaN', '']:
+                injury_status = injury_indicator.upper()  # Convert to standard format
+                if injury_details and injury_details not in ['nan', 'NaN', '']:
                     injury_status += f" - {injury_details}"
             
             player = {

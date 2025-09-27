@@ -64,8 +64,8 @@ class DFSScheduler:
                 logger.info(f"Data collection completed. {len(fresh_data.get('players', []))} players updated")
                 
                 # Trigger lineup optimization if we have good data
-                if len(fresh_data.get('players', [])) >= 100:
-                    await self.optimize_lineups()
+                #if len(fresh_data.get('players', [])) >= 100:
+                #    await self.optimize_lineups()
                 
             else:
                 logger.warning("Data collection returned empty or invalid data")

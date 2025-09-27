@@ -1,6 +1,7 @@
 """
 FIXED: Data collector with SMARTER QB filtering for tournament winning
 Addresses over-aggressive filtering that removes viable QBs
+NOW INCLUDES: Injury opportunity detection BEFORE filtering
 """
 import asyncio
 import aiohttp
@@ -411,8 +412,6 @@ class EnhancedDataCollector:
         # UNIVERSAL RULE 2: Position-specific intelligent filtering
         return self._is_position_viable(position, salary, fppg, fppg_source, name, team)
 
-
-
     async def collect_players_for_slate(self, games_info: Dict[str, Any], contest_type: str = 'gpp') -> List[Dict]:
         """Collect players with SMARTER filtering to preserve winning options"""
         current_week = games_info['current_week']
@@ -443,12 +442,25 @@ class EnhancedDataCollector:
                 logger.error("No FanDuel salary data")
                 return []
 
-            # SMARTER filtering - only remove obviously inactive players
+            # CRITICAL CHANGE: Apply injury opportunity detection BEFORE filtering
+            logger.info("Applying injury opportunity detection BEFORE filtering...")
+            try:
+                from injury_opportunity_detector import enhance_players_with_injury_opportunities
+                enhanced_salary_data = enhance_players_with_injury_opportunities(salary_data)
+                logger.info("Injury opportunity detection completed")
+            except ImportError:
+                logger.warning("Injury opportunity detector not available, skipping enhancement")
+                enhanced_salary_data = salary_data
+            except Exception as e:
+                logger.error(f"Injury opportunity detection failed: {e}")
+                enhanced_salary_data = salary_data
+
+            # NOW apply filtering to the enhanced data
             filtered_salary_data = []
-            total_players = len(salary_data)
+            total_players = len(enhanced_salary_data)
             filtered_counts = {'QB': [0, 0], 'RB': [0, 0], 'WR': [0, 0], 'TE': [0, 0], 'D': [0, 0]}
 
-            for player_data in salary_data:
+            for player_data in enhanced_salary_data:
                 position = player_data.get('position', '')
 
                 if position in filtered_counts:
@@ -499,7 +511,7 @@ class EnhancedDataCollector:
                 if playing_teams and team not in playing_teams:
                     continue
 
-                winning_players.append({
+                winning_player = {
                     'player_id': f"fd_{player_data.get('id', name)}",
                     'name': name,
                     'position': position,
@@ -514,7 +526,16 @@ class EnhancedDataCollector:
                     'ownership': np.random.uniform(5.0, 35.0),
                     'opponent': player_data.get('opponent', ''),
                     'value': round(projection / (salary / 1000), 2) if salary > 0 else 0
-                })
+                }
+
+                # Preserve injury opportunity metadata if it exists
+                if player_data.get('injury_opportunity', False):
+                    winning_player['injury_opportunity'] = True
+                    winning_player['opportunity_score'] = player_data.get('opportunity_score', 0)
+                    winning_player['injured_starter'] = player_data.get('injured_starter', '')
+                    winning_player['boost_reason'] = player_data.get('boost_reason', '')
+
+                winning_players.append(winning_player)
 
             # Apply weather adjustments
             weather_data = await self.get_weather_for_games(games_info)
@@ -549,6 +570,11 @@ class EnhancedDataCollector:
             real_count = sum(1 for p in winning_players if p['fppg_source'] == 'real')
             estimated_count = len(winning_players) - real_count
             logger.info(f"Projection sources: {real_count} real FPPG, {estimated_count} estimated")
+
+            # Log injury opportunities applied
+            injury_opportunities = sum(1 for p in winning_players if p.get('injury_opportunity', False))
+            if injury_opportunities > 0:
+                logger.info(f"Injury opportunities applied: {injury_opportunities} players boosted")
 
             return winning_players
 
@@ -714,6 +740,7 @@ class EnhancedDataCollector:
             return False
 
         return True
+
 # Main entry point
 async def get_fresh_data() -> Dict[str, Any]:
     """Get fresh data with robust error handling"""
@@ -721,7 +748,7 @@ async def get_fresh_data() -> Dict[str, Any]:
         # Get games info
         games_info = await collector.get_current_week_games()
 
-        # Get players with REAL projections
+        # Get players with REAL projections (injury opportunities applied BEFORE filtering)
         players = await collector.collect_players_for_slate(games_info, 'gpp')
 
         if not players:
@@ -748,6 +775,7 @@ async def get_fresh_data() -> Dict[str, Any]:
                 'teams_in_slate': sorted(set(p['team'] for p in players)),
                 'real_projections': sum(1 for p in players if p.get('fppg_source') == 'real'),
                 'estimated_projections': sum(1 for p in players if p.get('fppg_source') == 'estimated'),
+                'injury_opportunities': sum(1 for p in players if p.get('injury_opportunity', False)),
                 'salary_range': {
                     'min': min(p['salary'] for p in players) if players else 0,
                     'max': max(p['salary'] for p in players) if players else 0
