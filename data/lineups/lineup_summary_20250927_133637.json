@@ -1,0 +1,47 @@
+{
+  "timestamp": "2025-09-27T13:36:37.755451",
+  "lineup_counts": {
+    "tournament": 5,
+    "cash_game": 4,
+    "contrarian": 5
+  },
+  "data_quality": {
+    "player_count": 446,
+    "total_games": 16,
+    "main_slate_games": 12,
+    "current_week": 4,
+    "avg_projection": 7.740807174887878,
+    "avg_ownership": 19.4937816472948,
+    "teams_in_slate": [
+      "ATL",
+      "BAL",
+      "BUF",
+      "CAR",
+      "CHI",
+      "CLE",
+      "DET",
+      "HOU",
+      "IND",
+      "KC",
+      "LAC",
+      "LAR",
+      "LV",
+      "NE",
+      "NO",
+      "NYG",
+      "PHI",
+      "SF",
+      "TB",
+      "TEN"
+    ],
+    "real_projections": 301,
+    "estimated_projections": 145,
+    "salary_range": {
+      "min": 3000,
+      "max": 9500
+    },
+    "vegas_games": 1
+  },
+  "weather_conditions": 20,
+  "injury_reports": 0
+}

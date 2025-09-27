@@ -395,44 +395,21 @@ class EnhancedDataCollector:
         return weather_data
 
     def _is_viable_player(self, player_data: Dict) -> bool:
-        """FIXED: SMARTER filtering - especially for QBs"""
+        """UNIVERSAL filtering system that adapts week-to-week for ALL positions"""
         name = player_data.get('name', '')
         position = player_data.get('position', '')
+        team = player_data.get('team', '')
         salary = player_data.get('salary', 0)
         fppg = player_data.get('projected_points', 0)
-        fppg_source = player_data.get('fppg_source', 'unknown')
         injury_status = player_data.get('injury_status', '')
+        fppg_source = player_data.get('fppg_source', 'unknown')
 
-        # ONLY filter players who definitely won't play
-
-        # Filter players on IR (Injured Reserve) - they definitely won't play
-        if 'IR' in injury_status.upper():
-            logger.info(f"FILTERING injured: {name} ({injury_status})")
+        # UNIVERSAL RULE 1: Remove definitively unavailable players
+        if self._is_definitely_unavailable(injury_status, name):
             return False
 
-        # Filter players listed as OUT, DOUBTFUL or suspended (SUSP)
-        upper_status = injury_status.upper()
-        if any(flag in upper_status for flag in ['OUT', 'DOUBTFUL', 'SUSP']):
-            logger.info(f"FILTERING out/doubtful: {name} ({injury_status})")
-            return False
-
-        # Filter obviously fake/broken entries
-        if not name or len(name.strip()) < 2:
-            return False
-
-        if salary <= 0:
-            return False
-
-        # FIXED: MUCH smarter QB filtering
-        if position == 'QB':
-            return self._is_potentially_startable_qb_fixed(player_data)
-
-        # For other positions, be VERY conservative
-        if salary <= 3000 and fppg <= 0:
-            logger.debug(f"FILTERING minimum salary zero projection: {name} (${salary}, {fppg:.1f})")
-            return False
-
-        return True
+        # UNIVERSAL RULE 2: Position-specific intelligent filtering
+        return self._is_position_viable(position, salary, fppg, fppg_source, name, team)
 
     def _is_potentially_startable_qb_fixed(self, player_data: Dict) -> bool:
         """FIXED: Much smarter QB filtering for tournament success"""
@@ -643,6 +620,164 @@ class EnhancedDataCollector:
             logger.error(f"Error collecting players: {e}")
             return []
 
+    def _is_definitely_unavailable(self, injury_status: str, name: str) -> bool:
+        """Universal availability check - works for all positions"""
+
+        # Remove players on Injured Reserve (definitely won't play)
+        if 'IR' in injury_status.upper():
+            logger.info(f"FILTERING IR player: {name}")
+            return True
+
+        # Remove players marked as OUT, SUSPENDED, DOUBTFUL
+        upper_status = injury_status.upper()
+        unavailable_flags = ['OUT', 'SUSP', 'DOUBTFUL']
+        if any(flag in upper_status for flag in unavailable_flags):
+            logger.info(f"FILTERING unavailable: {name} ({injury_status})")
+            return True
+
+        # Remove obviously broken entries
+        if not name or len(name.strip()) < 2:
+            return True
+
+        return False
+
+    def _is_position_viable(self, position: str, salary: int, fppg: float,
+                            fppg_source: str, name: str, team: str) -> bool:
+        """Position-specific viability using ADAPTIVE thresholds"""
+
+        if position == 'QB':
+            return self._is_viable_qb_adaptive(salary, fppg, fppg_source, name, team)
+        elif position == 'RB':
+            return self._is_viable_rb_adaptive(salary, fppg, fppg_source, name, team)
+        elif position == 'WR':
+            return self._is_viable_wr_adaptive(salary, fppg, fppg_source, name, team)
+        elif position == 'TE':
+            return self._is_viable_te_adaptive(salary, fppg, fppg_source, name, team)
+        elif position == 'D':
+            return self._is_viable_def_adaptive(salary, fppg, fppg_source, name, team)
+        else:
+            return False
+
+    def _is_viable_qb_adaptive(self, salary: int, fppg: float, fppg_source: str,
+                               name: str, team: str) -> bool:
+        """QB filtering based on ADAPTIVE salary/projection patterns"""
+
+        # Tier 1: Elite starters (obvious keeps)
+        if salary >= 8000:
+            return True
+
+        # Tier 2: Solid starters with real data
+        if salary >= 7200 and fppg >= 15.0:
+            return True
+
+        # Tier 3: Potential starters with decent metrics
+        if salary >= 6800 and fppg >= 12.0 and fppg_source == 'real':
+            return True
+
+        # Tier 4: Emergency/backup starters with value
+        if salary >= 6500 and fppg >= 10.0:
+            return True
+
+        # Filter out obvious practice squad QBs
+        if salary < 6200 and fppg < 8:
+            logger.debug(f"FILTERING practice squad QB: {name}")
+            return False
+
+        # When in doubt, keep (better safe than sorry for QBs)
+        return True
+
+    def _is_viable_rb_adaptive(self, salary: int, fppg: float, fppg_source: str,
+                               name: str, team: str) -> bool:
+        """RB filtering - remove obvious non-contributors"""
+
+        # Elite/starter RBs - obvious keeps
+        if salary >= 7000:
+            return True
+
+        # Mid-tier with real production
+        if salary >= 5000 and fppg >= 8.0:
+            return True
+
+        # Value plays with upside
+        if salary >= 4500 and fppg >= 6.0:
+            return True
+
+        # Remove obvious practice squad/inactive RBs
+        if salary < 4200 and fppg < 3:
+            logger.debug(f"FILTERING practice squad RB: {name}")
+            return False
+
+        # Emergency keeps for tournament leverage
+        if salary >= 4000 and fppg >= 4.0:
+            return True
+
+        return False
+
+    def _is_viable_wr_adaptive(self, salary: int, fppg: float, fppg_source: str,
+                               name: str, team: str) -> bool:
+        """WR filtering - keep upside plays, remove practice squad"""
+
+        # Elite WRs - obvious keeps
+        if salary >= 7000:
+            return True
+
+        # Solid producers
+        if salary >= 5500 and fppg >= 8.0:
+            return True
+
+        # Value/upside plays
+        if salary >= 4500 and fppg >= 5.0:
+            return True
+
+        # Remove obvious non-contributors
+        if salary < 4200 and fppg < 2:
+            logger.debug(f"FILTERING practice squad WR: {name}")
+            return False
+
+        # Dart throws for tournaments
+        if salary >= 4000:
+            return True
+
+        return False
+
+    def _is_viable_te_adaptive(self, salary: int, fppg: float, fppg_source: str,
+                               name: str, team: str) -> bool:
+        """TE filtering - position is thin, be more inclusive"""
+
+        # Elite TEs
+        if salary >= 6000:
+            return True
+
+        # Solid contributors
+        if salary >= 4800 and fppg >= 6.0:
+            return True
+
+        # Value plays (TE is thin)
+        if salary >= 4200 and fppg >= 3.0:
+            return True
+
+        # Remove obvious non-contributors
+        if salary < 4000 and fppg < 1:
+            logger.debug(f"FILTERING practice squad TE: {name}")
+            return False
+
+        # Keep most TEs (position scarcity)
+        return True
+
+    def _is_viable_def_adaptive(self, salary: int, fppg: float, fppg_source: str,
+                                name: str, team: str) -> bool:
+        """Defense filtering - all NFL defenses are viable"""
+
+        # All defenses $3000+ are real NFL teams
+        if salary >= 3000:
+            return True
+
+        # Filter out obvious errors
+        if salary < 3000:
+            logger.debug(f"FILTERING invalid defense: {name}")
+            return False
+
+        return True
 # Main entry point
 async def get_fresh_data() -> Dict[str, Any]:
     """Get fresh data with robust error handling"""

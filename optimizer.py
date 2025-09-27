@@ -324,140 +324,136 @@ class EnhancedDFSOptimizer:
                     prob += pulp.lpSum(wr_vars) >= 0.5 * pulp.lpSum(qb_vars)
 
     def _predict_ownership(self, player: Player, contest_type: str) -> float:
-        """Ownership prediction optimized for 12-person friends league"""
+        """FRIENDS LEAGUE ownership prediction for 12-person field"""
 
-        # Base ownership from salary and projection
-        base = (player.salary / 500) + (player.projection * 1.2)
+        # Base calculation much lower for friends league
+        salary_factor = player.salary / 1000  # 4-12 range
+        projection_factor = player.projection * 0.8  # Lower multiplier
+        base = salary_factor + projection_factor
 
-        # Salary tier adjustments for small field
+        # Friends league salary tiers (much lower ownership)
         if player.salary >= 9000:
-            base *= 1.6  # Studs will be popular but not overwhelming
+            base *= 0.8  # Studs less chalky in friends league
         elif player.salary >= 8000:
-            base *= 1.3  # Good players get attention
+            base *= 0.9  # Good players moderate
         elif player.salary >= 6500:
-            base *= 1.0  # Mid-tier normal ownership
+            base *= 1.0  # Mid-tier baseline
         elif player.salary <= 5000:
-            base *= 0.4  # Value plays less popular
+            base *= 0.6  # Value plays less popular
 
-        # Position-specific adjustments for friends league
-        if player.position == 'QB':
-            if player.salary >= 8000:
-                base *= 1.4  # Elite QBs popular in small fields
-        elif player.position == 'RB':
-            if player.salary >= 8000:
-                base *= 1.2  # RBs slightly less chalk than QBs
-        elif player.position == 'WR':
-            if player.salary >= 8000:
-                base *= 1.1  # WRs moderate popularity
-        elif player.position == 'D':
-            base *= 0.7  # Defenses vary more in small fields
+        # Position adjustments for small field
+        position_mods = {
+            'QB': 1.1 if player.salary >= 8000 else 0.9,
+            'RB': 1.0,
+            'WR': 0.9,
+            'TE': 0.8,
+            'D': 0.7
+        }
+        base *= position_mods.get(player.position, 1.0)
 
-        # Contest type adjustments
+        # Contest type (friends league focus)
         if contest_type == 'gpp':
-            # Friends league tournament style
+            # Tournament but friends league
             if player.value > 3.5:
-                base *= 1.2  # High value gets some attention
+                base *= 1.1  # Slight boost for value
         elif contest_type == 'contrarian':
-            base *= 0.6  # Contrarian targets truly low owned
+            base *= 0.5  # Heavy reduction for contrarian
+        elif contest_type == 'cash':
+            if player.value > 3.2:
+                base *= 1.2  # Cash games like value
 
-        return max(2.0, min(35.0, base))  # Cap ownership at 35% for small field
+        # Cap ownership much lower for friends league
+        return max(3.0, min(25.0, base))
 
     def _calculate_contest_value(self, player: Player, contest_type: str) -> float:
-        """Value calculation optimized for beating 11 friends each week"""
+        """Contest value optimized for 12-person friends league wins"""
 
         base_value = player.projection
 
         if contest_type == 'gpp':
-            # Friends League Tournament Strategy: Balanced approach
+            # Friends league tournament: moderate ownership penalty
 
-            # Moderate ownership penalty (not massive like large tournaments)
             ownership_penalty = 0
-            if player.ownership > 25:
-                ownership_penalty = (player.ownership - 25) * 0.2  # Light penalty for high ownership
-            elif player.ownership > 30:
-                ownership_penalty = (player.ownership - 30) * 0.3  # Medium penalty for chalk
+            if player.ownership > 20:
+                ownership_penalty = (player.ownership - 20) * 0.15  # Light penalty
+            elif player.ownership > 25:
+                ownership_penalty = (player.ownership - 25) * 0.25  # Medium penalty
 
             base_value -= ownership_penalty
 
-            # Bonus for undervalued studs (key for small field wins)
-            if player.salary > 7500 and player.ownership < 15:
-                base_value *= 1.8  # Good bonus for low-owned studs
-            elif player.salary > 6500 and player.ownership < 10:
-                base_value *= 1.6  # Solid bonus for very low owned
+            # Leverage bonuses for friends league
+            if player.salary > 8000 and player.ownership < 12:
+                base_value *= 1.6  # Good boost for low-owned studs
+            elif player.salary > 7000 and player.ownership < 8:
+                base_value *= 1.4  # Medium boost
+            elif player.salary > 6000 and player.ownership < 6:
+                base_value *= 1.2  # Small boost
 
-            # Ceiling bonus for weekly wins
-            ceiling_bonus = player.variance * 1.2
-
-            # Position-specific weekly win adjustments
-            if player.position == 'QB':
-                if player.salary >= 8000 and player.ownership < 20:
-                    base_value *= 1.5  # QB leverage important for weekly wins
-            elif player.position == 'WR':
-                if player.salary >= 7500 and player.ownership < 15:
-                    base_value *= 1.4  # WR leverage key in small fields
-            elif player.position == 'RB':
-                if player.salary >= 8000 and player.ownership < 20:
-                    base_value *= 1.3  # RB leverage moderate boost
+            # Ceiling bonus
+            ceiling_bonus = player.variance * 1.0
 
             return base_value + ceiling_bonus
 
         elif contest_type == 'cash':
-            # Friends league cash: safety first
-            floor_bonus = -player.variance * 0.05  # Small variance penalty
-            consistency_bonus = 0
-            if player.value > 3.0:
-                consistency_bonus = 2.0  # Bonus for consistent value
+            # Friends league cash: consistency focus
+            floor_bonus = -player.variance * 0.1  # Small variance penalty
 
-            return base_value + floor_bonus + consistency_bonus
+            # Value bonus
+            if player.value > 3.2:
+                base_value += 1.5
+            elif player.value > 2.8:
+                base_value += 1.0
+
+            return base_value + floor_bonus
 
         elif contest_type == 'contrarian':
             # True contrarian for friends league
             ownership_boost = 0
-            if player.ownership < 8:
-                ownership_boost = 12.0  # Large boost for very low owned
+            if player.ownership < 5:
+                ownership_boost = 8.0  # Large boost
+            elif player.ownership < 10:
+                ownership_boost = 4.0  # Medium boost
             elif player.ownership < 15:
-                ownership_boost = 6.0  # Medium boost for low owned
-            elif player.ownership < 20:
-                ownership_boost = 3.0  # Small boost for moderately low owned
+                ownership_boost = 2.0  # Small boost
 
-            # Penalty for popular plays in contrarian builds
-            if player.ownership > 25:
-                ownership_boost = -5.0  # Penalty for chalk in contrarian
+            # Penalty for chalk
+            if player.ownership > 20:
+                ownership_boost = -3.0
 
-            # Extra ceiling bonus for contrarian
-            ceiling_bonus = player.variance * 1.8
+            # Extra ceiling for contrarian
+            ceiling_bonus = player.variance * 1.5
 
             return base_value + ownership_boost + ceiling_bonus
 
         else:  # single_game
             return base_value * 1.1
-    
+
     def _extract_result(self, prob, players: List[Player], player_vars: Dict, contest_type: str) -> LineupResult:
         """Extract lineup results with proper FanDuel ordering"""
         selected_players = []
         total_salary = 0
         total_ownership = 0
-        
+
         for i, player in enumerate(players):
             if player_vars[i].varValue == 1:
                 selected_players.append(player)
                 total_salary += player.salary
                 total_ownership += player.ownership
-        
+
         # ORDER PLAYERS IN FANDUEL FORMAT
         ordered_players = self._format_lineup_for_fanduel(selected_players)
-        
+
         # Calculate projected points
         if contest_type == 'single_game' and len(ordered_players) == 6:
             mvp = max(ordered_players, key=lambda p: p.projection)
             projected_points = mvp.projection * 1.5 + sum(p.projection for p in ordered_players if p != mvp)
         else:
             projected_points = sum(p.projection for p in ordered_players)
-        
+
         # Calculate ceiling/floor
         ceiling = sum(p.projection + p.variance for p in ordered_players)
         floor = sum(max(0, p.projection - p.variance) for p in ordered_players)
-        
+
         return LineupResult(
             players=ordered_players,  # Now properly ordered
             total_salary=total_salary,
@@ -470,31 +466,31 @@ class EnhancedDFSOptimizer:
             ceiling_score=ceiling,
             floor_score=floor
         )
-    
+
     def _calculate_correlation(self, players: List[Player]) -> float:
         """Calculate lineup correlation score"""
         correlation = 0.0
-        
+
         # Find QB+WR same team stacks
         qb_teams = [p.team for p in players if p.position == 'QB']
         wr_teams = [p.team for p in players if p.position == 'WR']
-        
+
         for qb_team in qb_teams:
             same_team_wrs = sum(1 for team in wr_teams if team == qb_team)
             if same_team_wrs > 0:
                 correlation += 0.3 * same_team_wrs
-        
+
         # Team stacking bonus
         team_counts = {}
         for player in players:
             team_counts[player.team] = team_counts.get(player.team, 0) + 1
-        
+
         for count in team_counts.values():
             if count >= 3:
                 correlation += 0.4
             elif count >= 2:
                 correlation += 0.2
-        
+
         return min(1.0, correlation)
 
     def generate_multiple_lineups(self, players: List[Player], num_lineups: int = 10,
@@ -555,7 +551,7 @@ class EnhancedDFSOptimizer:
         """Export lineups to CSV"""
         if not filename:
             filename = f"data/lineups_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        
+
         lineup_data = []
         for i, lineup in enumerate(lineups):
             lineup_row = {'Lineup': i + 1}
@@ -567,7 +563,7 @@ class EnhancedDFSOptimizer:
                 'Contest_Type': lineup.contest_type
             })
             lineup_data.append(lineup_row)
-        
+
         df = pd.DataFrame(lineup_data)
         df.to_csv(filename, index=False)
         logger.info(f"Exported {len(lineups)} lineups to {filename}")
@@ -578,9 +574,9 @@ def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None,
                         num_lineups: int = 10, contest_type: str = 'gpp',
                         single_game_teams: List[str] = None) -> List[LineupResult]:
     """AI-Enhanced optimization entry point with CONSERVATIVE filtering"""
-    
+
     logger.info(f"Starting AI-enhanced {contest_type} optimization...")
-    
+
     # Step 1: Get AI strategic analysis (if available)
     if AI_AVAILABLE:
         try:
@@ -588,52 +584,52 @@ def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None,
             ai_analysis = analyzer.analyze_slate_for_optimization(
                 player_data, weather_data or {}, {}, contest_type
             )
-            
+
             if ai_analysis.get('ai_confidence', 0) > 0.5:
                 logger.info(f"AI Strategy: {ai_analysis.get('strategy', 'No strategy')}")
-                
+
                 # Apply AI insights to player data
                 for player in player_data:
                     player_name = player.get('name', '')
-                    
+
                     # Apply AI ownership predictions
                     ownership_predictions = ai_analysis.get('ownership_predictions', {})
                     if player_name in ownership_predictions:
                         player['ai_ownership'] = ownership_predictions[player_name]
-                    
+
                     # Boost leverage spots for tournaments
                     leverage_spots = ai_analysis.get('leverage_spots', [])
                     if contest_type == 'gpp' and any(player_name.lower() in spot.lower() for spot in leverage_spots):
                         player['projected_points'] = player.get('projected_points', 0) * 1.15
                         logger.info(f"AI Leverage boost: {player_name}")
-                    
+
                     # Mark contrarian targets
                     contrarian_targets = ai_analysis.get('contrarian_targets', [])
                     if any(player_name.lower() in target.lower() for target in contrarian_targets):
                         player['contrarian_target'] = True
-            
+
             # Log AI cost tracking
             cost_summary = analyzer.get_cost_summary()
             logger.info(f"AI Cost: ${cost_summary['weekly_spend']:.3f} of ${cost_summary['weekly_budget']:.2f} budget")
-            
+
         except Exception as e:
             logger.warning(f"AI analysis failed, continuing without: {e}")
             ai_analysis = {'strategy': 'Fallback optimization', 'ai_confidence': 0}
     else:
         logger.info("AI analysis not available - using fallback optimization")
         ai_analysis = {'strategy': 'Fallback optimization', 'ai_confidence': 0}
-    
+
     # Step 2: Run optimization with AI-enhanced data and CONSERVATIVE filtering
     optimizer = EnhancedDFSOptimizer()
     players = optimizer.prepare_players(player_data, weather_data)
-    
+
     if not players:
         logger.error("No valid players for optimization")
         return []
-    
+
     logger.info(f"Optimization: {num_lineups} {contest_type} lineups with {len(players)} active players")
-    
+
     # Generate lineups
     lineups = optimizer.generate_multiple_lineups(players, num_lineups, contest_type, single_game_teams)
-    
+
     return lineups
