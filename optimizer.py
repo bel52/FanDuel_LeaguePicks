@@ -322,74 +322,115 @@ class EnhancedDFSOptimizer:
                 if qb_vars and wr_vars:
                     # Soft constraint: if QB selected, prefer WR from same team
                     prob += pulp.lpSum(wr_vars) >= 0.5 * pulp.lpSum(qb_vars)
-    
+
     def _predict_ownership(self, player: Player, contest_type: str) -> float:
-        """Enhanced ownership prediction"""
-        
-        # Base ownership from salary
-        base = (player.salary / 300) + (player.value * 2)
-        
+        """Ownership prediction optimized for 12-person friends league"""
+
+        # Base ownership from salary and projection
+        base = (player.salary / 500) + (player.projection * 1.2)
+
+        # Salary tier adjustments for small field
+        if player.salary >= 9000:
+            base *= 1.6  # Studs will be popular but not overwhelming
+        elif player.salary >= 8000:
+            base *= 1.3  # Good players get attention
+        elif player.salary >= 6500:
+            base *= 1.0  # Mid-tier normal ownership
+        elif player.salary <= 5000:
+            base *= 0.4  # Value plays less popular
+
+        # Position-specific adjustments for friends league
+        if player.position == 'QB':
+            if player.salary >= 8000:
+                base *= 1.4  # Elite QBs popular in small fields
+        elif player.position == 'RB':
+            if player.salary >= 8000:
+                base *= 1.2  # RBs slightly less chalk than QBs
+        elif player.position == 'WR':
+            if player.salary >= 8000:
+                base *= 1.1  # WRs moderate popularity
+        elif player.position == 'D':
+            base *= 0.7  # Defenses vary more in small fields
+
         # Contest type adjustments
         if contest_type == 'gpp':
+            # Friends league tournament style
             if player.value > 3.5:
-                base *= 1.4  # High value players get more attention
-            if player.position == 'QB' and player.salary > 8500:
-                base *= 1.2  # Elite QBs are popular
-        elif contest_type == 'cash':
-            base *= 0.9  # Generally lower ownership in cash
+                base *= 1.2  # High value gets some attention
         elif contest_type == 'contrarian':
-            base *= 0.6  # Contrarian targets low ownership
-        
-        return max(2.0, min(50.0, base))
-    
+            base *= 0.6  # Contrarian targets truly low owned
+
+        return max(2.0, min(35.0, base))  # Cap ownership at 35% for small field
+
     def _calculate_contest_value(self, player: Player, contest_type: str) -> float:
-        """FIXED tournament strategy - prioritize ceiling and avoid chalk"""
-        
+        """Value calculation optimized for beating 11 friends each week"""
+
         base_value = player.projection
-        
+
         if contest_type == 'gpp':
-            # TOURNAMENT: High ceiling + low ownership is EVERYTHING
-            ceiling_bonus = player.variance * 2.0  # Double variance bonus
-            
-            # MASSIVE ownership penalty for chalk plays (this is the key fix!)
+            # Friends League Tournament Strategy: Balanced approach
+
+            # Moderate ownership penalty (not massive like large tournaments)
+            ownership_penalty = 0
             if player.ownership > 25:
-                ownership_penalty = (player.ownership - 25) * 0.15  # Heavy penalty
-                base_value -= ownership_penalty
-            
-            # Huge bonus for low-owned studs
-            if player.salary > 8000 and player.ownership < 15:
-                base_value *= 1.8  # 80% bonus for low-owned studs
-            
-            # Elite QB ceiling bonus
-            if player.position == 'QB' and player.salary > 8500:
-                ceiling_bonus *= 1.5
-            
-            # WR1 ceiling bonus  
-            if player.position == 'WR' and player.salary > 8000:
-                ceiling_bonus *= 1.3
-                
+                ownership_penalty = (player.ownership - 25) * 0.2  # Light penalty for high ownership
+            elif player.ownership > 30:
+                ownership_penalty = (player.ownership - 30) * 0.3  # Medium penalty for chalk
+
+            base_value -= ownership_penalty
+
+            # Bonus for undervalued studs (key for small field wins)
+            if player.salary > 7500 and player.ownership < 15:
+                base_value *= 1.8  # Good bonus for low-owned studs
+            elif player.salary > 6500 and player.ownership < 10:
+                base_value *= 1.6  # Solid bonus for very low owned
+
+            # Ceiling bonus for weekly wins
+            ceiling_bonus = player.variance * 1.2
+
+            # Position-specific weekly win adjustments
+            if player.position == 'QB':
+                if player.salary >= 8000 and player.ownership < 20:
+                    base_value *= 1.5  # QB leverage important for weekly wins
+            elif player.position == 'WR':
+                if player.salary >= 7500 and player.ownership < 15:
+                    base_value *= 1.4  # WR leverage key in small fields
+            elif player.position == 'RB':
+                if player.salary >= 8000 and player.ownership < 20:
+                    base_value *= 1.3  # RB leverage moderate boost
+
             return base_value + ceiling_bonus
-            
+
         elif contest_type == 'cash':
-            # CASH: Consistent floor, don't care about ownership
-            floor_bonus = -player.variance * 0.1  # Small variance penalty
-            return base_value + floor_bonus
-            
+            # Friends league cash: safety first
+            floor_bonus = -player.variance * 0.05  # Small variance penalty
+            consistency_bonus = 0
+            if player.value > 3.0:
+                consistency_bonus = 2.0  # Bonus for consistent value
+
+            return base_value + floor_bonus + consistency_bonus
+
         elif contest_type == 'contrarian':
-            # CONTRARIAN: Maximum leverage on low ownership
+            # True contrarian for friends league
             ownership_boost = 0
-            if player.ownership < 10:
-                ownership_boost = 8.0  # Huge boost for <10% owned
+            if player.ownership < 8:
+                ownership_boost = 12.0  # Large boost for very low owned
+            elif player.ownership < 15:
+                ownership_boost = 6.0  # Medium boost for low owned
             elif player.ownership < 20:
-                ownership_boost = 4.0  # Good boost for <20% owned
-            
-            # Ceiling bonus for contrarian
-            ceiling_bonus = player.variance * 1.5
-            
+                ownership_boost = 3.0  # Small boost for moderately low owned
+
+            # Penalty for popular plays in contrarian builds
+            if player.ownership > 25:
+                ownership_boost = -5.0  # Penalty for chalk in contrarian
+
+            # Extra ceiling bonus for contrarian
+            ceiling_bonus = player.variance * 1.8
+
             return base_value + ownership_boost + ceiling_bonus
-            
+
         else:  # single_game
-            return base_value * 1.15
+            return base_value * 1.1
     
     def _extract_result(self, prob, players: List[Player], player_vars: Dict, contest_type: str) -> LineupResult:
         """Extract lineup results with proper FanDuel ordering"""
@@ -455,19 +496,19 @@ class EnhancedDFSOptimizer:
                 correlation += 0.2
         
         return min(1.0, correlation)
-    
+
     def generate_multiple_lineups(self, players: List[Player], num_lineups: int = 10,
-                                 contest_type: str = 'gpp', single_game_teams: List[str] = None) -> List[LineupResult]:
-        """Generate multiple diverse lineups with BETTER randomization"""
+                                  contest_type: str = 'gpp', single_game_teams: List[str] = None) -> List[LineupResult]:
+        """Generate diverse lineups optimized for 12-person friends league"""
         lineups = []
         used_combinations = set()
-        max_attempts = num_lineups * 5  # Increased attempts for better diversity
-        
+        max_attempts = num_lineups * 3  # Fewer attempts needed for friends league
+
         for attempt in range(max_attempts):
             if len(lineups) >= num_lineups:
                 break
-                
-            # More aggressive randomization for diversity
+
+            # Moderate randomization for friends league diversity
             randomized_players = []
             for player in players:
                 new_player = Player(
@@ -476,37 +517,38 @@ class EnhancedDFSOptimizer:
                     ownership=player.ownership, weather_factor=player.weather_factor,
                     injury_risk=player.injury_risk, value=player.value, variance=player.variance
                 )
-                
-                # Stronger randomization based on contest type
+
+                # Moderate randomization for friends league
                 if contest_type == 'gpp':
-                    # Tournament: More variance for differentiation
-                    random_factor = random.uniform(0.80, 1.20)  # Increased variance
+                    # Balanced variance for weekly wins
+                    random_factor = random.uniform(0.85, 1.15)
                 elif contest_type == 'cash':
-                    # Cash: Less variance for consistency
+                    # Low variance for cash games
                     random_factor = random.uniform(0.95, 1.05)
                 else:  # contrarian
-                    # Contrarian: High variance to find unique builds
+                    # Higher variance for contrarian builds
                     random_factor = random.uniform(0.75, 1.25)
-                
+
                 new_player.projection *= random_factor
                 new_player.value = new_player.projection / (new_player.salary / 1000)
                 randomized_players.append(new_player)
-            
+
             lineup = self.optimize_lineup(randomized_players, contest_type, single_game_teams)
             if lineup:
-                # More sophisticated uniqueness check
-                core_players = tuple(sorted([p.id for p in lineup.players if p.salary > 7000]))
+                # Uniqueness check focused on core expensive players
+                core_players = tuple(sorted([p.id for p in lineup.players if p.salary > 6500]))
                 if core_players not in used_combinations:
                     lineups.append(lineup)
                     used_combinations.add(core_players)
-        
-        # Sort by appropriate metric
+
+        # Sort by appropriate metric for friends league
         if contest_type == 'cash':
             lineups.sort(key=lambda x: x.floor_score, reverse=True)
         else:
-            lineups.sort(key=lambda x: x.ceiling_score, reverse=True)
-        
-        logger.info(f"Generated {len(lineups)} unique {contest_type} lineups from {max_attempts} attempts")
+            # For friends league, balance ceiling and ownership
+            lineups.sort(key=lambda x: (x.ceiling_score - (x.ownership_total * 0.5)), reverse=True)
+
+        logger.info(f"Generated {len(lineups)} unique {contest_type} lineups for friends league")
         return lineups
 
     def export_lineups_to_csv(self, lineups: List[LineupResult], filename: str = None):
