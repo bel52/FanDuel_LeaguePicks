@@ -1,6 +1,6 @@
 """
 Enhanced DFS lineup optimization with proper FLEX position support
-Fixed for tournament play with proper FanDuel format and improved QB filtering
+Fixed for tournament play with proper FanDuel format and CONSERVATIVE filtering
 """
 import pulp
 import pandas as pd
@@ -57,13 +57,13 @@ class LineupResult:
     floor_score: float = 0.0
 
 class EnhancedDFSOptimizer:
-    """Enhanced DFS optimization for exact FanDuel format with improved filtering"""
+    """Enhanced DFS optimization for exact FanDuel format with CONSERVATIVE filtering"""
     
     def __init__(self):
         pass
         
     def prepare_players(self, player_data: List[Dict], weather_data: Dict = None) -> List[Player]:
-        """Convert and FILTER player data - IMPROVED LOGIC with better QB filtering"""
+        """Convert player data with MINIMAL filtering - data_collector already filtered conservatively"""
         players = []
         
         for data in player_data:
@@ -74,43 +74,21 @@ class EnhancedDFSOptimizer:
                 salary = int(data.get('salary', 5000))
                 projection = float(data.get('projection', data.get('projected_points', 0)))
                 
-                # IMPROVED FILTERING - keep more players but filter obvious junk
+                # MINIMAL filtering - data_collector already did conservative filtering
                 
                 # Skip players with no name
-                if not player_name or len(player_name.strip()) < 3:
+                if not player_name or len(player_name.strip()) < 2:
                     continue
                 
-                # Skip very low salary players (likely practice squad)
-                if salary < 3500:
-                    continue
-                    
                 # Skip players with negative projections
                 if projection < 0:
                     continue
-                
-                # For expensive players with 0 projection, skip them
-                if salary > 6000 and projection == 0:
-                    logger.warning(f"Skipping expensive player with 0 projection: {player_name} (${salary})")
-                    continue
-                
-                # IMPROVED QB FILTERING - Filter out backup QBs more aggressively
-                if position == 'QB':
-                    # Filter out backup QBs more aggressively
-                    if salary < 7000 and projection < 15:
-                        logger.warning(f"Filtering backup QB: {player_name} (${salary}, {projection:.1f} proj)")
-                        continue
-                    
-                    # Also filter QBs with no FPPG data regardless of salary
-                    fppg_source = data.get('fppg_source', 'unknown')
-                    if fppg_source == 'estimated' and projection < 18:
-                        logger.warning(f"Filtering estimated QB: {player_name} (no real FPPG data)")
-                        continue
                 
                 # Normalize defense position
                 if position in ['DST', 'DEF', 'D/ST']:
                     position = 'D'
                 
-                # Keep all valid players with some projection
+                # Keep all players that made it through data_collector filtering
                 player = Player(
                     id=str(data.get('player_id', data.get('id', player_name))),
                     name=player_name,
@@ -137,7 +115,7 @@ class EnhancedDFSOptimizer:
         positions = {}
         for p in players:
             positions[p.position] = positions.get(p.position, 0) + 1
-        logger.info(f"IMPROVED filtering - players by position: {positions}")
+        logger.info(f"Final optimization player count by position: {positions}")
         
         return players
 
@@ -557,7 +535,7 @@ class EnhancedDFSOptimizer:
 def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None,
                         num_lineups: int = 10, contest_type: str = 'gpp',
                         single_game_teams: List[str] = None) -> List[LineupResult]:
-    """AI-Enhanced optimization entry point with improved QB filtering"""
+    """AI-Enhanced optimization entry point with CONSERVATIVE filtering"""
     
     logger.info(f"Starting AI-enhanced {contest_type} optimization...")
     
@@ -603,7 +581,7 @@ def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None,
         logger.info("AI analysis not available - using fallback optimization")
         ai_analysis = {'strategy': 'Fallback optimization', 'ai_confidence': 0}
     
-    # Step 2: Run optimization with AI-enhanced data and improved filtering
+    # Step 2: Run optimization with AI-enhanced data and CONSERVATIVE filtering
     optimizer = EnhancedDFSOptimizer()
     players = optimizer.prepare_players(player_data, weather_data)
     

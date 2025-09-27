@@ -43,7 +43,7 @@ class EnhancedSlateManager:
                         current_week = data.get('week')
                         
                     if current_week and isinstance(current_week, int):
-                        logger.info(f"✅ ESPN API Week: {current_week}")
+                        logger.info(f"ESPN API Week: {current_week}")
                         return current_week
                         
         except Exception as e:
@@ -66,11 +66,11 @@ class EnhancedSlateManager:
         days_since_start = (now - season_start).days
         week = max(1, min(18, (days_since_start // 7) + 1))
         
-        logger.info(f"📅 Calculated week from date: Week {week} (days since start: {days_since_start})")
+        logger.info(f"Calculated week from date: Week {week} (days since start: {days_since_start})")
         return week
 
 class EnhancedDataCollector:
-    """REAL data collection with robust error handling"""
+    """REAL data collection with conservative filtering to preserve viable players"""
     
     def __init__(self):
         self.session = None
@@ -98,7 +98,7 @@ class EnhancedDataCollector:
                     return self._get_current_date_fallback()
                 
                 data = await response.json()
-                logger.info(f"📡 ESPN API response keys: {list(data.keys())}")
+                logger.info(f"ESPN API response keys: {list(data.keys())}")
                 
                 # Get current week with multiple fallbacks
                 current_week = self._extract_week_number(data)
@@ -111,7 +111,7 @@ class EnhancedDataCollector:
                     logger.warning("No events found in ESPN response")
                     return self._get_current_date_fallback()
                 
-                logger.info(f"📊 Processing {len(events)} events from ESPN")
+                logger.info(f"Processing {len(events)} events from ESPN")
                 
                 for i, event in enumerate(events):
                     try:
@@ -135,11 +135,11 @@ class EnhancedDataCollector:
                     if game['time_slot'] in ['sunday_early', 'sunday_late']:
                         main_slate.append(game)
                 
-                logger.info(f"✅ Parsed {len(all_games)} real games, {len(main_slate)} in main slate")
+                logger.info(f"Parsed {len(all_games)} real games, {len(main_slate)} in main slate")
                 
                 # Log game details for verification
                 for game in all_games[:3]:  # Show first 3 games
-                    logger.info(f"🏈 {game['teams'][0]} vs {game['teams'][1]} - {game['time']}")
+                    logger.info(f"{game['teams'][0]} vs {game['teams'][1]} - {game['time']}")
                 
                 return {
                     'current_week': current_week,
@@ -262,20 +262,20 @@ class EnhancedDataCollector:
 
     async def get_vegas_odds_data(self) -> Dict[str, Any]:
         """Placeholder for Vegas odds"""
-        logger.info("🎲 Using placeholder Vegas odds")
+        logger.info("Using placeholder Vegas odds")
         return {'placeholder': {'total_points': 45.5, 'spread': -3.5}}
 
     async def get_nfl_projections(self) -> Dict[str, float]:
         """Get NFL projections with better error handling"""
         try:
-            logger.info("📊 Fetching NFL projections...")
+            logger.info("Fetching NFL projections...")
             
             current_year = datetime.now().year
             
             # Try to get weekly data
             try:
                 weekly_data = nfl.import_weekly_data([current_year])
-                logger.info(f"✅ Loaded weekly data: {len(weekly_data)} rows")
+                logger.info(f"Loaded weekly data: {len(weekly_data)} rows")
             except Exception as e:
                 logger.error(f"Failed to load weekly data: {e}")
                 return {}
@@ -343,7 +343,7 @@ class EnhancedDataCollector:
                     logger.debug(f"Error calculating projection for {player_name}: {e}")
                     continue
             
-            logger.info(f"✅ Generated {len(projections)} projections")
+            logger.info(f"Generated {len(projections)} projections")
             return projections
             
         except Exception as e:
@@ -390,8 +390,86 @@ class EnhancedDataCollector:
         
         return weather_data
 
+    def _is_viable_player(self, player_data: Dict) -> bool:
+        """CONSERVATIVE filtering - only remove obviously inactive players"""
+        name = player_data.get('name', '')
+        position = player_data.get('position', '')
+        salary = player_data.get('salary', 0)
+        fppg = player_data.get('projected_points', 0)
+        fppg_source = player_data.get('fppg_source', 'unknown')
+        injury_status = player_data.get('injury_status', '')
+        
+        # ONLY filter players who definitely won't play
+        
+        # Filter players on IR (Injured Reserve) - they definitely won't play
+        if 'IR' in injury_status.upper():
+            logger.info(f"FILTERING injured: {name} ({injury_status})")
+            return False
+        
+        # Filter obviously fake/broken entries
+        if not name or len(name.strip()) < 2:
+            return False
+        
+        if salary <= 0:
+            return False
+        
+        # VERY conservative QB filtering - only remove obvious non-starters
+        if position == 'QB':
+            return self._is_potentially_startable_qb(player_data)
+        
+        # For other positions, be VERY conservative - only remove minimum salary players with no projection
+        if salary <= 3000 and fppg <= 0:
+            logger.debug(f"FILTERING minimum salary zero projection: {name} (${salary}, {fppg:.1f})")
+            return False
+        
+        return True
+    
+    def _is_potentially_startable_qb(self, player_data: Dict) -> bool:
+        """CONSERVATIVE QB filtering - keep any QB who might potentially start"""
+        name = player_data.get('name', '')
+        salary = player_data.get('salary', 0)
+        fppg = player_data.get('projected_points', 0)
+        fppg_source = player_data.get('fppg_source', 'unknown')
+        injury_status = player_data.get('injury_status', '')
+        
+        # Remove injured QBs on IR
+        if 'IR' in injury_status.upper():
+            logger.info(f"FILTERING injured QB: {name} ({injury_status})")
+            return False
+        
+        # KNOWN starting QBs - always keep these
+        starting_qbs = {
+            'Josh Allen', 'Lamar Jackson', 'Jalen Hurts', 'Justin Herbert', 
+            'Patrick Mahomes', 'Baker Mayfield', 'Jared Goff', 'Caleb Williams',
+            'Daniel Jones', 'Drake Maye', 'Matthew Stafford', 'Russell Wilson',
+            'Bryce Young', 'Trevor Lawrence', 'C.J. Stroud', 'Jayden Daniels',
+            'Geno Smith', 'Dak Prescott', 'Tua Tagovailoa', 'Jordan Love',
+            'Derek Carr', 'Kyler Murray', 'Brock Purdy', 'Mac Jones'
+        }
+        
+        # If it's a known starter, keep it
+        for starter in starting_qbs:
+            if starter.lower() in name.lower():
+                return True
+        
+        # Be VERY conservative - keep any QB with decent salary OR projection
+        # This ensures we don't accidentally filter legitimate starters
+        if salary >= 6000:  # Any QB priced $6K+ might be viable
+            return True
+        
+        if fppg >= 10:  # Any QB with 10+ projection might be viable
+            return True
+        
+        # Only filter QBs with very low salary AND very low projection
+        if salary < 6000 and fppg < 5:
+            logger.debug(f"FILTERING low-value QB: {name} (${salary}, {fppg:.1f})")
+            return False
+        
+        # Default to keeping the player (conservative approach)
+        return True
+
     async def collect_players_for_slate(self, games_info: Dict[str, Any], contest_type: str = 'gpp') -> List[Dict]:
-        """Collect players with REAL FPPG projections"""
+        """Collect players with CONSERVATIVE filtering to preserve viable options"""
         current_week = games_info['current_week']
         
         # Get teams playing in the slate
@@ -420,36 +498,57 @@ class EnhancedDataCollector:
                 logger.error("No FanDuel salary data")
                 return []
             
-            # CRITICAL: Use REAL FPPG from FanDuel CSV, not salary estimates
-            winning_players = []
+            # CONSERVATIVE filtering - only remove obviously inactive players
+            filtered_salary_data = []
+            total_players = len(salary_data)
+            filtered_counts = {'QB': [0, 0], 'RB': [0, 0], 'WR': [0, 0], 'TE': [0, 0], 'D': [0, 0]}
+            
             for player_data in salary_data:
+                position = player_data.get('position', '')
+                
+                if position in filtered_counts:
+                    filtered_counts[position][0] += 1  # Total count
+                
+                if self._is_viable_player(player_data):
+                    filtered_salary_data.append(player_data)
+                    if position in filtered_counts:
+                        filtered_counts[position][1] += 1  # Kept count
+            
+            # Log filtering results
+            for pos, (total, kept) in filtered_counts.items():
+                if total > 0:
+                    logger.info(f"{pos} FILTERING: Kept {kept} of {total} players ({total - kept} filtered)")
+            
+            logger.info(f"TOTAL FILTERING: Kept {len(filtered_salary_data)} of {total_players} players")
+            
+            # Now process the filtered data
+            winning_players = []
+            for player_data in filtered_salary_data:
                 name = player_data.get('name', '')
                 position = player_data.get('position', '')
                 team = player_data.get('team', '').upper()
                 salary = int(player_data.get('salary', 5000))
                 
-                # Use REAL FPPG from FanDuel data (this is based on actual performance)
+                # Use REAL FPPG from FanDuel data
                 fppg = player_data.get('projected_points', 0)
                 
                 if fppg > 0:
-                    # This is REAL projection data from FanDuel
                     projection = fppg
                     logger.debug(f"✅ {name}: Using real FPPG {fppg}")
                 else:
-                    # Only fallback if no FPPG data available
                     logger.warning(f"⚠️ {name}: No FPPG data, using salary estimate")
                     if position == 'QB':
-                        projection = max(18, (salary - 6000) / 150 + 22)
+                        projection = max(12, (salary - 5500) / 200 + 15)
                     elif position == 'RB':
-                        projection = max(12, (salary - 4500) / 200 + 15)
-                    elif position == 'WR':
-                        projection = max(10, (salary - 4000) / 250 + 12)
-                    elif position == 'TE':
                         projection = max(8, (salary - 4000) / 300 + 10)
+                    elif position == 'WR':
+                        projection = max(6, (salary - 3500) / 400 + 8)
+                    elif position == 'TE':
+                        projection = max(5, (salary - 3500) / 350 + 7)
                     elif position == 'D':
-                        projection = max(6, (salary - 3500) / 150 + 8)
+                        projection = max(4, (salary - 3000) / 200 + 6)
                     else:
-                        projection = 10
+                        projection = 8
                 
                 # Filter by teams (if applicable)
                 if playing_teams and team not in playing_teams:
@@ -484,12 +583,12 @@ class EnhancedDataCollector:
                     player['ceiling'] *= weather_factor
                     player['floor'] *= weather_factor
             
-            logger.info(f"✅ Enhanced {len(winning_players)} players with REAL projections")
+            logger.info(f"Enhanced {len(winning_players)} players with REAL projections")
             
             # Log projection source breakdown
             real_count = sum(1 for p in winning_players if p['fppg_source'] == 'real')
             estimated_count = len(winning_players) - real_count
-            logger.info(f"📊 Projection sources: {real_count} real FPPG, {estimated_count} estimated")
+            logger.info(f"Projection sources: {real_count} real FPPG, {estimated_count} estimated")
             
             return winning_players
             
@@ -508,7 +607,7 @@ async def get_fresh_data() -> Dict[str, Any]:
         players = await collector.collect_players_for_slate(games_info, 'gpp')
         
         if not players:
-            logger.error("❌ NO VALID PLAYERS FOUND")
+            logger.error("NO VALID PLAYERS FOUND")
             return {}
         
         # Get other data
