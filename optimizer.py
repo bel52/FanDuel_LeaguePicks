@@ -343,50 +343,50 @@ class EnhancedDFSOptimizer:
         return max(2.0, min(50.0, base))
     
     def _calculate_contest_value(self, player: Player, contest_type: str) -> float:
-        """Calculate contest-specific value - IMPROVED FOR TOURNAMENT PLAY"""
+        """FIXED tournament strategy - prioritize ceiling and avoid chalk"""
         
         base_value = player.projection
         
-        # TOURNAMENT STRATEGY: Pure ceiling focus for winning lineups
         if contest_type == 'gpp':
-            # For tournaments: ONLY care about ceiling, not ownership
-            ceiling_bonus = player.variance * 1.0  # Strong ceiling bonus
+            # TOURNAMENT: High ceiling + low ownership is EVERYTHING
+            ceiling_bonus = player.variance * 2.0  # Double variance bonus
             
-            # MAJOR bonus for elite players (these win tournaments)
+            # MASSIVE ownership penalty for chalk plays (this is the key fix!)
+            if player.ownership > 25:
+                ownership_penalty = (player.ownership - 25) * 0.15  # Heavy penalty
+                base_value -= ownership_penalty
+            
+            # Huge bonus for low-owned studs
+            if player.salary > 8000 and player.ownership < 15:
+                base_value *= 1.8  # 80% bonus for low-owned studs
+            
+            # Elite QB ceiling bonus
             if player.position == 'QB' and player.salary > 8500:
-                ceiling_bonus *= 2.5  # Massive bonus for elite QBs
-            elif player.position in ['RB', 'WR'] and player.salary > 8000:
-                ceiling_bonus *= 2.0  # Big bonus for premium skill players
-            
-            # Strong penalty for low-projection players (avoid backups)
-            if player.projection <= 5:
-                return base_value * 0.05  # Make them essentially unusable
-            
-            # Reward high salary + high projection combinations
-            if player.salary > 7500 and player.projection > 18:
                 ceiling_bonus *= 1.5
             
+            # WR1 ceiling bonus  
+            if player.position == 'WR' and player.salary > 8000:
+                ceiling_bonus *= 1.3
+                
             return base_value + ceiling_bonus
             
         elif contest_type == 'cash':
-            # Cash: Balance floor and ceiling
-            floor_bonus = -player.variance * 0.2  # Small variance penalty
-            
-            # Still reward good players in cash
-            if player.projection > 15:
-                floor_bonus += 1.5
-            
+            # CASH: Consistent floor, don't care about ownership
+            floor_bonus = -player.variance * 0.1  # Small variance penalty
             return base_value + floor_bonus
             
         elif contest_type == 'contrarian':
-            # Contrarian: High upside players with lower ownership
-            upside_bonus = player.variance * 0.8
+            # CONTRARIAN: Maximum leverage on low ownership
+            ownership_boost = 0
+            if player.ownership < 10:
+                ownership_boost = 8.0  # Huge boost for <10% owned
+            elif player.ownership < 20:
+                ownership_boost = 4.0  # Good boost for <20% owned
             
-            # Bonus for mid-tier players with high projections
-            if 6000 <= player.salary <= 7500 and player.projection > 15:
-                upside_bonus += 4.0
+            # Ceiling bonus for contrarian
+            ceiling_bonus = player.variance * 1.5
             
-            return base_value + upside_bonus
+            return base_value + ownership_boost + ceiling_bonus
             
         else:  # single_game
             return base_value * 1.15
@@ -461,7 +461,7 @@ class EnhancedDFSOptimizer:
         """Generate multiple diverse lineups with BETTER randomization"""
         lineups = []
         used_combinations = set()
-        max_attempts = num_lineups * 3  # Try 3x as many attempts
+        max_attempts = num_lineups * 5  # Increased attempts for better diversity
         
         for attempt in range(max_attempts):
             if len(lineups) >= num_lineups:
@@ -480,13 +480,13 @@ class EnhancedDFSOptimizer:
                 # Stronger randomization based on contest type
                 if contest_type == 'gpp':
                     # Tournament: More variance for differentiation
-                    random_factor = random.uniform(0.85, 1.15)
+                    random_factor = random.uniform(0.80, 1.20)  # Increased variance
                 elif contest_type == 'cash':
                     # Cash: Less variance for consistency
                     random_factor = random.uniform(0.95, 1.05)
                 else:  # contrarian
                     # Contrarian: High variance to find unique builds
-                    random_factor = random.uniform(0.8, 1.2)
+                    random_factor = random.uniform(0.75, 1.25)
                 
                 new_player.projection *= random_factor
                 new_player.value = new_player.projection / (new_player.salary / 1000)
