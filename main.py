@@ -3,6 +3,9 @@
 Enhanced main entry point for the NFL DFS Optimization System
 """
 import asyncio
+import os
+from dotenv import load_dotenv
+load_dotenv()  # This loads .env file
 import sys
 import signal
 from pathlib import Path

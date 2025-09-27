@@ -14,12 +14,13 @@ from datetime import datetime
 
 from config import FANDUEL_POSITIONS, FANDUEL_SALARY_CAP, OPTIMIZATION_CONFIG, DATA_DIR
 
-# AI Integration import (will gracefully fail if file doesn't exist)
+# AI Integration import with better error handling
 try:
-    from ai_analyzer import DFSAIAnalyzer
+    from ai_analyzer import DualAIDFSAnalyzer
     AI_AVAILABLE = True
-except ImportError:
-    logger.warning("AI analyzer not available - continuing without AI analysis")
+    logger.info("AI analyzer imported successfully")
+except ImportError as e:
+    logger.warning(f"AI analyzer not available: {e}")
     AI_AVAILABLE = False
 
 @dataclass
@@ -661,33 +662,29 @@ def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None,
     # Step 1: Get AI strategic analysis (if available)
     if AI_AVAILABLE:
         try:
-            analyzer = DFSAIAnalyzer()
+            analyzer = DualAIDFSAnalyzer()
             ai_analysis = analyzer.analyze_slate_for_optimization(
                 player_data, weather_data or {}, {}, contest_type
             )
 
-            if ai_analysis.get('ai_confidence', 0) > 0.5:
-                logger.info(f"AI Strategy: {ai_analysis.get('strategy', 'No strategy')}")
+            if ai_analysis.get('ai_enabled', False):
+                logger.info(f"AI Strategy: {ai_analysis.get('ai_strategy', 'No strategy')[:100]}...")
 
-                # Apply AI insights to player data
-                for player in player_data:
-                    player_name = player.get('name', '')
+                # Apply AI ownership adjustments to player data
+                ownership_adjustments = ai_analysis.get('ownership_adjustments', {})
+                if ownership_adjustments:
+                    adjusted_count = 0
+                    for player in player_data:
+                        player_name = player.get('name', '')
+                        if player_name in ownership_adjustments:
+                            adjustment_factor = ownership_adjustments[player_name]
+                            # Modify ownership to influence optimization
+                            if 'ownership' not in player:
+                                player['ownership'] = 15.0  # Default ownership
+                            player['ownership'] *= adjustment_factor
+                            adjusted_count += 1
 
-                    # Apply AI ownership predictions
-                    ownership_predictions = ai_analysis.get('ownership_predictions', {})
-                    if player_name in ownership_predictions:
-                        player['ai_ownership'] = ownership_predictions[player_name]
-
-                    # Boost leverage spots for tournaments
-                    leverage_spots = ai_analysis.get('leverage_spots', [])
-                    if contest_type == 'gpp' and any(player_name.lower() in spot.lower() for spot in leverage_spots):
-                        player['projected_points'] = player.get('projected_points', 0) * 1.15
-                        logger.info(f"AI Leverage boost: {player_name}")
-
-                    # Mark contrarian targets
-                    contrarian_targets = ai_analysis.get('contrarian_targets', [])
-                    if any(player_name.lower() in target.lower() for target in contrarian_targets):
-                        player['contrarian_target'] = True
+                    logger.info(f"AI adjusted ownership for {adjusted_count} players")
 
             # Log AI cost tracking
             cost_summary = analyzer.get_cost_summary()
@@ -695,10 +692,10 @@ def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None,
 
         except Exception as e:
             logger.warning(f"AI analysis failed, continuing without: {e}")
-            ai_analysis = {'strategy': 'Fallback optimization', 'ai_confidence': 0}
+            ai_analysis = {'ai_strategy': 'Fallback optimization', 'ai_enabled': False}
     else:
         logger.info("AI analysis not available - using fallback optimization")
-        ai_analysis = {'strategy': 'Fallback optimization', 'ai_confidence': 0}
+        ai_analysis = {'ai_strategy': 'Fallback optimization', 'ai_enabled': False}
 
     # Step 2: Run optimization with AI-enhanced data and CONSERVATIVE filtering
     optimizer = EnhancedDFSOptimizer()
