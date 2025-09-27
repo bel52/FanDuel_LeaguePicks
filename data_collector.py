@@ -259,12 +259,12 @@ class EnhancedDataCollector:
             'main_slate': example_games,
             'single_games': example_games,
         }
-
+    
     async def get_vegas_odds_data(self) -> Dict[str, Any]:
         """Placeholder for Vegas odds"""
         logger.info("Using placeholder Vegas odds")
         return {'placeholder': {'total_points': 45.5, 'spread': -3.5}}
-
+    
     async def get_nfl_projections(self) -> Dict[str, float]:
         """Get NFL projections with better error handling"""
         try:
@@ -349,7 +349,7 @@ class EnhancedDataCollector:
         except Exception as e:
             logger.error(f"Error in get_nfl_projections: {e}")
             return {}
-
+    
     async def get_weather_for_games(self, games_info: Dict) -> Dict[str, Dict]:
         """Get weather data with error handling"""
         weather_data = {}
@@ -404,6 +404,14 @@ class EnhancedDataCollector:
         # Filter players on IR (Injured Reserve) - they definitely won't play
         if 'IR' in injury_status.upper():
             logger.info(f"FILTERING injured: {name} ({injury_status})")
+            return False
+
+        # Filter players listed as OUT, DOUBTFUL or suspended (SUSP). These designations mean the
+        # player will not play or is extremely unlikely to play. Without this check, OUT players
+        # were being kept and used in optimizations.
+        upper_status = injury_status.upper()
+        if any(flag in upper_status for flag in ['OUT', 'DOUBTFUL', 'SUSP']):
+            logger.info(f"FILTERING out/doubtful: {name} ({injury_status})")
             return False
         
         # Filter obviously fake/broken entries
@@ -465,9 +473,17 @@ class EnhancedDataCollector:
             logger.debug(f"FILTERING low-value QB: {name} (${salary}, {fppg:.1f})")
             return False
         
+        # Additional check: if a QB is not among our known starters AND has both a low projection
+        # and a middling salary, treat them as a backup and remove them. This prevents fringe QBs
+        # (e.g., veterans or preseason fillers) from entering the lineup.
+        unknown_starter = not any(starter.lower() in name.lower() for starter in starting_qbs)
+        if unknown_starter and fppg < 8 and salary < 7000:
+            logger.debug(f"FILTERING unknown QB: {name} (${salary}, {fppg})")
+            return False
+        
         # Default to keeping the player (conservative approach)
         return True
-
+    
     async def collect_players_for_slate(self, games_info: Dict[str, Any], contest_type: str = 'gpp') -> List[Dict]:
         """Collect players with CONSERVATIVE filtering to preserve viable options"""
         current_week = games_info['current_week']
@@ -571,17 +587,33 @@ class EnhancedDataCollector:
                     'value': round(projection / (salary / 1000), 2) if salary > 0 else 0
                 })
             
-            # Apply weather adjustments
+            # Apply weather adjustments. In addition to the basic factor returned by
+            # get_weather_for_games, we apply penalties for poor conditions (rain, snow, high wind).
             weather_data = await self.get_weather_for_games(games_info)
             for player in winning_players:
                 team = player['team']
                 if team in weather_data:
-                    weather_factor = weather_data[team].get('factor', 1.0)
-                    player['weather_factor'] = weather_factor
-                    player['projected_points'] *= weather_factor
-                    player['projection'] *= weather_factor
-                    player['ceiling'] *= weather_factor
-                    player['floor'] *= weather_factor
+                    weather = weather_data[team]
+                    factor = weather.get('factor', 1.0)
+                    conditions = weather.get('conditions', '').lower()
+                    # Penalize passing games in rain or snow
+                    if 'rain' in conditions or 'snow' in conditions:
+                        factor *= 0.95
+                    # Penalize high winds (>15 mph). Extract the integer part of "NN mph".
+                    try:
+                        wind_mph = int(weather.get('wind_speed', '0').split()[0])
+                        if wind_mph > 15:
+                            factor *= 0.97
+                    except Exception:
+                        pass
+                    # Penalize high precipitation chance (>40 %)
+                    if weather.get('precipitation_chance', 0) > 40:
+                        factor *= 0.92
+                    player['weather_factor'] = factor
+                    player['projected_points'] *= factor
+                    player['projection'] *= factor
+                    player['ceiling'] *= factor
+                    player['floor'] *= factor
             
             logger.info(f"Enhanced {len(winning_players)} players with REAL projections")
             
