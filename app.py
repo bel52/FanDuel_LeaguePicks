@@ -111,6 +111,8 @@ async def read_root():
                 <h2>Quick Actions</h2>
                 <button class="button" onclick="generateLineups()">Generate Tournament Lineups</button>
                 <button class="button" onclick="generateCash()">Generate Cash Game Lineups</button>
+                <button class="button" onclick="generateContrarian()">Generate Contrarian Lineups</button>
+                <button class="button" onclick="generateBestBall()">Generate Best Ball Lineups</button>
                 <button class="button" onclick="forceUpdate()">Force Data Update</button>
                 
                 <h3>Contest Type</h3>
@@ -118,6 +120,7 @@ async def read_root():
                     <option value="gpp">Tournament/GPP - High ceiling lineups</option>
                     <option value="cash">Cash Game - Consistent, safe lineups</option>
                     <option value="contrarian">Contrarian - Low ownership plays</option>
+                    <option value="bestball">Best Ball - Highest scoring regardless of ownership</option>
                     <option value="single_game">Single Game - MVP + 5 FLEX</option>
                 </select>
                 
@@ -151,7 +154,12 @@ async def read_root():
             async function generateCash() {
                 await generateLineupsType('cash');
             }
-            
+            async function generateContrarian() {
+                await generateLineupsType('contrarian');
+            }
+            async function generateBestBall() {
+                await generateLineupsType('bestball');
+            }
             async function generateLineupsType(type) {
                 try {
                     const numLineups = parseInt(document.getElementById('numLineups').value);

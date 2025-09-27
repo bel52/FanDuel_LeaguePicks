@@ -411,71 +411,7 @@ class EnhancedDataCollector:
         # UNIVERSAL RULE 2: Position-specific intelligent filtering
         return self._is_position_viable(position, salary, fppg, fppg_source, name, team)
 
-    def _is_potentially_startable_qb_fixed(self, player_data: Dict) -> bool:
-        """FIXED: Much smarter QB filtering for tournament success"""
-        name = player_data.get('name', '')
-        salary = player_data.get('salary', 0)
-        fppg = player_data.get('projected_points', 0)
-        injury_status = player_data.get('injury_status', '')
-        team = player_data.get('team', '')
 
-        # Remove injured QBs on IR
-        if 'IR' in injury_status.upper():
-            logger.info(f"FILTERING injured QB: {name} ({injury_status})")
-            return False
-
-        # EXPANDED list of potential starters - be more inclusive for tournaments
-        potential_starters = {
-            # Confirmed starters
-            'Josh Allen', 'Lamar Jackson', 'Jalen Hurts', 'Justin Herbert',
-            'Patrick Mahomes', 'Baker Mayfield', 'Jared Goff', 'Caleb Williams',
-            'Daniel Jones', 'Drake Maye', 'Matthew Stafford', 'Russell Wilson',
-            'Bryce Young', 'Trevor Lawrence', 'C.J. Stroud', 'Jayden Daniels',
-            'Geno Smith', 'Dak Prescott', 'Tua Tagovailoa', 'Jordan Love',
-            'Derek Carr', 'Kyler Murray', 'Brock Purdy', 'Mac Jones',
-
-            # Potential starters/backups who might get opportunities
-            'Spencer Rattler', 'Anthony Richardson', 'Will Levis', 'Aidan O\'Connell',
-            'Gardner Minshew', 'Tyler Huntley', 'Jameis Winston', 'Joe Flacco',
-            'Sam Howell', 'Bailey Zappe', 'Kenny Pickett', 'Malik Willis',
-            'Hendon Hooker', 'Joshua Dobbs', 'Tommy DeVito', 'Mason Rudolph',
-            'Jake Browning', 'Dorian Thompson-Robinson', 'Clayton Tune'
-        }
-
-        # Check if this is a known QB (starter or backup)
-        is_known_qb = any(starter.lower() in name.lower() for starter in potential_starters)
-
-        # If it's a known QB, keep it regardless of salary/projection
-        if is_known_qb:
-            logger.debug(f"KEEPING known QB: {name}")
-            return True
-
-        # For unknown QBs, use more generous criteria
-
-        # Keep any QB with decent salary (they might be a surprise starter)
-        if salary >= 6500:  # Lowered from 7000
-            logger.debug(f"KEEPING high-salary unknown QB: {name} (${salary})")
-            return True
-
-        # Keep any QB with real FPPG data above minimum threshold
-        if fppg > 0 and fppg >= 8:  # Lowered from 10
-            logger.debug(f"KEEPING QB with real projection: {name} ({fppg:.1f})")
-            return True
-
-        # Keep QBs from teams that might need them
-        emergency_teams = ['IND', 'NE', 'LV', 'NO', 'NYG', 'CAR', 'TEN']  # Teams with QB uncertainty
-        if team in emergency_teams and salary >= 6000:
-            logger.debug(f"KEEPING emergency team QB: {name} ({team})")
-            return True
-
-        # Only filter QBs with very low salary AND very low projection AND unknown
-        if salary < 6000 and fppg < 5 and not is_known_qb:
-            logger.debug(f"FILTERING low-value unknown QB: {name} (${salary}, {fppg:.1f})")
-            return False
-
-        # Default: keep the QB (very conservative for tournaments)
-        logger.debug(f"KEEPING QB by default: {name}")
-        return True
 
     async def collect_players_for_slate(self, games_info: Dict[str, Any], contest_type: str = 'gpp') -> List[Dict]:
         """Collect players with SMARTER filtering to preserve winning options"""

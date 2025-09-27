@@ -291,8 +291,35 @@ class EnhancedDFSOptimizer:
         # Add stacking for tournaments
         if contest_type == 'gpp':
             self._add_stacking_incentive(prob, players, player_vars, qb_indices, wr_indices)
-    
-    def _add_stacking_incentive(self, prob, players: List[Player], player_vars: Dict, 
+
+    def _add_advanced_stacking(self, prob, players: List[Player], player_vars: Dict, contest_type: str):
+        """Advanced stacking for winning tournaments"""
+
+        if contest_type not in ['gpp', 'contrarian']:
+            return
+
+        # Find high-total games (implied by expensive players from same teams)
+        team_salary_totals = {}
+        for player in players:
+            if player.team not in team_salary_totals:
+                team_salary_totals[player.team] = 0
+            team_salary_totals[player.team] += player.salary
+
+        # Target top 3 teams by total salary (likely high-scoring games)
+        top_teams = sorted(team_salary_totals.items(), key=lambda x: x[1], reverse=True)[:3]
+
+        for team, _ in top_teams:
+            # QB + 2 WR from high-total teams
+            team_qbs = [i for i, p in enumerate(players) if p.team == team and p.position == 'QB']
+            team_wrs = [i for i, p in enumerate(players) if p.team == team and p.position == 'WR']
+
+            if team_qbs and len(team_wrs) >= 2:
+                qb_var = player_vars[team_qbs[0]]
+                wr_vars = [player_vars[i] for i in team_wrs[:2]]
+
+                # If QB selected, strongly encourage 2 WRs
+                prob += pulp.lpSum(wr_vars) >= 1.5 * qb_vargenerate_multiple_lineups
+    def _add_stacking_incentive(self, prob, players: List[Player], player_vars: Dict,
                                qb_indices: List[int], wr_indices: List[int]):
         """Add QB+WR stacking incentive for tournaments"""
         
@@ -366,68 +393,102 @@ class EnhancedDFSOptimizer:
         return max(3.0, min(25.0, base))
 
     def _calculate_contest_value(self, player: Player, contest_type: str) -> float:
-        """Contest value optimized for 12-person friends league wins"""
+        """WINNING strategy - dramatically different by contest type"""
 
         base_value = player.projection
 
         if contest_type == 'gpp':
-            # Friends league tournament: moderate ownership penalty
+            # AMATEUR COMPETITION: Pure projection focus
 
-            ownership_penalty = 0
-            if player.ownership > 20:
-                ownership_penalty = (player.ownership - 20) * 0.15  # Light penalty
-            elif player.ownership > 25:
-                ownership_penalty = (player.ownership - 25) * 0.25  # Medium penalty
+            # No ownership penalty - we want the best players
+            # Ceiling bonus for upside
+            ceiling_bonus = player.variance * 1.5
 
-            base_value -= ownership_penalty
+            # Salary efficiency bonus
+            if player.value > 3.5:
+                base_value += 3.0
+            elif player.value > 3.0:
+                base_value += 2.0
 
-            # Leverage bonuses for friends league
-            if player.salary > 8000 and player.ownership < 12:
-                base_value *= 1.6  # Good boost for low-owned studs
-            elif player.salary > 7000 and player.ownership < 8:
-                base_value *= 1.4  # Medium boost
-            elif player.salary > 6000 and player.ownership < 6:
-                base_value *= 1.2  # Small boost
-
-            # Ceiling bonus
-            ceiling_bonus = player.variance * 1.0
+            # Position-specific scoring bonuses
+            if player.position == 'QB' and player.salary >= 8000:
+                base_value += 2.0  # Elite QBs score more
+            elif player.position in ['RB', 'WR'] and player.salary >= 8000:
+                base_value += 1.5  # Elite skill players
 
             return base_value + ceiling_bonus
 
-        elif contest_type == 'cash':
-            # Friends league cash: consistency focus
-            floor_bonus = -player.variance * 0.1  # Small variance penalty
+            # Position-specific tournament adjustments
+            if player.position == 'QB' and player.ownership < 12:
+                base_value *= 1.8  # QB leverage is huge
+            elif player.position == 'WR' and player.ownership < 10:
+                base_value *= 1.6  # WR leverage important
 
-            # Value bonus
-            if player.value > 3.2:
-                base_value += 1.5
-            elif player.value > 2.8:
-                base_value += 1.0
+            return base_value + ceiling_bonus
+
+        elif contest_type == 'contrarian':
+            # CONTRARIAN: Pure anti-chalk
+
+            # Reverse ownership logic
+            if player.ownership < 5:
+                base_value *= 3.0  # Massive boost for sub-5% owned
+            elif player.ownership < 10:
+                base_value *= 2.2  # Large boost
+            elif player.ownership > 20:
+                base_value *= 0.3  # Heavy penalty for chalk
+
+            # Extra ceiling for contrarian
+            return base_value + (player.variance * 2.5)
+        elif contest_type == 'bestball':
+            # PURE SCORING: Ignore ownership, maximize points
+            ceiling_bonus = player.variance * 2.0
+
+            # Heavy salary efficiency weighting
+            if player.value > 4.0:
+                base_value += 5.0
+            elif player.value > 3.5:
+                base_value += 3.0
+
+            return base_value + ceiling_bonus
+        else:  # cash
+            # CASH: Floor + Value focus
+            floor_bonus = -player.variance * 0.2
+
+            # Value is king in cash
+            if player.value > 3.5:
+                base_value += 5.0
+            elif player.value > 3.0:
+                base_value += 3.0
 
             return base_value + floor_bonus
 
-        elif contest_type == 'contrarian':
-            # True contrarian for friends league
-            ownership_boost = 0
-            if player.ownership < 5:
-                ownership_boost = 8.0  # Large boost
-            elif player.ownership < 10:
-                ownership_boost = 4.0  # Medium boost
-            elif player.ownership < 15:
-                ownership_boost = 2.0  # Small boost
+    def _add_advanced_stacking(self, prob, players: List[Player], player_vars: Dict, contest_type: str):
+        """Advanced stacking for winning tournaments"""
 
-            # Penalty for chalk
-            if player.ownership > 20:
-                ownership_boost = -3.0
+        if contest_type not in ['gpp', 'contrarian']:
+            return
 
-            # Extra ceiling for contrarian
-            ceiling_bonus = player.variance * 1.5
+        # Find high-total games (implied by expensive players from same teams)
+        team_salary_totals = {}
+        for player in players:
+            if player.team not in team_salary_totals:
+                team_salary_totals[player.team] = 0
+            team_salary_totals[player.team] += player.salary
 
-            return base_value + ownership_boost + ceiling_bonus
+        # Target top 3 teams by total salary (likely high-scoring games)
+        top_teams = sorted(team_salary_totals.items(), key=lambda x: x[1], reverse=True)[:3]
 
-        else:  # single_game
-            return base_value * 1.1
+        for team, _ in top_teams:
+            # QB + 2 WR from high-total teams
+            team_qbs = [i for i, p in enumerate(players) if p.team == team and p.position == 'QB']
+            team_wrs = [i for i, p in enumerate(players) if p.team == team and p.position == 'WR']
 
+            if team_qbs and len(team_wrs) >= 2:
+                qb_var = player_vars[team_qbs[0]]
+                wr_vars = [player_vars[i] for i in team_wrs[:2]]
+
+                # If QB selected, strongly encourage 2 WRs
+                prob += pulp.lpSum(wr_vars) >= 1.5 * qb_var
     def _extract_result(self, prob, players: List[Player], player_vars: Dict, contest_type: str) -> LineupResult:
         """Extract lineup results with proper FanDuel ordering"""
         selected_players = []
@@ -531,7 +592,27 @@ class EnhancedDFSOptimizer:
 
             lineup = self.optimize_lineup(randomized_players, contest_type, single_game_teams)
             if lineup:
-                # Uniqueness check focused on core expensive players
+                # FORCE diversity by blocking overused players
+                if len(lineups) > 0:
+                    # Count player usage
+                    player_usage = {}
+                    for existing_lineup in lineups:
+                        for player in existing_lineup.players:
+                            player_usage[player.id] = player_usage.get(player.id, 0) + 1
+
+                    # Check if this lineup is too similar
+                    overused_players = 0
+                    max_usage = max(2, num_lineups // 4)  # Allow max 25% usage
+                    for player in lineup.players:
+                        usage_count = player_usage.get(player.id, 0)
+                        if usage_count >= max_usage:
+                            overused_players += 1
+
+                    # Skip if too many overused players
+                    if overused_players > 3:
+                        continue
+
+                # Original uniqueness check
                 core_players = tuple(sorted([p.id for p in lineup.players if p.salary > 6500]))
                 if core_players not in used_combinations:
                     lineups.append(lineup)
