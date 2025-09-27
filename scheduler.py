@@ -1,692 +1,597 @@
 """
-Automated data collection and optimization scheduler with Weekly NFL Cadence
+Enhanced DFS lineup optimization with proper FLEX position support
+Fixed for tournament play with proper FanDuel format and CONSERVATIVE filtering
 """
-import asyncio
-import schedule
-import time
-from datetime import datetime, timedelta
-from pathlib import Path
-import json
-from typing import Dict, Any, List
+import pulp
+import pandas as pd
+import numpy as np
+from typing import List, Dict, Any, Optional
+from dataclasses import dataclass
 from loguru import logger
-import threading
+import random
+import json
+from datetime import datetime
 
-from data_collector import get_fresh_data
-from optimizer import optimize_dfs_lineups
-from config import UPDATE_INTERVALS, DATA_DIR, OPTIMIZATION_CONFIG
+from config import FANDUEL_POSITIONS, FANDUEL_SALARY_CAP, OPTIMIZATION_CONFIG, DATA_DIR
 
-class DFSScheduler:
-    """Manages automated data collection and lineup optimization with NFL cadence"""
+# AI Integration import (will gracefully fail if file doesn't exist)
+try:
+    from ai_analyzer import DFSAIAnalyzer
+    AI_AVAILABLE = True
+except ImportError:
+    logger.warning("AI analyzer not available - continuing without AI analysis")
+    AI_AVAILABLE = False
+
+@dataclass
+class Player:
+    """Player data structure for optimization"""
+    id: str
+    name: str
+    position: str
+    team: str
+    salary: int
+    projection: float
+    ownership: float = 10.0
+    weather_factor: float = 1.0
+    injury_risk: float = 0.0
+    value: float = 0.0
+    variance: float = 0.0
+    
+    def __post_init__(self):
+        self.value = self.projection / (self.salary / 1000) if self.salary > 0 else 0
+        variance_multipliers = {'QB': 0.3, 'RB': 0.4, 'WR': 0.5, 'TE': 0.4, 'K': 0.6, 'DST': 0.5, 'D': 0.5}
+        self.variance = self.projection * variance_multipliers.get(self.position, 0.4)
+
+@dataclass
+class LineupResult:
+    """Optimization result structure"""
+    players: List[Player]
+    total_salary: int
+    projected_points: float
+    total_value: float
+    ownership_total: float
+    correlation_score: float
+    weather_impact: float
+    contest_type: str
+    ceiling_score: float = 0.0
+    floor_score: float = 0.0
+
+class EnhancedDFSOptimizer:
+    """Enhanced DFS optimization for exact FanDuel format with CONSERVATIVE filtering"""
     
     def __init__(self):
-        self.is_running = False
-        self.last_update = {}
-        self.current_data = {}
-        self.latest_lineups = []
-        self.scheduler_thread = None
-        self.weekly_state = "midweek"
+        pass
         
-        # Initialize directories
-        self.ensure_directories()
+    def prepare_players(self, player_data: List[Dict], weather_data: Dict = None) -> List[Player]:
+        """Convert player data with MINIMAL filtering - data_collector already filtered conservatively"""
+        players = []
         
-        # Setup logging for scheduler
-        logger.add(
-            "logs/scheduler_{time:YYYY-MM-DD}.log",
-            rotation="1 day",
-            retention="7 days",
-            format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
-        )
-    
-    def ensure_directories(self):
-        """Create necessary directories"""
-        for directory in [DATA_DIR, DATA_DIR / "lineups", DATA_DIR / "historical"]:
-            directory.mkdir(exist_ok=True)
-
-    async def collect_and_update_data(self):
-        """Main data collection task"""
-        try:
-            logger.info("Starting scheduled data collection")
-            
-            # Collect fresh data
-            fresh_data = await get_fresh_data()
-            
-            if fresh_data and 'players' in fresh_data:
-                self.current_data = fresh_data
-                self.last_update['data_collection'] = datetime.now()
+        for data in player_data:
+            try:
+                player_name = data.get('player_name', data.get('name', ''))
+                position = data.get('position', '')
+                team = data.get('team', '')
+                salary = int(data.get('salary', 5000))
+                projection = float(data.get('projection', data.get('projected_points', 0)))
                 
-                # Save timestamped data
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                data_file = DATA_DIR / f"scheduled_data_{timestamp}.json"
+                # MINIMAL filtering - data_collector already did conservative filtering
                 
-                with open(data_file, 'w') as f:
-                    json.dump(fresh_data, f, indent=2, default=str)
+                # Skip players with no name
+                if not player_name or len(player_name.strip()) < 2:
+                    continue
                 
-                logger.info(f"Data collection completed. {len(fresh_data.get('players', []))} players updated")
+                # Skip players with negative projections
+                if projection < 0:
+                    continue
                 
-                # Trigger lineup optimization if we have good data
-                if len(fresh_data.get('players', [])) >= 100:
-                    await self.optimize_lineups()
+                # Normalize defense position
+                if position in ['DST', 'DEF', 'D/ST']:
+                    position = 'D'
                 
-            else:
-                logger.warning("Data collection returned empty or invalid data")
-                
-        except Exception as e:
-            logger.error(f"Error in scheduled data collection: {e}")
-    
-    async def optimize_lineups(self):
-        """Generate optimized lineups with FIXED default counts"""
-        try:
-            if not self.current_data or 'players' not in self.current_data:
-                logger.warning("No current data available for optimization")
-                return
-            
-            logger.info("Starting lineup optimization")
-            
-            # FIXED lineup configs - changed from 20 to 5 for GPP
-            lineup_configs = [
-                {'contest_type': 'gpp', 'num_lineups': 5, 'name': 'tournament'},     # FIXED: was 20
-                {'contest_type': 'cash', 'num_lineups': 5, 'name': 'cash_game'},
-                {'contest_type': 'gpp', 'num_lineups': 5, 'name': 'contrarian'}      # FIXED: was 10
-            ]
-            
-            all_lineups = {}
-            
-            for config in lineup_configs:
-                lineups = optimize_dfs_lineups(
-                    player_data=self.current_data['players'],
-                    weather_data=self.current_data.get('weather', {}),
-                    num_lineups=config['num_lineups'],
-                    contest_type=config['contest_type']
+                # Keep all players that made it through data_collector filtering
+                player = Player(
+                    id=str(data.get('player_id', data.get('id', player_name))),
+                    name=player_name,
+                    position=position,
+                    team=team,
+                    salary=salary,
+                    projection=projection
                 )
                 
-                if lineups:
-                    all_lineups[config['name']] = lineups
-                    logger.info(f"Generated {len(lineups)} {config['name']} lineups")
-            
-            # Save lineups
-            if all_lineups:
-                self.latest_lineups = all_lineups
-                self.last_update['optimization'] = datetime.now()
+                # Apply weather adjustments
+                if weather_data and team in weather_data:
+                    weather_factor = weather_data[team].get('factor', 1.0)
+                    player.weather_factor = weather_factor
+                    player.projection *= weather_factor
                 
-                # Export to files
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                player.value = player.projection / (player.salary / 1000) if player.salary > 0 else 0
+                players.append(player)
                 
-                for lineup_type, lineups in all_lineups.items():
-                    # Export to CSV for upload
-                    from optimizer import EnhancedDFSOptimizer
-                    optimizer = EnhancedDFSOptimizer()
-                    csv_file = DATA_DIR / "lineups" / f"{lineup_type}_{timestamp}.csv"
-                    optimizer.export_lineups_to_csv(lineups, str(csv_file))
-                
-                # Save summary data
-                summary_file = DATA_DIR / "lineups" / f"lineup_summary_{timestamp}.json"
-                summary_data = {
-                    'timestamp': datetime.now().isoformat(),
-                    'lineup_counts': {k: len(v) for k, v in all_lineups.items()},
-                    'data_quality': self.current_data.get('data_quality', {}),
-                    'weather_conditions': len(self.current_data.get('weather', {})),
-                    'injury_reports': len(self.current_data.get('injuries', []))
-                }
-                
-                with open(summary_file, 'w') as f:
-                    json.dump(summary_data, f, indent=2)
-                
-                logger.info(f"Lineup optimization completed. Summary saved to {summary_file}")
-            
-        except Exception as e:
-            logger.error(f"Error in lineup optimization: {e}")
+            except Exception as e:
+                logger.error(f"Error processing player {data}: {e}")
+                continue
+        
+        # Log position breakdown after filtering
+        positions = {}
+        for p in players:
+            positions[p.position] = positions.get(p.position, 0) + 1
+        logger.info(f"Final optimization player count by position: {positions}")
+        
+        return players
+
+    def _format_lineup_for_fanduel(self, players: List[Player]) -> List[Player]:
+        """Order players in exact FanDuel format: QB, RB, RB, WR, WR, WR, TE, FLEX, DEF"""
+        ordered = []
+        
+        # Sort players by position and salary
+        by_position = {}
+        for player in players:
+            if player.position not in by_position:
+                by_position[player.position] = []
+            by_position[player.position].append(player)
+        
+        # Sort each position by salary (highest first)
+        for pos in by_position:
+            by_position[pos].sort(key=lambda p: p.salary, reverse=True)
+        
+        # FanDuel order: QB, RB, RB, WR, WR, WR, TE, FLEX, DEF
+        if 'QB' in by_position:
+            ordered.append(by_position['QB'][0])  # QB
+        
+        if 'RB' in by_position:
+            ordered.extend(by_position['RB'][:2])  # RB, RB
+        
+        if 'WR' in by_position:
+            ordered.extend(by_position['WR'][:3])  # WR, WR, WR
+        
+        if 'TE' in by_position:
+            ordered.append(by_position['TE'][0])  # TE
+        
+        # FLEX - remaining highest salary RB/WR/TE
+        flex_candidates = []
+        if 'RB' in by_position and len(by_position['RB']) > 2:
+            flex_candidates.extend(by_position['RB'][2:])
+        if 'WR' in by_position and len(by_position['WR']) > 3:
+            flex_candidates.extend(by_position['WR'][3:])
+        if 'TE' in by_position and len(by_position['TE']) > 1:
+            flex_candidates.extend(by_position['TE'][1:])
+        
+        if flex_candidates:
+            flex_player = max(flex_candidates, key=lambda p: p.salary)
+            ordered.append(flex_player)  # FLEX
+        
+        if 'D' in by_position:
+            ordered.append(by_position['D'][0])  # DEF
+        
+        return ordered
     
-    def get_data_freshness(self) -> Dict[str, str]:
-        """Check how fresh our current data is"""
-        freshness = {}
+    def optimize_lineup(self, players: List[Player], contest_type: str = 'gpp',
+                       single_game_teams: List[str] = None) -> Optional[LineupResult]:
+        """Optimize with EXACT FanDuel constraints"""
         
-        if 'data_collection' in self.last_update:
-            time_diff = datetime.now() - self.last_update['data_collection']
-            freshness['data_age'] = str(time_diff)
-            freshness['data_fresh'] = time_diff.total_seconds() < 3600
-        else:
-            freshness['data_age'] = "No data collected yet"
-            freshness['data_fresh'] = False
-        
-        if 'optimization' in self.last_update:
-            time_diff = datetime.now() - self.last_update['optimization']
-            freshness['lineups_age'] = str(time_diff)
-            freshness['lineups_fresh'] = time_diff.total_seconds() < 1800
-        else:
-            freshness['lineups_age'] = "No lineups generated yet"
-            freshness['lineups_fresh'] = False
-        
-        return freshness
-    
-    def should_update_data(self) -> bool:
-        """Determine if data needs updating based on schedule and game times"""
-        current_time = datetime.now()
-        
-        # Always update if no data exists
-        if 'data_collection' not in self.last_update:
-            return True
-        
-        # Check if enough time has passed since last update
-        time_since_update = current_time - self.last_update['data_collection']
-        if time_since_update.total_seconds() > UPDATE_INTERVALS['player_stats'] * 60:
-            return True
-        
-        # More frequent updates on game days
-        if self.is_game_day():
-            if time_since_update.total_seconds() > 900:  # 15 minutes on game days
-                return True
-        
-        return False
-    
-    def is_game_day(self) -> bool:
-        """Check if today is an NFL game day"""
-        current_day = datetime.now().weekday()
-        # NFL games typically on Thursday (3), Sunday (6), Monday (0)
-        return current_day in [0, 3, 6]
-    
-    def setup_scheduler(self):
-        """Setup the automated scheduling"""
-        # Data collection every hour
-        schedule.every().hour.do(lambda: asyncio.run(self.collect_and_update_data()))
-        
-        # More frequent updates on game days
-        if self.is_game_day():
-            schedule.every(15).minutes.do(lambda: asyncio.run(self.collect_and_update_data()))
-        
-        # Lineup optimization every 30 minutes if we have fresh data
-        schedule.every(30).minutes.do(self.check_and_optimize)
-        
-        # Daily cleanup at 3 AM
-        schedule.every().day.at("03:00").do(self.daily_cleanup)
-        
-        logger.info("🗓️ Enhanced scheduler setup completed with NFL weekly cadence")
-    
-    def check_and_optimize(self):
-        """Check if optimization is needed and run it"""
-        if self.current_data and 'players' in self.current_data:
-            if 'optimization' not in self.last_update or \
-               (datetime.now() - self.last_update['optimization']).total_seconds() > 1800:
-                asyncio.run(self.optimize_lineups())
-    
-    def daily_cleanup(self):
-        """Clean up old files and maintain storage"""
         try:
-            cutoff_date = datetime.now() - timedelta(days=7)
+            # Filter for single game
+            if single_game_teams:
+                players = [p for p in players if p.team in single_game_teams]
+                if len(players) < 6:
+                    logger.error(f"Not enough players for single game: {len(players)}")
+                    return None
             
-            # Clean old data files
-            for file_path in DATA_DIR.glob("scheduled_data_*.json"):
-                if file_path.stat().st_mtime < cutoff_date.timestamp():
-                    file_path.unlink()
+            # Project ownership
+            for player in players:
+                player.ownership = self._predict_ownership(player, contest_type)
             
-            # Clean old lineup files
-            lineup_dir = DATA_DIR / "lineups"
-            for file_path in lineup_dir.glob("*"):
-                if file_path.stat().st_mtime < cutoff_date.timestamp():
-                    file_path.unlink()
+            # Create optimization problem
+            prob = pulp.LpProblem("DFS_Optimization", pulp.LpMaximize)
             
-            logger.info("Daily cleanup completed")
+            player_vars = {}
+            for i, player in enumerate(players):
+                player_vars[i] = pulp.LpVariable(f"player_{i}", cat='Binary')
             
+            # Objective function
+            objective_terms = []
+            for i, player in enumerate(players):
+                points_value = self._calculate_contest_value(player, contest_type)
+                objective_terms.append(points_value * player_vars[i])
+            
+            prob += pulp.lpSum(objective_terms)
+            
+            # Add CORRECTED constraints
+            self._add_fanduel_constraints(prob, players, player_vars, contest_type, single_game_teams)
+            
+            # Solve
+            prob.solve(pulp.PULP_CBC_CMD(msg=0))
+            
+            if prob.status == pulp.LpStatusOptimal:
+                return self._extract_result(prob, players, player_vars, contest_type)
+            else:
+                logger.warning(f"Optimization failed: {pulp.LpStatus[prob.status]}")
+                return None
+                
         except Exception as e:
-            logger.error(f"Error in daily cleanup: {e}")
+            logger.error(f"Error in optimization: {e}")
+            return None
     
-    def start_scheduler(self):
-        """Start the scheduler in a background thread"""
-        if self.is_running:
-            logger.warning("Scheduler is already running")
+    def _add_fanduel_constraints(self, prob, players: List[Player], player_vars: Dict,
+                                contest_type: str, single_game_teams: List[str]):
+        """EXACT FanDuel tournament constraints: QB+2RB+3WR+1TE+1FLEX+1DEF=9"""
+        
+        # Salary cap
+        prob += pulp.lpSum([players[i].salary * player_vars[i] for i in range(len(players))]) <= FANDUEL_SALARY_CAP
+        
+        if single_game_teams:
+            # Single game: 6 players total
+            prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == 6
             return
         
-        self.setup_scheduler()
-        self.is_running = True
+        # Get position indices
+        qb_indices = [i for i, p in enumerate(players) if p.position == 'QB']
+        rb_indices = [i for i, p in enumerate(players) if p.position == 'RB']
+        wr_indices = [i for i, p in enumerate(players) if p.position == 'WR']
+        te_indices = [i for i, p in enumerate(players) if p.position == 'TE']
+        d_indices = [i for i, p in enumerate(players) if p.position == 'D']
         
-        def run_scheduler():
-            logger.info("🚀 DFS Scheduler started with NFL weekly cadence")
-            while self.is_running:
-                schedule.run_pending()
-                time.sleep(60)  # Check every minute
-            logger.info("DFS Scheduler stopped")
-        
-        self.scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
-        self.scheduler_thread.start()
-        
-        # Run initial data collection
-        asyncio.run(self.collect_and_update_data())
-    
-    def stop_scheduler(self):
-        """Stop the scheduler"""
-        self.is_running = False
-        if self.scheduler_thread:
-            self.scheduler_thread.join(timeout=5)
-        logger.info("Scheduler stopped")
-    
-    def get_status(self) -> Dict[str, Any]:
-        """Get current status of the scheduler and data"""
-        return {
-            'is_running': self.is_running,
-            'weekly_state': self.weekly_state,
-            'last_updates': self.last_update,
-            'data_freshness': self.get_data_freshness(),
-            'current_data_summary': {
-                'player_count': len(self.current_data.get('players', [])),
-                'weather_locations': len(self.current_data.get('weather', {})),
-                'injury_reports': len(self.current_data.get('injuries', []))
-            } if self.current_data else {},
-            'lineup_summary': {
-                lineup_type: len(lineups) for lineup_type, lineups in self.latest_lineups.items()
-            } if isinstance(self.latest_lineups, dict) else {},
-            'is_game_day': self.is_game_day()
-        }
-    
-    def force_update(self) -> Dict[str, str]:
-        """Force an immediate data update and optimization"""
-        try:
-            logger.info("Force update requested")
-            asyncio.run(self.collect_and_update_data())
-            return {"status": "success", "message": "Data updated successfully"}
-        except Exception as e:
-            logger.error(f"Force update failed: {e}")
-            return {"status": "error", "message": str(e)}
-
-# Global scheduler instance
-scheduler_instance = None
-
-def get_scheduler() -> DFSScheduler:
-    """Get or create the global scheduler instance"""
-    global scheduler_instance
-    if scheduler_instance is None:
-        scheduler_instance = DFSScheduler()
-    return scheduler_instance
-
-def start_background_scheduler():
-    """Start the background scheduler - call this once on startup"""
-    scheduler = get_scheduler()
-    scheduler.start_scheduler()
-    return scheduler
-
-def stop_background_scheduler():
-    """Stop the background scheduler"""
-    scheduler = get_scheduler()
-    scheduler.stop_scheduler()
-
-class NFLWeeklyCadence:
-    """Implements proper NFL weekly cadence scheduling"""
-    
-    def __init__(self, scheduler):
-        self.scheduler = scheduler
-        self.locked_players = set()
-        self.early_game_results = {}
-        
-    def setup_nfl_schedule(self):
-        """Setup NFL-specific weekly cadence"""
-        import schedule
-        
-        # Wednesday 9:00 AM - Deep build with baseline lineups
-        schedule.every().wednesday.at("09:00").do(self.wednesday_baseline_build)
-        
-        # Thursday-Saturday: Daily refreshes
-        schedule.every().thursday.at("10:00").do(self.daily_refresh)
-        schedule.every().friday.at("10:00").do(self.daily_refresh)
-        schedule.every().saturday.at("10:00").do(self.daily_refresh)
-        
-        # Sunday Morning 11:30 AM - Final early slate
-        schedule.every().sunday.at("11:30").do(self.sunday_am_finalization)
-        
-        # Sunday 2:15 PM - Mid-slate analysis (lock early games)
-        schedule.every().sunday.at("14:15").do(self.mid_slate_lock_and_analyze)
-        
-        # Sunday 3:55 PM - Final late swap opportunities
-        schedule.every().sunday.at("15:55").do(self.final_late_swap)
-        
-        logger.info("🏈 NFL Weekly Cadence Schedule Configured")
-    
-    def wednesday_baseline_build(self):
-        """Wednesday: Deep build with AI analysis"""
-        logger.info("📅 WEDNESDAY: Building baseline lineups + exposure plan")
-        try:
-            # Force fresh data collection
-            asyncio.run(self.scheduler.collect_and_update_data())
-            
-            # Generate baseline lineups for all contest types
-            asyncio.run(self.scheduler.optimize_lineups())
-            
-            # Save as baseline for the week
-            self._save_weekly_baseline()
-            
-        except Exception as e:
-            logger.error(f"Wednesday baseline build failed: {e}")
-    
-    def daily_refresh(self):
-        """Thu-Sat: Refresh data and refine exposures"""
-        day = datetime.now().strftime('%A')
-        logger.info(f"📅 {day.upper()}: Daily refresh + exposure refinement")
-        
-        try:
-            # Refresh data
-            asyncio.run(self.scheduler.collect_and_update_data())
-            
-            # Refine lineups based on new data
-            asyncio.run(self.scheduler.optimize_lineups())
-            
-        except Exception as e:
-            logger.error(f"{day} daily refresh failed: {e}")
-    
-    def sunday_am_finalization(self):
-        """Sunday AM: Final early slate preparation"""
-        logger.info("📅 SUNDAY AM: Finalizing early-slate lineups")
-        
-        try:
-            # Full data refresh
-            asyncio.run(self.scheduler.collect_and_update_data())
-            
-            # Process inactives
-            self._process_sunday_inactives()
-            
-            # Finalize early slate lineups
-            asyncio.run(self.scheduler.optimize_lineups())
-            
-        except Exception as e:
-            logger.error(f"Sunday AM finalization failed: {e}")
-    
-    def mid_slate_lock_and_analyze(self):
-        """Sunday Mid-Early: Lock started players + analyze early results"""
-        logger.info("📅 SUNDAY MID-SLATE: Locking started players + ingesting early results")
-        
-        try:
-            # Lock players from started games
-            self._lock_started_games()
-            
-            # Ingest early game results vs projections
-            self._analyze_early_game_results()
-            
-            # Refactor late slate based on early results
-            self._refactor_late_slate()
-            
-        except Exception as e:
-            logger.error(f"Mid-slate analysis failed: {e}")
-    
-    def final_late_swap(self):
-        """Sunday Final: Last chance swaps with leverage logic"""
-        logger.info("📅 SUNDAY FINAL: Final swap opportunities with leverage")
-        
-        try:
-            # Final data check
-            asyncio.run(self.scheduler.collect_and_update_data())
-            
-            # Generate final late slate pivots
-            self._generate_late_slate_pivots()
-            
-        except Exception as e:
-            logger.error(f"Final late swap failed: {e}")
-    
-    def _lock_started_games(self):
-        """Lock players from games that have started"""
-        # Get current game times and lock started players
-        # Implementation needed
-        pass
-    
-    def _analyze_early_game_results(self):
-        """Analyze early game performance vs projections"""
-        # Compare actual vs projected for chalk plays
-        # Implementation needed
-        pass
-    
-    def _refactor_late_slate(self):
-        """Refactor late slate lineups based on early results"""
-        # Use early game data to pivot late slate strategy
-        # Implementation needed
-        pass
-    
-    def _process_sunday_inactives(self):
-        """Process Sunday inactive players"""
-        # Handle late scratches and replacements
-        # Implementation needed
-        pass
-    
-    def _save_weekly_baseline(self):
-        """Save Wednesday baseline for comparison"""
-        # Implementation needed
-        pass
-    
-    def _generate_late_slate_pivots(self):
-        """Generate final pivot opportunities"""
-        # Implementation needed
-        pass
-
-import requests
-from datetime import datetime, timedelta
-import pytz
-
-class GameLockingEngine:
-    """Handles game start times and player locking"""
-    
-    def __init__(self):
-        self.eastern = pytz.timezone('America/New_York')
-        self.locked_players = set()
-        self.game_times = {}
-        self.early_results = {}
-    
-    def get_current_game_times(self):
-        """Get real-time game start times from ESPN"""
-        try:
-            url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
-            response = requests.get(url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                game_times = {}
-                
-                for event in data.get('events', []):
-                    date_str = event.get('date')
-                    if date_str:
-                        game_time = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
-                        game_time = game_time.astimezone(self.eastern)
-                        
-                        # Get team abbreviations
-                        competitors = event.get('competitions', [{}])[0].get('competitors', [])
-                        teams = [comp.get('team', {}).get('abbreviation') for comp in competitors]
-                        
-                        if len(teams) == 2:
-                            game_id = f"{teams[0]}_vs_{teams[1]}"
-                            game_times[game_id] = {
-                                'start_time': game_time,
-                                'teams': teams,
-                                'status': event.get('status', {}).get('type', {}).get('name', 'scheduled')
-                            }
-                
-                self.game_times = game_times
-                logger.info(f"🕐 Updated game times for {len(game_times)} games")
-                return game_times
-                
-        except Exception as e:
-            logger.error(f"Failed to get game times: {e}")
-            return {}
-    
-    def get_started_games(self):
-        """Get games that have already started"""
-        current_time = datetime.now(self.eastern)
-        started_games = []
-        
-        for game_id, game_info in self.game_times.items():
-            start_time = game_info['start_time']
-            status = game_info['status']
-            
-            # Game has started if current time > start time OR status indicates in progress
-            if (current_time > start_time or 
-                status.lower() in ['in progress', 'halftime', 'final']):
-                started_games.append(game_id)
-        
-        return started_games
-    
-    def lock_players_from_started_games(self, all_players):
-        """Lock players from games that have started"""
-        started_games = self.get_started_games()
-        newly_locked = set()
-        
-        for player in all_players:
-            player_team = player.get('team', '')
-            
-            # Check if player's team is in a started game
-            for game_id in started_games:
-                teams = self.game_times[game_id]['teams']
-                if player_team in teams:
-                    player_id = player.get('player_id', player.get('name'))
-                    if player_id not in self.locked_players:
-                        newly_locked.add(player_id)
-                        self.locked_players.add(player_id)
-        
-        if newly_locked:
-            logger.info(f"🔒 Locked {len(newly_locked)} players from {len(started_games)} started games")
-        
-        return list(newly_locked)
-    
-    def get_early_game_results(self):
-        """Get real-time results from early games"""
-        try:
-            url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
-            response = requests.get(url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                results = {}
-                
-                for event in data.get('events', []):
-                    competitors = event.get('competitions', [{}])[0].get('competitors', [])
-                    
-                    for competitor in competitors:
-                        team_abbr = competitor.get('team', {}).get('abbreviation')
-                        team_stats = competitor.get('statistics', [])
-                        
-                        if team_abbr and team_stats:
-                            results[team_abbr] = {
-                                'score': competitor.get('score', 0),
-                                'statistics': team_stats
-                            }
-                
-                self.early_results = results
-                return results
-                
-        except Exception as e:
-            logger.error(f"Failed to get early game results: {e}")
-            return {}
-
-
-class LateSwapEngine:
-    """Handles late swap decisions and leverage pivots"""
-    
-    def __init__(self, game_locker):
-        self.game_locker = game_locker
-        self.swap_history = []
-    
-    def analyze_chalk_performance(self, early_results):
-        """Analyze how chalk plays performed in early games"""
-        chalk_analysis = {}
-        
-        # This would analyze high-ownership players vs their actual performance
-        # For now, we'll create a framework
-        
-        for team, stats in early_results.items():
-            score = stats.get('score', 0)
-            
-            # Simple logic: if team scored >21 points, their players likely hit
-            if score > 21:
-                chalk_analysis[team] = 'outperformed'
-            elif score < 14:
-                chalk_analysis[team] = 'underperformed'
-            else:
-                chalk_analysis[team] = 'neutral'
-        
-        logger.info(f"📊 Chalk analysis: {chalk_analysis}")
-        return chalk_analysis
-    
-    def generate_late_slate_pivots(self, available_players, chalk_analysis):
-        """Generate pivot recommendations for late slate"""
-        pivot_recommendations = []
-        
-        # If early chalk failed, pivot to late slate contrarian plays
-        underperforming_early = [team for team, result in chalk_analysis.items() 
-                               if result == 'underperformed']
-        
-        if len(underperforming_early) > 1:
-            strategy = 'contrarian'
-            logger.info("🔄 Early chalk failed - recommending contrarian late slate")
+        # EXACT FanDuel position requirements
+        # 1 QB
+        if qb_indices:
+            prob += pulp.lpSum([player_vars[i] for i in qb_indices]) == 1
         else:
-            strategy = 'balanced'
-            logger.info("📈 Early chalk performed - maintaining balanced approach")
+            logger.error("No QBs available!")
+            return None
+            
+        # 1 DEF
+        if d_indices:
+            prob += pulp.lpSum([player_vars[i] for i in d_indices]) == 1
+        else:
+            logger.error("No defenses available!")
+            return None
         
-        return {
-            'strategy': strategy,
-            'pivot_count': len(underperforming_early),
-            'recommended_approach': self._get_strategy_approach(strategy)
-        }
+        # FLEX-eligible positions: RB, WR, TE
+        flex_indices = rb_indices + wr_indices + te_indices
+        
+        if not flex_indices:
+            logger.error("No flex-eligible players!")
+            return None
+        
+        # Core requirements: 2 RB + 3 WR + 1 TE = 6 players minimum
+        if rb_indices:
+            prob += pulp.lpSum([player_vars[i] for i in rb_indices]) >= 2  # At least 2 RB
+        
+        if wr_indices:
+            prob += pulp.lpSum([player_vars[i] for i in wr_indices]) >= 3  # At least 3 WR
+        
+        if te_indices:
+            prob += pulp.lpSum([player_vars[i] for i in te_indices]) >= 1  # At least 1 TE
+        
+        # FLEX constraint: Total RB + WR + TE = 7 (2+3+1 core + 1 FLEX)
+        prob += pulp.lpSum([player_vars[i] for i in flex_indices]) == 7
+        
+        # Position maximums to prevent 4+ of same position
+        if rb_indices:
+            prob += pulp.lpSum([player_vars[i] for i in rb_indices]) <= 3  # Max 3 RB (2 + 1 FLEX)
+        if wr_indices:
+            prob += pulp.lpSum([player_vars[i] for i in wr_indices]) <= 4  # Max 4 WR (3 + 1 FLEX)
+        if te_indices:
+            prob += pulp.lpSum([player_vars[i] for i in te_indices]) <= 2  # Max 2 TE (1 + 1 FLEX)
+        
+        # Total roster: QB + 7 flex + DEF = 9
+        prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == 9
+        
+        # Team diversity constraints
+        team_counts = {}
+        for i, player in enumerate(players):
+            if player.team not in team_counts:
+                team_counts[player.team] = []
+            team_counts[player.team].append(i)
+        
+        max_per_team = 3 if contest_type == 'cash' else 4
+        for team, player_indices in team_counts.items():
+            prob += pulp.lpSum([player_vars[i] for i in player_indices]) <= max_per_team
+        
+        # Add stacking for tournaments
+        if contest_type == 'gpp':
+            self._add_stacking_incentive(prob, players, player_vars, qb_indices, wr_indices)
     
-    def _get_strategy_approach(self, strategy):
-        """Get specific approach for strategy"""
-        approaches = {
-            'contrarian': {
-                'ownership_threshold': 10.0,
-                'variance_weight': 0.5,
-                'stacking_preference': 'unconventional'
-            },
-            'balanced': {
-                'ownership_threshold': 25.0,
-                'variance_weight': 0.3,
-                'stacking_preference': 'traditional'
-            }
-        }
-        return approaches.get(strategy, approaches['balanced'])
-
-# Update the NFLWeeklyCadence class methods
-def _lock_started_games(self):
-    """Lock players from games that have started"""
-    if not hasattr(self, 'game_locker'):
-        self.game_locker = GameLockingEngine()
+    def _add_stacking_incentive(self, prob, players: List[Player], player_vars: Dict, 
+                               qb_indices: List[int], wr_indices: List[int]):
+        """Add QB+WR stacking incentive for tournaments"""
+        
+        # Group players by team
+        team_qbs = {}
+        team_wrs = {}
+        
+        for i in qb_indices:
+            team = players[i].team
+            if team not in team_qbs:
+                team_qbs[team] = []
+            team_qbs[team].append(i)
+        
+        for i in wr_indices:
+            team = players[i].team
+            if team not in team_wrs:
+                team_wrs[team] = []
+            team_wrs[team].append(i)
+        
+        # Create stacking variables for each team
+        for team in team_qbs:
+            if team in team_wrs:
+                # If we select QB from this team, encourage WR from same team
+                qb_vars = [player_vars[i] for i in team_qbs[team]]
+                wr_vars = [player_vars[i] for i in team_wrs[team]]
+                
+                if qb_vars and wr_vars:
+                    # Soft constraint: if QB selected, prefer WR from same team
+                    prob += pulp.lpSum(wr_vars) >= 0.5 * pulp.lpSum(qb_vars)
     
-    # Get current game times
-    self.game_locker.get_current_game_times()
+    def _predict_ownership(self, player: Player, contest_type: str) -> float:
+        """Enhanced ownership prediction"""
+        
+        # Base ownership from salary
+        base = (player.salary / 300) + (player.value * 2)
+        
+        # Contest type adjustments
+        if contest_type == 'gpp':
+            if player.value > 3.5:
+                base *= 1.4  # High value players get more attention
+            if player.position == 'QB' and player.salary > 8500:
+                base *= 1.2  # Elite QBs are popular
+        elif contest_type == 'cash':
+            base *= 0.9  # Generally lower ownership in cash
+        elif contest_type == 'contrarian':
+            base *= 0.6  # Contrarian targets low ownership
+        
+        return max(2.0, min(50.0, base))
     
-    # Lock players from started games
-    if self.scheduler.current_data and 'players' in self.scheduler.current_data:
-        locked = self.game_locker.lock_players_from_started_games(
-            self.scheduler.current_data['players']
+    def _calculate_contest_value(self, player: Player, contest_type: str) -> float:
+        """FIXED tournament strategy - prioritize ceiling and avoid chalk"""
+        
+        base_value = player.projection
+        
+        if contest_type == 'gpp':
+            # TOURNAMENT: High ceiling + low ownership is EVERYTHING
+            ceiling_bonus = player.variance * 2.0  # Double variance bonus
+            
+            # MASSIVE ownership penalty for chalk plays (this is the key fix!)
+            if player.ownership > 25:
+                ownership_penalty = (player.ownership - 25) * 0.15  # Heavy penalty
+                base_value -= ownership_penalty
+            
+            # Huge bonus for low-owned studs
+            if player.salary > 8000 and player.ownership < 15:
+                base_value *= 1.8  # 80% bonus for low-owned studs
+            
+            # Elite QB ceiling bonus
+            if player.position == 'QB' and player.salary > 8500:
+                ceiling_bonus *= 1.5
+            
+            # WR1 ceiling bonus  
+            if player.position == 'WR' and player.salary > 8000:
+                ceiling_bonus *= 1.3
+                
+            return base_value + ceiling_bonus
+            
+        elif contest_type == 'cash':
+            # CASH: Consistent floor, don't care about ownership
+            floor_bonus = -player.variance * 0.1  # Small variance penalty
+            return base_value + floor_bonus
+            
+        elif contest_type == 'contrarian':
+            # CONTRARIAN: Maximum leverage on low ownership
+            ownership_boost = 0
+            if player.ownership < 10:
+                ownership_boost = 8.0  # Huge boost for <10% owned
+            elif player.ownership < 20:
+                ownership_boost = 4.0  # Good boost for <20% owned
+            
+            # Ceiling bonus for contrarian
+            ceiling_bonus = player.variance * 1.5
+            
+            return base_value + ownership_boost + ceiling_bonus
+            
+        else:  # single_game
+            return base_value * 1.15
+    
+    def _extract_result(self, prob, players: List[Player], player_vars: Dict, contest_type: str) -> LineupResult:
+        """Extract lineup results with proper FanDuel ordering"""
+        selected_players = []
+        total_salary = 0
+        total_ownership = 0
+        
+        for i, player in enumerate(players):
+            if player_vars[i].varValue == 1:
+                selected_players.append(player)
+                total_salary += player.salary
+                total_ownership += player.ownership
+        
+        # ORDER PLAYERS IN FANDUEL FORMAT
+        ordered_players = self._format_lineup_for_fanduel(selected_players)
+        
+        # Calculate projected points
+        if contest_type == 'single_game' and len(ordered_players) == 6:
+            mvp = max(ordered_players, key=lambda p: p.projection)
+            projected_points = mvp.projection * 1.5 + sum(p.projection for p in ordered_players if p != mvp)
+        else:
+            projected_points = sum(p.projection for p in ordered_players)
+        
+        # Calculate ceiling/floor
+        ceiling = sum(p.projection + p.variance for p in ordered_players)
+        floor = sum(max(0, p.projection - p.variance) for p in ordered_players)
+        
+        return LineupResult(
+            players=ordered_players,  # Now properly ordered
+            total_salary=total_salary,
+            projected_points=projected_points,
+            total_value=sum(p.value for p in ordered_players),
+            ownership_total=total_ownership,
+            correlation_score=self._calculate_correlation(ordered_players),
+            weather_impact=np.mean([p.weather_factor for p in ordered_players]),
+            contest_type=contest_type,
+            ceiling_score=ceiling,
+            floor_score=floor
         )
-        logger.info(f"🔒 Game locking complete: {len(locked)} players locked")
-
-def _analyze_early_game_results(self):
-    """Analyze early game performance vs projections"""
-    if not hasattr(self, 'game_locker'):
-        self.game_locker = GameLockingEngine()
     
-    # Get early game results
-    early_results = self.game_locker.get_early_game_results()
+    def _calculate_correlation(self, players: List[Player]) -> float:
+        """Calculate lineup correlation score"""
+        correlation = 0.0
+        
+        # Find QB+WR same team stacks
+        qb_teams = [p.team for p in players if p.position == 'QB']
+        wr_teams = [p.team for p in players if p.position == 'WR']
+        
+        for qb_team in qb_teams:
+            same_team_wrs = sum(1 for team in wr_teams if team == qb_team)
+            if same_team_wrs > 0:
+                correlation += 0.3 * same_team_wrs
+        
+        # Team stacking bonus
+        team_counts = {}
+        for player in players:
+            team_counts[player.team] = team_counts.get(player.team, 0) + 1
+        
+        for count in team_counts.values():
+            if count >= 3:
+                correlation += 0.4
+            elif count >= 2:
+                correlation += 0.2
+        
+        return min(1.0, correlation)
     
-    if early_results:
-        # Initialize late swap engine
-        if not hasattr(self, 'swap_engine'):
-            self.swap_engine = LateSwapEngine(self.game_locker)
+    def generate_multiple_lineups(self, players: List[Player], num_lineups: int = 10,
+                                 contest_type: str = 'gpp', single_game_teams: List[str] = None) -> List[LineupResult]:
+        """Generate multiple diverse lineups with BETTER randomization"""
+        lineups = []
+        used_combinations = set()
+        max_attempts = num_lineups * 5  # Increased attempts for better diversity
         
-        # Analyze chalk performance
-        chalk_analysis = self.swap_engine.analyze_chalk_performance(early_results)
+        for attempt in range(max_attempts):
+            if len(lineups) >= num_lineups:
+                break
+                
+            # More aggressive randomization for diversity
+            randomized_players = []
+            for player in players:
+                new_player = Player(
+                    id=player.id, name=player.name, position=player.position,
+                    team=player.team, salary=player.salary, projection=player.projection,
+                    ownership=player.ownership, weather_factor=player.weather_factor,
+                    injury_risk=player.injury_risk, value=player.value, variance=player.variance
+                )
+                
+                # Stronger randomization based on contest type
+                if contest_type == 'gpp':
+                    # Tournament: More variance for differentiation
+                    random_factor = random.uniform(0.80, 1.20)  # Increased variance
+                elif contest_type == 'cash':
+                    # Cash: Less variance for consistency
+                    random_factor = random.uniform(0.95, 1.05)
+                else:  # contrarian
+                    # Contrarian: High variance to find unique builds
+                    random_factor = random.uniform(0.75, 1.25)
+                
+                new_player.projection *= random_factor
+                new_player.value = new_player.projection / (new_player.salary / 1000)
+                randomized_players.append(new_player)
+            
+            lineup = self.optimize_lineup(randomized_players, contest_type, single_game_teams)
+            if lineup:
+                # More sophisticated uniqueness check
+                core_players = tuple(sorted([p.id for p in lineup.players if p.salary > 7000]))
+                if core_players not in used_combinations:
+                    lineups.append(lineup)
+                    used_combinations.add(core_players)
         
-        # Store for late slate decisions
-        self.early_game_analysis = chalk_analysis
-        logger.info("📊 Early game analysis complete")
+        # Sort by appropriate metric
+        if contest_type == 'cash':
+            lineups.sort(key=lambda x: x.floor_score, reverse=True)
+        else:
+            lineups.sort(key=lambda x: x.ceiling_score, reverse=True)
+        
+        logger.info(f"Generated {len(lineups)} unique {contest_type} lineups from {max_attempts} attempts")
+        return lineups
 
-def _refactor_late_slate(self):
-    """Refactor late slate lineups based on early results"""
-    if hasattr(self, 'early_game_analysis') and hasattr(self, 'swap_engine'):
-        # Generate pivot recommendations
-        pivots = self.swap_engine.generate_late_slate_pivots(
-            self.scheduler.current_data.get('players', []),
-            self.early_game_analysis
-        )
+    def export_lineups_to_csv(self, lineups: List[LineupResult], filename: str = None):
+        """Export lineups to CSV"""
+        if not filename:
+            filename = f"data/lineups_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
-        # Apply pivot strategy to late slate optimization
-        late_slate_params = {
-            'contest_type': pivots['strategy'],
-            'num_lineups': 10,
-            'ownership_threshold': pivots['recommended_approach']['ownership_threshold']
-        }
+        lineup_data = []
+        for i, lineup in enumerate(lineups):
+            lineup_row = {'Lineup': i + 1}
+            for j, player in enumerate(lineup.players):
+                lineup_row[f'Player_{j+1}'] = f"{player.name} ({player.position}) ${player.salary}"
+            lineup_row.update({
+                'Total_Salary': lineup.total_salary,
+                'Projected_Points': round(lineup.projected_points, 2),
+                'Contest_Type': lineup.contest_type
+            })
+            lineup_data.append(lineup_row)
         
-        logger.info(f"🔄 Refactoring late slate with {pivots['strategy']} strategy")
-        
-        # Re-optimize with new strategy
-        asyncio.run(self.scheduler.optimize_lineups())
+        df = pd.DataFrame(lineup_data)
+        df.to_csv(filename, index=False)
+        logger.info(f"Exported {len(lineups)} lineups to {filename}")
+        return filename
+
+# Main optimization function with AI integration
+def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None,
+                        num_lineups: int = 10, contest_type: str = 'gpp',
+                        single_game_teams: List[str] = None) -> List[LineupResult]:
+    """AI-Enhanced optimization entry point with CONSERVATIVE filtering"""
+    
+    logger.info(f"Starting AI-enhanced {contest_type} optimization...")
+    
+    # Step 1: Get AI strategic analysis (if available)
+    if AI_AVAILABLE:
+        try:
+            analyzer = DFSAIAnalyzer()
+            ai_analysis = analyzer.analyze_slate_for_optimization(
+                player_data, weather_data or {}, {}, contest_type
+            )
+            
+            if ai_analysis.get('ai_confidence', 0) > 0.5:
+                logger.info(f"AI Strategy: {ai_analysis.get('strategy', 'No strategy')}")
+                
+                # Apply AI insights to player data
+                for player in player_data:
+                    player_name = player.get('name', '')
+                    
+                    # Apply AI ownership predictions
+                    ownership_predictions = ai_analysis.get('ownership_predictions', {})
+                    if player_name in ownership_predictions:
+                        player['ai_ownership'] = ownership_predictions[player_name]
+                    
+                    # Boost leverage spots for tournaments
+                    leverage_spots = ai_analysis.get('leverage_spots', [])
+                    if contest_type == 'gpp' and any(player_name.lower() in spot.lower() for spot in leverage_spots):
+                        player['projected_points'] = player.get('projected_points', 0) * 1.15
+                        logger.info(f"AI Leverage boost: {player_name}")
+                    
+                    # Mark contrarian targets
+                    contrarian_targets = ai_analysis.get('contrarian_targets', [])
+                    if any(player_name.lower() in target.lower() for target in contrarian_targets):
+                        player['contrarian_target'] = True
+            
+            # Log AI cost tracking
+            cost_summary = analyzer.get_cost_summary()
+            logger.info(f"AI Cost: ${cost_summary['weekly_spend']:.3f} of ${cost_summary['weekly_budget']:.2f} budget")
+            
+        except Exception as e:
+            logger.warning(f"AI analysis failed, continuing without: {e}")
+            ai_analysis = {'strategy': 'Fallback optimization', 'ai_confidence': 0}
+    else:
+        logger.info("AI analysis not available - using fallback optimization")
+        ai_analysis = {'strategy': 'Fallback optimization', 'ai_confidence': 0}
+    
+    # Step 2: Run optimization with AI-enhanced data and CONSERVATIVE filtering
+    optimizer = EnhancedDFSOptimizer()
+    players = optimizer.prepare_players(player_data, weather_data)
+    
+    if not players:
+        logger.error("No valid players for optimization")
+        return []
+    
+    logger.info(f"Optimization: {num_lineups} {contest_type} lineups with {len(players)} active players")
+    
+    # Generate lineups
+    lineups = optimizer.generate_multiple_lineups(players, num_lineups, contest_type, single_game_teams)
+    
+    return lineups

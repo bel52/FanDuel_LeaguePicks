@@ -645,7 +645,7 @@ async def get_fresh_data() -> Dict[str, Any]:
         # Get other data
         weather_data = await collector.get_weather_for_games(games_info)
         vegas_data = await collector.get_vegas_odds_data()
-        
+
         return {
             'players': players,
             'games_info': games_info,
@@ -658,8 +658,14 @@ async def get_fresh_data() -> Dict[str, Any]:
                 'main_slate_games': len(games_info['main_slate']),
                 'current_week': games_info['current_week'],
                 'avg_projection': sum(p['projected_points'] for p in players) / len(players) if players else 0,
+                'avg_ownership': sum(p.get('ownership', 0) for p in players) / len(players) if players else 0,
                 'teams_in_slate': sorted(set(p['team'] for p in players)),
                 'real_projections': sum(1 for p in players if p.get('fppg_source') == 'real'),
-                'estimated_projections': sum(1 for p in players if p.get('fppg_source') == 'estimated')
+                'estimated_projections': sum(1 for p in players if p.get('fppg_source') == 'estimated'),
+                'salary_range': {
+                    'min': min(p['salary'] for p in players) if players else 0,
+                    'max': max(p['salary'] for p in players) if players else 0
+                },
+                'vegas_games': len(vegas_data) if vegas_data else 0
             }
         }
