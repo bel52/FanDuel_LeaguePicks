@@ -1,6 +1,6 @@
 """
 Enhanced DFS lineup optimization with proper FLEX position support
-Fixed for tournament play with proper FanDuel format
+Fixed for tournament play with proper FanDuel format and improved QB filtering
 """
 import pulp
 import pandas as pd
@@ -57,13 +57,13 @@ class LineupResult:
     floor_score: float = 0.0
 
 class EnhancedDFSOptimizer:
-    """CORRECTED DFS optimization for exact FanDuel format"""
+    """Enhanced DFS optimization for exact FanDuel format with improved filtering"""
     
     def __init__(self):
         pass
         
     def prepare_players(self, player_data: List[Dict], weather_data: Dict = None) -> List[Player]:
-        """Convert and FILTER player data - FIXED LOGIC"""
+        """Convert and FILTER player data - IMPROVED LOGIC with better QB filtering"""
         players = []
         
         for data in player_data:
@@ -74,7 +74,7 @@ class EnhancedDFSOptimizer:
                 salary = int(data.get('salary', 5000))
                 projection = float(data.get('projection', data.get('projected_points', 0)))
                 
-                # BETTER FILTERING - keep more players but filter obvious junk
+                # IMPROVED FILTERING - keep more players but filter obvious junk
                 
                 # Skip players with no name
                 if not player_name or len(player_name.strip()) < 3:
@@ -92,6 +92,19 @@ class EnhancedDFSOptimizer:
                 if salary > 6000 and projection == 0:
                     logger.warning(f"Skipping expensive player with 0 projection: {player_name} (${salary})")
                     continue
+                
+                # IMPROVED QB FILTERING - Filter out backup QBs more aggressively
+                if position == 'QB':
+                    # Filter out backup QBs more aggressively
+                    if salary < 7000 and projection < 15:
+                        logger.warning(f"Filtering backup QB: {player_name} (${salary}, {projection:.1f} proj)")
+                        continue
+                    
+                    # Also filter QBs with no FPPG data regardless of salary
+                    fppg_source = data.get('fppg_source', 'unknown')
+                    if fppg_source == 'estimated' and projection < 18:
+                        logger.warning(f"Filtering estimated QB: {player_name} (no real FPPG data)")
+                        continue
                 
                 # Normalize defense position
                 if position in ['DST', 'DEF', 'D/ST']:
@@ -124,7 +137,7 @@ class EnhancedDFSOptimizer:
         positions = {}
         for p in players:
             positions[p.position] = positions.get(p.position, 0) + 1
-        logger.info(f"FIXED filtering - players by position: {positions}")
+        logger.info(f"IMPROVED filtering - players by position: {positions}")
         
         return players
 
@@ -352,48 +365,48 @@ class EnhancedDFSOptimizer:
         return max(2.0, min(50.0, base))
     
     def _calculate_contest_value(self, player: Player, contest_type: str) -> float:
-        """Calculate contest-specific value - FIXED FOR LEAGUE PLAY"""
+        """Calculate contest-specific value - IMPROVED FOR TOURNAMENT PLAY"""
         
         base_value = player.projection
         
-        # LEAGUE STRATEGY: Pure ceiling focus, ignore ownership completely
+        # TOURNAMENT STRATEGY: Pure ceiling focus for winning lineups
         if contest_type == 'gpp':
-            # For small leagues: ONLY care about ceiling, not ownership
-            ceiling_bonus = player.variance * 0.8  # Much higher ceiling bonus
+            # For tournaments: ONLY care about ceiling, not ownership
+            ceiling_bonus = player.variance * 1.0  # Strong ceiling bonus
             
-            # MAJOR bonus for elite players (these win leagues)
+            # MAJOR bonus for elite players (these win tournaments)
             if player.position == 'QB' and player.salary > 8500:
-                ceiling_bonus *= 2.0  # Massive bonus for elite QBs
+                ceiling_bonus *= 2.5  # Massive bonus for elite QBs
             elif player.position in ['RB', 'WR'] and player.salary > 8000:
-                ceiling_bonus *= 1.5  # Big bonus for premium skill players
+                ceiling_bonus *= 2.0  # Big bonus for premium skill players
             
-            # Penalty for players with 0 projection (avoid Tyler Shough types)
-            if player.projection <= 3:
-                return base_value * 0.1  # Make them essentially unusable
+            # Strong penalty for low-projection players (avoid backups)
+            if player.projection <= 5:
+                return base_value * 0.05  # Make them essentially unusable
             
-            # Reward high salary + high projection (the best players)
-            if player.salary > 7000 and player.projection > 15:
-                ceiling_bonus *= 1.3
+            # Reward high salary + high projection combinations
+            if player.salary > 7500 and player.projection > 18:
+                ceiling_bonus *= 1.5
             
             return base_value + ceiling_bonus
             
         elif contest_type == 'cash':
-            # Cash: Still want floor but don't avoid good players
-            floor_bonus = -player.variance * 0.1  # Small variance penalty
+            # Cash: Balance floor and ceiling
+            floor_bonus = -player.variance * 0.2  # Small variance penalty
             
             # Still reward good players in cash
             if player.projection > 15:
-                floor_bonus += 2.0
+                floor_bonus += 1.5
             
             return base_value + floor_bonus
             
         elif contest_type == 'contrarian':
-            # Contrarian for leagues: High upside players that others might avoid
-            upside_bonus = player.variance * 0.6
+            # Contrarian: High upside players with lower ownership
+            upside_bonus = player.variance * 0.8
             
-            # Bonus for mid-tier salary guys with high projections
-            if 6000 <= player.salary <= 7500 and player.projection > 12:
-                upside_bonus += 3.0
+            # Bonus for mid-tier players with high projections
+            if 6000 <= player.salary <= 7500 and player.projection > 15:
+                upside_bonus += 4.0
             
             return base_value + upside_bonus
             
@@ -544,7 +557,7 @@ class EnhancedDFSOptimizer:
 def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None,
                         num_lineups: int = 10, contest_type: str = 'gpp',
                         single_game_teams: List[str] = None) -> List[LineupResult]:
-    """AI-Enhanced optimization entry point"""
+    """AI-Enhanced optimization entry point with improved QB filtering"""
     
     logger.info(f"Starting AI-enhanced {contest_type} optimization...")
     
@@ -590,7 +603,7 @@ def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None,
         logger.info("AI analysis not available - using fallback optimization")
         ai_analysis = {'strategy': 'Fallback optimization', 'ai_confidence': 0}
     
-    # Step 2: Run optimization with AI-enhanced data
+    # Step 2: Run optimization with AI-enhanced data and improved filtering
     optimizer = EnhancedDFSOptimizer()
     players = optimizer.prepare_players(player_data, weather_data)
     
