@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 SIMPLIFIED: On-demand DFS optimization for friends league
-Removes complex scheduling - you control when it runs
+No scheduling - you control when it runs
 """
 import asyncio
 import sys
@@ -81,9 +81,15 @@ async def generate_lineups(contest_type: str = 'gpp', num_lineups: int = 10):
             pos_label = ['QB', 'RB', 'RB', 'WR', 'WR', 'WR', 'TE', 'FLEX', 'DEF'][j]
             logger.info(f"  {pos_label}: {player.name} (${player.salary:,})")
 
-    # Step 5: Export to CSV
+    # Step 5: Export to organized CSV files
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    csv_file = f"data/lineups/{contest_type}_lineups_{timestamp}.csv"
+
+    # Create organized directory structure
+    lineup_dir = Path("data/lineups")
+    week_dir = lineup_dir / f"week_{quality.get('current_week', 'unknown')}"
+    week_dir.mkdir(parents=True, exist_ok=True)
+
+    csv_file = week_dir / f"{contest_type}_lineups_{timestamp}.csv"
 
     # Create CSV export
     lineup_data = []
@@ -110,7 +116,7 @@ async def generate_lineups(contest_type: str = 'gpp', num_lineups: int = 10):
     df.to_csv(csv_file, index=False)
 
     logger.info(f"💾 Exported to: {csv_file}")
-    logger.info(f"📁 Ready to upload to FanDuel!")
+    logger.info(f"📁 Organized in: {week_dir}")
 
     return lineups
 
@@ -197,11 +203,11 @@ def main():
 Mode: {args.mode.upper()}
 Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}
 
-📋 USAGE WORKFLOW:
+📋 SIMPLE WORKFLOW:
 1. Download FanDuel salary CSV manually
 2. Save as: data/fanduel_salaries_manual.csv  
 3. Run: python main.py {args.mode}
-4. Upload generated CSV to FanDuel
+4. Use generated lineups manually or export CSV
 """)
 
     try:
@@ -218,7 +224,7 @@ Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}
             logger.info("✅ Operation completed successfully!")
             print("\n🎯 Next steps:")
             print("1. Review generated lineups")
-            print("2. Upload CSV to FanDuel")
+            print("2. Enter lineups manually or upload CSV")
             print("3. Dominate your friends! 🏆")
         else:
             logger.error("❌ Operation failed!")

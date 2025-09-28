@@ -107,26 +107,146 @@ class DualAIDFSAnalyzer:
             logger.error(f"AI analysis pipeline failed: {e}")
             return self._fallback_analysis(player_data, contest_type)
 
-    async def analyze_breaking_news(self, news_events, current_players):
-        """AI analysis of breaking news impact on lineups"""
-        if not news_events:
-            return {'news_impact': 'none'}
+        async def analyze_breaking_news(self, news_events: List[Dict], current_players: List[Dict]) -> Dict[str, Any]:
+            """Enhanced AI analysis of breaking news impact on lineups"""
+            if not news_events:
+                return {'news_impact': 'none', 'lineup_adjustments': []}
 
-        news_text = str(news_events)
-        prompt = f"Breaking NFL news: {news_text}. How does this affect these players: {[p.get('name', '') for p in current_players[:10]]}?"
+            # Extract player names for context
+            player_names = [p.get('name', '') for p in current_players[:15]]
 
-        try:
-            if self.claude_client:
-                response = self.claude_client.messages.create(
-                    model="claude-3-haiku-20240307",
-                    max_tokens=200,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                return {'analysis': response.content[0].text}
-            else:
-                return {'analysis': 'AI unavailable'}
-        except:
-            return {'analysis': 'Analysis failed'}
+            # Format news for AI analysis
+            news_summary = []
+            for news in news_events:
+                news_summary.append({
+                    'headline': news.get('headline', ''),
+                    'source': news.get('source', ''),
+                    'impact_type': news.get('impact_type', ''),
+                    'dfs_impact_score': news.get('dfs_impact', 0)
+                })
+
+            prompt = f"""Analyze breaking NFL news for DFS lineup impact:
+
+    NEWS EVENTS:
+    {json.dumps(news_summary, indent=2)}
+
+    CURRENT ROSTER PLAYERS:
+    {player_names}
+
+    ANALYSIS NEEDED:
+    1. Which players are DIRECTLY affected by this news?
+    2. What's the impact: positive boost, negative downgrade, or neutral?
+    3. Are there backup players who gain value?
+    4. Should any current players be REMOVED from lineups?
+    5. Should any players be ADDED to lineups?
+
+    Provide specific player names and impact ratings (1-10 scale).
+    Focus on actionable lineup changes only."""
+
+            try:
+                if self.claude_client:
+                    response = self.claude_client.messages.create(
+                        model="claude-3-haiku-20240307",
+                        max_tokens=400,
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+
+                    analysis_text = response.content[0].text
+
+                    # Parse AI response for actionable recommendations
+                    recommendations = self._parse_news_analysis(analysis_text, player_names)
+
+                    # Track cost
+                    self.weekly_spend += 0.05
+                    self._log_cost("breaking_news_analysis", 0.05)
+
+                    return {
+                        'news_impact': 'significant' if news_events else 'none',
+                        'ai_analysis': analysis_text,
+                        'lineup_adjustments': recommendations,
+                        'affected_players': recommendations.get('affected_players', []),
+                        'remove_players': recommendations.get('remove_players', []),
+                        'add_players': recommendations.get('add_players', []),
+                        'confidence': recommendations.get('confidence', 0.5)
+                    }
+
+                elif self.openai_client:
+                    response = self.openai_client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=400,
+                        temperature=0.1
+                    )
+
+                    analysis_text = response.choices[0].message.content
+                    recommendations = self._parse_news_analysis(analysis_text, player_names)
+
+                    # Track cost
+                    self.weekly_spend += 0.03
+                    self._log_cost("breaking_news_analysis", 0.03)
+
+                    return {
+                        'news_impact': 'significant' if news_events else 'none',
+                        'ai_analysis': analysis_text,
+                        'lineup_adjustments': recommendations,
+                        'affected_players': recommendations.get('affected_players', []),
+                        'remove_players': recommendations.get('remove_players', []),
+                        'add_players': recommendations.get('add_players', []),
+                        'confidence': recommendations.get('confidence', 0.5)
+                    }
+                else:
+                    return {'news_impact': 'none', 'analysis': 'AI unavailable'}
+
+            except Exception as e:
+                logger.error(f"Breaking news analysis failed: {e}")
+                return {'news_impact': 'error', 'analysis': f'Analysis failed: {str(e)}'}
+
+        def _parse_news_analysis(self, analysis_text: str, current_players: List[str]) -> Dict[str, Any]:
+            """Parse AI analysis text for actionable recommendations"""
+
+            affected_players = []
+            remove_players = []
+            add_players = []
+
+            analysis_lower = analysis_text.lower()
+
+            # Look for player mentions and context
+            for player_name in current_players:
+                if player_name.lower() in analysis_lower:
+                    # Get context around player mention
+                    player_pos = analysis_lower.find(player_name.lower())
+                    if player_pos >= 0:
+                        context_start = max(0, player_pos - 100)
+                        context_end = min(len(analysis_text), player_pos + len(player_name) + 100)
+                        context = analysis_lower[context_start:context_end]
+
+                        # Determine impact
+                        remove_terms = ['remove', 'avoid', 'downgrade', 'sit', 'bench', 'out', 'injured']
+                        add_terms = ['add', 'boost', 'upgrade', 'start', 'opportunity', 'value']
+
+                        remove_score = sum(1 for term in remove_terms if term in context)
+                        add_score = sum(1 for term in add_terms if term in context)
+
+                        if remove_score > add_score:
+                            remove_players.append(player_name)
+                        elif add_score > remove_score:
+                            add_players.append(player_name)
+
+                        affected_players.append({
+                            'name': player_name,
+                            'impact': 'negative' if remove_score > add_score else 'positive' if add_score > remove_score else 'neutral',
+                            'confidence': min(max(remove_score, add_score) / 3, 1.0)
+                        })
+
+            # Determine overall confidence
+            confidence = 0.8 if (remove_players or add_players) else 0.3
+
+            return {
+                'affected_players': affected_players,
+                'remove_players': remove_players[:3],  # Limit to 3
+                'add_players': add_players[:3],  # Limit to 3
+                'confidence': confidence
+            }
 
     def _prepare_slate_data(self, player_data: List[Dict], weather_data: Dict,
                            vegas_data: Dict, contest_type: str) -> Dict:

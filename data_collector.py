@@ -13,6 +13,13 @@ import json
 from pathlib import Path
 import time
 from loguru import logger
+try:
+    from news_monitor import get_breaking_news, get_player_news
+    NEWS_AVAILABLE = True
+    logger.info("News monitoring available")
+except ImportError:
+    NEWS_AVAILABLE = False
+    logger.warning("News monitoring not available")
 import pytz
 import numpy as np
 
@@ -81,6 +88,46 @@ class EnhancedDataCollector:
         self.session = None
         self.slate_manager = EnhancedSlateManager()
 
+    async def get_breaking_news_impact(self, players: List[Dict]) -> Dict[str, Any]:
+        """Get breaking news and analyze impact on current players"""
+        if not NEWS_AVAILABLE:
+            return {'news_events': [], 'impact_analysis': {}}
+
+        try:
+            # Get current breaking news
+            news_events = await get_breaking_news()
+
+            if not news_events:
+                return {'news_events': [], 'impact_analysis': {}}
+
+            logger.info(f"📰 Found {len(news_events)} breaking news items")
+
+            # Get news specific to our players
+            player_names = [p.get('name', '') for p in players]
+            player_specific_news = await get_player_news(player_names)
+
+            # Analyze impact with AI if available
+            impact_analysis = {}
+            if hasattr(self, 'ai_analyzer'):
+                try:
+                    from ai_analyzer import DualAIDFSAnalyzer
+                    analyzer = DualAIDFSAnalyzer()
+                    impact_analysis = await analyzer.analyze_breaking_news(news_events, players)
+                except Exception as e:
+                    logger.warning(f"AI news analysis failed: {e}")
+                    impact_analysis = {'ai_analysis': 'AI analysis unavailable'}
+
+            return {
+                'news_events': news_events,
+                'player_specific_news': player_specific_news,
+                'impact_analysis': impact_analysis,
+                'news_count': len(news_events),
+                'player_news_count': len(player_specific_news)
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting breaking news impact: {e}")
+            return {'news_events': [], 'impact_analysis': {}}
     async def __aenter__(self):
         self.session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
@@ -803,12 +850,12 @@ class EnhancedDataCollector:
 
 # Main entry point
 async def get_fresh_data() -> Dict[str, Any]:
-    """Get fresh data with robust error handling"""
+    """Get fresh data with BREAKING NEWS INTEGRATION"""
     async with EnhancedDataCollector() as collector:
         # Get games info
         games_info = await collector.get_current_week_games()
 
-        # Get players with REAL projections (injury opportunities applied BEFORE filtering)
+        # Get players with REAL projections
         players = await collector.collect_players_for_slate(games_info, 'gpp')
 
         if not players:
@@ -818,9 +865,10 @@ async def get_fresh_data() -> Dict[str, Any]:
         # Get other data
         weather_data = await collector.get_weather_for_games(games_info)
         vegas_data = await collector.get_vegas_odds_data()
-
-        # CALCULATE VEGAS MULTIPLIERS
         vegas_multipliers = collector.calculate_vegas_multipliers(vegas_data)
+
+        # NEW: Get breaking news impact
+        news_impact = await collector.get_breaking_news_impact(players)
 
         return {
             'players': players,
@@ -828,6 +876,7 @@ async def get_fresh_data() -> Dict[str, Any]:
             'weather': weather_data,
             'vegas_odds': vegas_data,
             'vegas_multipliers': vegas_multipliers,
+            'breaking_news': news_impact,
             'last_updated': datetime.now().isoformat(),
             'data_quality': {
                 'player_count': len(players),
@@ -845,6 +894,8 @@ async def get_fresh_data() -> Dict[str, Any]:
                     'max': max(p['salary'] for p in players) if players else 0
                 },
                 'vegas_games': len(vegas_data) if vegas_data else 0,
-                'vegas_multipliers': len(vegas_multipliers)
+                'vegas_multipliers': len(vegas_multipliers),
+                'breaking_news_items': news_impact.get('news_count', 0),
+                'player_news_items': news_impact.get('player_news_count', 0)
             }
         }

@@ -219,10 +219,18 @@ class EnhancedDFSOptimizer:
 
     def _add_fanduel_constraints(self, prob, players: List[Player], player_vars: Dict,
                                 contest_type: str, single_game_teams: List[str]):
-        """EXACT FanDuel tournament constraints: QB+2RB+3WR+1TE+1FLEX+1DEF=9"""
+        """EXACT FanDuel tournament constraints with LOCK SUPPORT: QB+2RB+3WR+1TE+1FLEX+1DEF=9"""
 
         # Salary cap
         prob += pulp.lpSum([players[i].salary * player_vars[i] for i in range(len(players))]) <= FANDUEL_SALARY_CAP
+
+        # HANDLE LOCKED PLAYERS FIRST
+        locked_players = []
+        for i, player in enumerate(players):
+            if hasattr(player, 'locked') and player.locked:
+                prob += player_vars[i] == 1  # Force locked players into lineup
+                locked_players.append(i)
+                logger.info(f"🔒 LOCKED: {player.name} ({player.position})")
 
         if single_game_teams:
             # Single game: 6 players total
@@ -296,6 +304,11 @@ class EnhancedDFSOptimizer:
         # Add stacking for tournaments
         if contest_type == 'gpp':
             self._add_stacking_incentive(prob, players, player_vars, qb_indices, wr_indices)
+
+        # LOG LOCK SUMMARY
+        if locked_players:
+            locked_positions = [players[i].position for i in locked_players]
+            logger.info(f"🔒 Applied {len(locked_players)} locks: {locked_positions}")
 
     def _add_friends_league_constraints(self, prob, players: List[Player], player_vars: Dict, contest_type: str):
         """Add constraints optimized for beating 11 friends, not perfect optimization"""

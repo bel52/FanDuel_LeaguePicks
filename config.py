@@ -1,5 +1,6 @@
 """
-Enhanced configuration settings with proper current week detection
+Simplified configuration settings for on-demand DFS optimization
+Removed all scheduling-related config
 """
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ from datetime import datetime
 # Load environment variables from .env file
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
     print("✅ Environment variables loaded from .env file")
 except ImportError:
@@ -23,7 +25,7 @@ LOGS_DIR = BASE_DIR / "logs"
 # Create directories if they don't exist
 for directory in [DATA_DIR, CACHE_DIR, LOGS_DIR]:
     directory.mkdir(exist_ok=True)
-    
+
 # Also create subdirectories
 for subdir in ["lineups", "historical", "input", "output"]:
     (DATA_DIR / subdir).mkdir(exist_ok=True)
@@ -37,7 +39,7 @@ API_PORT = 8020
 
 # DFS Platform Settings
 PLATFORM = "fanduel"
-CONTEST_TYPES = ["gpp", "cash", "contrarian"]
+CONTEST_TYPES = ["gpp", "cash", "contrarian", "bestball"]
 
 # AI Configuration
 AI_ENABLED = os.getenv('AI_ENABLED', 'true').lower() == 'true'
@@ -134,26 +136,12 @@ CONSISTENCY_BONUS = float(os.getenv('CONSISTENCY_BONUS', '0.2'))
 # Odds API
 ODDS_API_KEY = os.getenv('ODDS_API_KEY')
 
-# Weekly cadence and scheduling
-WEDNESDAY_BUILD_TIME = os.getenv('WEDNESDAY_BUILD_TIME', '09:00')
-SUNDAY_FINALIZE_TIME = os.getenv('SUNDAY_FINALIZE_TIME', '11:30')
-LATE_SWAP_TIMES = os.getenv('LATE_SWAP_TIMES', '14:15,15:45').split(',')
-
-# Late swap configuration
-AUTO_LATE_SWAP_ENABLED = os.getenv('AUTO_LATE_SWAP_ENABLED', 'true').lower() == 'true'
-LATE_SWAP_MIN_IMPROVEMENT = float(os.getenv('LATE_SWAP_MIN_IMPROVEMENT', '1.0'))
-MAX_LATE_SWAPS_PER_DAY = int(os.getenv('MAX_LATE_SWAPS_PER_DAY', '3'))
-
 # Logging configuration
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 DEBUG = os.getenv('DEBUG', 'True').lower() == 'true'
 
 # Cache settings
 CACHE_TTL = int(os.getenv('CACHE_TTL', '600'))
-AI_CACHE_TTL = int(os.getenv('AI_CACHE_TTL', '1800'))
-
-# Update intervals
-UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', '300'))
 
 # FanDuel specific settings
 SALARY_CAP = 60000
@@ -176,12 +164,10 @@ COLD_WEATHER_THRESHOLD = 32
 HIGH_TOTAL_THRESHOLD = 47.0
 BLOWOUT_SPREAD_THRESHOLD = 14.0
 
-# Print loaded config summary on import
-print(f"Config loaded - AI: {AI_ENABLED}, OpenAI: {'✅' if OPENAI_API_KEY else '❌'}, Anthropic: {'✅' if ANTHROPIC_API_KEY else '❌'}")
 # FanDuel specific constants for optimizer
 FANDUEL_POSITIONS = {
     'QB': {'min': 1, 'max': 1},
-    'RB': {'min': 2, 'max': 3}, 
+    'RB': {'min': 2, 'max': 3},
     'WR': {'min': 3, 'max': 4},
     'TE': {'min': 1, 'max': 2},
     'FLEX': {'min': 1, 'max': 1},
@@ -208,8 +194,7 @@ OPTIMIZATION_CONFIG = {
     }
 }
 
-UPDATE_INTERVALS = {
-    'player_stats': 60,
-    'weather': 120,
-    'vegas': 300
-}
+# Print loaded config summary on import
+print(
+    f"Config loaded - AI: {AI_ENABLED}, OpenAI: {'✅' if OPENAI_API_KEY else '❌'}, Anthropic: {'✅' if ANTHROPIC_API_KEY else '❌'}")
+print("✅ Simplified config loaded - no scheduling, on-demand only")
