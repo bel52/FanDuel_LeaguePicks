@@ -39,3 +39,9 @@ logs/
 .auth/
 # Editor & OS
 cache/
+
+# env files (keep the template)
+.env
+.env.*
+*.env
+!.env.example
