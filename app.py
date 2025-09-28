@@ -323,151 +323,151 @@ async def read_root():
                 });
             }
 
-            function updatePlayerTable(position) {
-                const players = playerData[position] || [];
-                const tbody = document.getElementById(`tbody-${position}`);
-                const page = currentPage[position] || 0;
-                const pageSize = 20;
-                const start = page * pageSize;
-                const end = start + pageSize;
-                const pageData = players.slice(start, end);
+         function updatePlayerTable(position) {
+    const players = playerData[position] || [];
+    const tbody = document.getElementById(`tbody-${position}`);
+    const page = currentPage[position] || 0;
+    const pageSize = 20;
+    const start = page * pageSize;
+    const end = start + pageSize;
+    const pageData = players.slice(start, end);
 
-                let html = '';
-                pageData.forEach(player => {
-                    const isLocked = lockedPlayers.has(player.id);
-                    const isExcluded = excludedPlayers.has(player.id);
-                    const rowClass = isLocked ? 'locked' : (isExcluded ? 'excluded' : '');
+    let html = '';
+    pageData.forEach(player => {
+        const isLocked = lockedPlayers.has(player.name);
+        const isExcluded = excludedPlayers.has(player.name);
+        const rowClass = isLocked ? 'locked' : (isExcluded ? 'excluded' : '');
 
-                    const injuryClass = getInjuryClass(player.injury_status);
-                    const value = (player.projected_points / (player.salary / 1000)).toFixed(2);
+        const injuryClass = getInjuryClass(player.injury_status);
+        const value = (player.projected_points / (player.salary / 1000)).toFixed(2);
 
-                    html += `
-                        <tr class="player-row ${rowClass}" data-player-name="${player.name.toLowerCase()}">
-                            <td>
-                                <div class="lock-controls">
-                                    <label title="Lock">
-                                        <input type="checkbox" class="lock-checkbox" 
-                                               onchange="toggleLock('${player.id}')" 
-                                               ${isLocked ? 'checked' : ''}>
-                                        🔒
-                                    </label>
-                                    <label title="Exclude">
-                                        <input type="checkbox" class="lock-checkbox" 
-                                               onchange="toggleExclude('${player.id}')" 
-                                               ${isExcluded ? 'checked' : ''}>
-                                        ❌
-                                    </label>
-                                </div>
-                            </td>
-                            <td><strong>${player.name}</strong></td>
-                            <td>${player.team}</td>
-                            <td>$${player.salary.toLocaleString()}</td>
-                            <td>${player.projected_points.toFixed(1)}</td>
-                            <td><span class="injury-status ${injuryClass}">${player.injury_status || 'Healthy'}</span></td>
-                            <td>${value}x</td>
-                        </tr>
-                    `;
-                });
+        html += `
+            <tr class="player-row ${rowClass}" data-player-name="${player.name.toLowerCase()}">
+                <td>
+                    <div class="lock-controls">
+                        <label title="Lock">
+                            <input type="checkbox" class="lock-checkbox" 
+                                   onchange="toggleLock('${player.name}')" 
+                                   ${isLocked ? 'checked' : ''}>
+                            🔒
+                        </label>
+                        <label title="Exclude">
+                            <input type="checkbox" class="lock-checkbox" 
+                                   onchange="toggleExclude('${player.name}')" 
+                                   ${isExcluded ? 'checked' : ''}>
+                            ❌
+                        </label>
+                    </div>
+                </td>
+                <td><strong>${player.name}</strong></td>
+                <td>${player.team}</td>
+                <td>$${player.salary.toLocaleString()}</td>
+                <td>${player.projected_points.toFixed(1)}</td>
+                <td><span class="injury-status ${injuryClass}">${player.injury_status || 'Healthy'}</span></td>
+                <td>${value}x</td>
+            </tr>
+        `;
+    });
 
-                tbody.innerHTML = html;
-                updatePagination(position, players.length, pageSize);
+    tbody.innerHTML = html;
+    updatePagination(position, players.length, pageSize);
+}
+
+function getInjuryClass(status) {
+    if (!status || status === 'Healthy') return 'injury-healthy';
+    if (status.includes('Q')) return 'injury-q';
+    if (status.includes('O')) return 'injury-o';
+    return 'injury-healthy';
+}
+
+function updatePagination(position, totalPlayers, pageSize) {
+    const totalPages = Math.ceil(totalPlayers / pageSize);
+    const currentPageNum = currentPage[position] || 0;
+    const pagination = document.getElementById(`pagination-${position}`);
+
+    if (totalPages <= 1) {
+        pagination.innerHTML = '';
+        return;
+    }
+
+    let html = '';
+    for (let i = 0; i < totalPages; i++) {
+        const activeClass = i === currentPageNum ? 'active' : '';
+        html += `<button class="${activeClass}" onclick="changePage('${position}', ${i})">${i + 1}</button>`;
+    }
+
+    pagination.innerHTML = html;
+}
+
+function changePage(position, page) {
+    currentPage[position] = page;
+    updatePlayerTable(position);
+}
+
+function togglePosition(position) {
+    const table = document.getElementById(`table-${position}`);
+    const arrow = document.getElementById(`arrow-${position}`);
+
+    if (table.classList.contains('active')) {
+        table.classList.remove('active');
+        arrow.textContent = '▼';
+    } else {
+        table.classList.add('active');
+        arrow.textContent = '▲';
+    }
+}
+
+function toggleLock(playerName) {
+    if (lockedPlayers.has(playerName)) {
+        lockedPlayers.delete(playerName);
+    } else {
+        lockedPlayers.add(playerName);
+        excludedPlayers.delete(playerName);
+    }
+    updatePlayerDisplay();
+    updateLockStats();
+}
+
+function toggleExclude(playerName) {
+    if (excludedPlayers.has(playerName)) {
+        excludedPlayers.delete(playerName);
+    } else {
+        excludedPlayers.add(playerName);
+        lockedPlayers.delete(playerName);
+    }
+    updatePlayerDisplay();
+    updateLockStats();
+}
+
+function updatePlayerDisplay() {
+    Object.keys(playerData).forEach(pos => {
+        if (playerData[pos] && playerData[pos].length > 0) {
+            updatePlayerTable(pos);
+        }
+    });
+}
+
+function updateLockStats() {
+    document.getElementById('lockStats').textContent = 
+        `Locked: ${lockedPlayers.size} | Excluded: ${excludedPlayers.size}`;
+}
+
+function searchPlayers() {
+    const searchTerm = document.getElementById('playerSearch').value.toLowerCase();
+    const rows = document.querySelectorAll('.player-row');
+
+    rows.forEach(row => {
+        const playerName = row.getAttribute('data-player-name');
+        if (playerName.includes(searchTerm)) {
+            row.style.display = '';
+            if (searchTerm && playerName.includes(searchTerm)) {
+                row.style.backgroundColor = '#fff3cd';
             }
-
-            function getInjuryClass(status) {
-                if (!status || status === 'Healthy') return 'injury-healthy';
-                if (status.includes('Q')) return 'injury-q';
-                if (status.includes('O')) return 'injury-o';
-                return 'injury-healthy';
-            }
-
-            function updatePagination(position, totalPlayers, pageSize) {
-                const totalPages = Math.ceil(totalPlayers / pageSize);
-                const currentPageNum = currentPage[position] || 0;
-                const pagination = document.getElementById(`pagination-${position}`);
-
-                if (totalPages <= 1) {
-                    pagination.innerHTML = '';
-                    return;
-                }
-
-                let html = '';
-                for (let i = 0; i < totalPages; i++) {
-                    const activeClass = i === currentPageNum ? 'active' : '';
-                    html += `<button class="${activeClass}" onclick="changePage('${position}', ${i})">${i + 1}</button>`;
-                }
-
-                pagination.innerHTML = html;
-            }
-
-            function changePage(position, page) {
-                currentPage[position] = page;
-                updatePlayerTable(position);
-            }
-
-            function togglePosition(position) {
-                const table = document.getElementById(`table-${position}`);
-                const arrow = document.getElementById(`arrow-${position}`);
-
-                if (table.classList.contains('active')) {
-                    table.classList.remove('active');
-                    arrow.textContent = '▼';
-                } else {
-                    table.classList.add('active');
-                    arrow.textContent = '▲';
-                }
-            }
-
-            function toggleLock(playerId) {
-                if (lockedPlayers.has(playerId)) {
-                    lockedPlayers.delete(playerId);
-                } else {
-                    lockedPlayers.add(playerId);
-                    excludedPlayers.delete(playerId);
-                }
-                updatePlayerDisplay();
-                updateLockStats();
-            }
-
-            function toggleExclude(playerId) {
-                if (excludedPlayers.has(playerId)) {
-                    excludedPlayers.delete(playerId);
-                } else {
-                    excludedPlayers.add(playerId);
-                    lockedPlayers.delete(playerId);
-                }
-                updatePlayerDisplay();
-                updateLockStats();
-            }
-
-            function updatePlayerDisplay() {
-                Object.keys(playerData).forEach(pos => {
-                    if (playerData[pos] && playerData[pos].length > 0) {
-                        updatePlayerTable(pos);
-                    }
-                });
-            }
-
-            function updateLockStats() {
-                document.getElementById('lockStats').textContent = 
-                    `Locked: ${lockedPlayers.size} | Excluded: ${excludedPlayers.size}`;
-            }
-
-            function searchPlayers() {
-                const searchTerm = document.getElementById('playerSearch').value.toLowerCase();
-                const rows = document.querySelectorAll('.player-row');
-
-                rows.forEach(row => {
-                    const playerName = row.getAttribute('data-player-name');
-                    if (playerName.includes(searchTerm)) {
-                        row.style.display = '';
-                        if (searchTerm && playerName.includes(searchTerm)) {
-                            row.style.backgroundColor = '#fff3cd';
-                        }
-                    } else {
-                        row.style.display = searchTerm ? 'none' : '';
-                    }
-                });
-            }
+        } else {
+            row.style.display = searchTerm ? 'none' : '';
+        }
+    });
+}
 
             async function generateLineups() {
                 try {
@@ -978,6 +978,11 @@ async def optimize_lineups(request: OptimizationRequest):
 
         all_players = current_player_data['players']
 
+        # DEBUG: Show actual player IDs vs requested locked IDs
+        actual_ids = [str(player.get('id', '')) for player in all_players[:10]]
+        logger.info(f"🔍 DEBUG: First 10 actual player IDs: {actual_ids}")
+        logger.info(f"🔍 DEBUG: Requested locked IDs: {request.locked_players}")
+
         # Apply locks/exclusions with debug logging
         filtered_players = []
         locked_count = 0
@@ -985,13 +990,17 @@ async def optimize_lineups(request: OptimizationRequest):
 
         for player in all_players:
             player_id = str(player.get('id', ''))
+            player_name = str(player.get('name', ''))
 
-            # Mark locked players with type safety
-            if player_id in request.locked_players:
+            # FIXED: Use player name if ID is empty (which it always is)
+            lookup_key = player_name if not player_id else player_id
+
+            # Mark locked players - check against player names from UI
+            if lookup_key in request.locked_players or player_name in request.locked_players:
                 if isinstance(player, dict):
                     player['locked'] = True
                     locked_count += 1
-                    logger.info(f"🔒 MARKING LOCKED: {player.get('name')} (ID: {player_id})")
+                    logger.info(f"🔒 MARKING LOCKED: {player.get('name')} (using name: {player_name})")
                 else:
                     logger.error(f"Player is not a dict: {type(player)} - {player}")
             else:
@@ -999,45 +1008,68 @@ async def optimize_lineups(request: OptimizationRequest):
                     player['locked'] = False
 
             # Skip excluded players
-            if player_id in request.excluded_players:
+            if lookup_key in request.excluded_players or player_name in request.excluded_players:
                 excluded_count += 1
-                logger.info(f"❌ EXCLUDING: {player.get('name')} (ID: {player_id})")
+                logger.info(f"❌ EXCLUDING: {player.get('name')} (using name: {player_name})")
                 continue
 
             filtered_players.append(player)
 
-        logger.info(
-            f"✅ Filtered players: {len(filtered_players)} total, {locked_count} locked, {excluded_count} excluded")
+        logger.info(f"✅ Filtered players: {len(filtered_players)} total, {locked_count} locked, {excluded_count} excluded")
 
         # Validate we have enough locked players
         if len(request.locked_players) > 8:
             raise HTTPException(status_code=400,
                                 detail=f"Too many locked players ({len(request.locked_players)}). Maximum is 8.")
 
-            # Optimize lineups - use standalone function
-            lineups = optimize_dfs_lineups(
-                players=filtered_players,
-                contest_type=request.contest_type,
-                num_lineups=request.num_lineups
-            )
+            # Optimize lineups - convert to Player objects first
+            try:
+                from optimizer import EnhancedDFSOptimizer
+                optimizer = EnhancedDFSOptimizer()
 
-        if not lineups:
-            raise HTTPException(status_code=400, detail="Optimization failed to generate valid lineups")
+                # Convert dict data to Player objects using the prepare_players method
+                player_objects = await optimizer.prepare_players(filtered_players)
 
-        logger.info(f"✅ Generated {len(lineups)} lineups with player constraints")
+                lineups = await optimizer.generate_multiple_lineups(
+                    players=player_objects,
+                    num_lineups=request.num_lineups,
+                    contest_type=request.contest_type
+                )
 
-        # Save to CSV
-        week_num = current_player_data.get('week', 1)
-        csv_path = save_lineups_to_csv(lineups, request.contest_type, week_num)
+                if not lineups:
+                    raise Exception("No lineups generated")
 
-        return {
-            'lineups': lineups,
-            'contest_type': request.contest_type,
-            'num_lineups': len(lineups),
-            'csv_path': csv_path,
-            'locked_count': locked_count,
-            'excluded_count': excluded_count
-        }
+                logger.info(f"✅ Generated {len(lineups)} lineups with player constraints")
+
+                # Convert LineupResult objects to dictionaries for JSON serialization
+                lineup_dicts = []
+                for lineup in lineups:
+                    lineup_dict = {
+                        'players': [f"{p.name} (${p.salary:,}) - {p.position}-{p.team}" for p in lineup.players],
+                        'total_salary': lineup.total_salary,
+                        'projected_points': round(lineup.projected_points, 1),
+                        'ownership_total': round(lineup.ownership_total, 1),
+                        'correlation_score': round(lineup.correlation_score, 2),
+                        'contest_type': lineup.contest_type
+                    }
+                    lineup_dicts.append(lineup_dict)
+
+            except Exception as opt_error:
+                logger.error(f"Optimization failed: {opt_error}")
+                raise HTTPException(status_code=400, detail="Optimization failed to generate valid lineups")
+
+            # Save to CSV
+            week_num = current_player_data.get('week', 1)
+            csv_path = save_lineups_to_csv(lineups, request.contest_type, week_num)
+
+            return {
+                'lineups': lineup_dicts,  # Use serializable dicts
+                'contest_type': request.contest_type,
+                'num_lineups': len(lineups),
+                'csv_path': str(csv_path) if csv_path else None,
+                'locked_count': locked_count,
+                'excluded_count': excluded_count
+            }
 
     except HTTPException:
         raise
@@ -1045,8 +1077,6 @@ async def optimize_lineups(request: OptimizationRequest):
         logger.error(f"Error in optimization: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Optimization error: {str(e)}")
-
-
 @app.post("/analyze-live-slate")
 async def analyze_live_slate(request: Request):
     """Analyze locked players vs late slate strategy"""
