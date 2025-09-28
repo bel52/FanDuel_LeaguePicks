@@ -1,37 +1,56 @@
+# optimizer.py
 """
 Enhanced DFS lineup optimization with Monte Carlo variance analysis
-Updated to use true ceiling/floor modeling for tournament wins
+Fixed async issues for tournament wins
 """
-import pulp
-import pandas as pd
-import numpy as np
-from typing import List, Dict, Any, Optional
-from dataclasses import dataclass
-from loguru import logger
-import random
-import json
 import asyncio
+import json
+import random
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from config import FANDUEL_POSITIONS, FANDUEL_SALARY_CAP, OPTIMIZATION_CONFIG, DATA_DIR
+import numpy as np
+import pandas as pd
+import pulp
+from loguru import logger
+
+from config import (
+    DATA_DIR,
+    FANDUEL_POSITIONS,
+    FANDUEL_SALARY_CAP,
+    OPTIMIZATION_CONFIG,
+)
 
 # Import the Monte Carlo engine
-from monte_carlo_engine import (
-    MonteCarloEngine,
-    PlayerSimulation,
-    convert_player_data_to_simulation,
-    enhance_lineup_with_monte_carlo
-)
+try:
+    from monte_carlo_engine import (
+        MonteCarloEngine,
+        PlayerSimulation,
+        convert_player_data_to_simulation,
+        enhance_lineup_with_monte_carlo,
+    )
+
+    MONTE_CARLO_AVAILABLE = True
+except ImportError:
+    MONTE_CARLO_AVAILABLE = False
+    logger.warning("Monte Carlo engine not available")
 
 # AI Integration import with better error handling
 try:
     from ai_analyzer import DualAIDFSAnalyzer
+
     AI_AVAILABLE = True
     logger.info("AI analyzer imported successfully")
 except ImportError as e:
     logger.warning(f"AI analyzer not available: {e}")
     AI_AVAILABLE = False
 
+
+# -----------------------------
+# Data structures
+# -----------------------------
 @dataclass
 class Player:
     """Enhanced Player data structure with Monte Carlo variance"""
@@ -59,6 +78,7 @@ class Player:
         variance_multipliers = {'QB': 0.28, 'RB': 0.35, 'WR': 0.45, 'TE': 0.38, 'D': 0.42}
         self.variance = self.projection * variance_multipliers.get(self.position, 0.35)
 
+
 @dataclass
 class LineupResult:
     """Enhanced lineup result with Monte Carlo analysis"""
@@ -82,18 +102,29 @@ class LineupResult:
     bust_probability: float = 0.0
     monte_carlo_insights: Dict = None
 
+
+# -----------------------------
+# Optimizer
+# -----------------------------
 class EnhancedDFSOptimizer:
     """Enhanced DFS optimization with Monte Carlo variance modeling"""
 
     def __init__(self, use_monte_carlo: bool = True, mc_simulations: int = 5000):
-        self.use_monte_carlo = use_monte_carlo
+        self.use_monte_carlo = use_monte_carlo and MONTE_CARLO_AVAILABLE
         self.mc_simulations = mc_simulations
-        self.monte_carlo_engine = MonteCarloEngine(num_simulations=mc_simulations) if use_monte_carlo else None
+        self.monte_carlo_engine = MonteCarloEngine(num_simulations=mc_simulations) if self.use_monte_carlo else None
 
-    async def prepare_players(self, player_data: List[Dict], weather_data: Dict = None,
-                            vegas_data: Dict = None) -> List[Player]:
+        if use_monte_carlo and not MONTE_CARLO_AVAILABLE:
+            logger.warning("Monte Carlo requested but not available - falling back to basic optimization")
+
+    async def prepare_players(
+        self,
+        player_data: List[Dict],
+        weather_data: Dict = None,
+        vegas_data: Dict = None,
+    ) -> List[Player]:
         """Convert player data with optional Monte Carlo enhancement"""
-        players = []
+        players: List[Player] = []
 
         for data in player_data:
             try:
@@ -118,7 +149,7 @@ class EnhancedDFSOptimizer:
                     position=position,
                     team=team,
                     salary=salary,
-                    projection=projection
+                    projection=projection,
                 )
 
                 # Apply weather adjustments
@@ -140,60 +171,61 @@ class EnhancedDFSOptimizer:
 
         return players
 
-    async def _enhance_players_with_monte_carlo(self, players: List[Player],
-                                             weather_data: Dict = None,
-                                             vegas_data: Dict = None) -> List[Player]:
+    async def _enhance_players_with_monte_carlo(
+        self,
+        players: List[Player],
+        weather_data: Dict = None,
+        vegas_data: Dict = None,
+    ) -> List[Player]:
         """Enhance players with Monte Carlo variance analysis"""
-
-        # Convert to simulation format
-        sim_data = []
+        sim_data: List[Dict[str, Any]] = []
         for player in players:
             sim_data.append({
                 'name': player.name,
                 'position': player.position,
                 'team': player.team,
                 'salary': player.salary,
-                'projected_points': player.projection
+                'projected_points': player.projection,
             })
 
         sim_players = convert_player_data_to_simulation(sim_data, weather_data, vegas_data)
 
-        # Run Monte Carlo on each player
-        enhanced_players = []
+        enhanced_players: List[Player] = []
 
-        # Process in batches for efficiency
+        # Batch for throughput
         batch_size = 20
         for i in range(0, len(players), batch_size):
             batch_players = players[i:i + batch_size]
             batch_sims = sim_players[i:i + batch_size]
 
-            # Run simulations for this batch
             sim_tasks = []
             for sim_player in batch_sims:
+                # keep per-player sims moderate, full lineup sims later
                 task = self.monte_carlo_engine.simulate_player_performance(sim_player, num_sims=1000)
                 sim_tasks.append(task)
 
             batch_results = await asyncio.gather(*sim_tasks)
 
-            # Apply results to players
-            for j, (player, sim_result) in enumerate(zip(batch_players, batch_results)):
-                player.floor_10 = sim_result['floor_10']
-                player.ceiling_90 = sim_result['ceiling_90']
-                player.ceiling_95 = sim_result['ceiling_95']
-                player.boom_rate = sim_result['boom_rate']
-                player.bust_rate = sim_result['bust_rate']
-                player.variance = sim_result['std']
+            for player, sim_result in zip(batch_players, batch_results):
+                player.floor_10 = sim_result.get('floor_10', 0.0)
+                player.ceiling_90 = sim_result.get('ceiling_90', player.projection)
+                player.ceiling_95 = sim_result.get('ceiling_95', player.ceiling_90)
+                player.boom_rate = sim_result.get('boom_rate', 0.0)
+                player.bust_rate = sim_result.get('bust_rate', 0.0)
+                player.variance = sim_result.get('std', player.variance)
                 player.monte_carlo_analyzed = True
-
                 enhanced_players.append(player)
 
         logger.info(f"Enhanced {len(enhanced_players)} players with Monte Carlo analysis")
         return enhanced_players
 
-    def optimize_lineup(self, players: List[Player], contest_type: str = 'gpp',
-                       single_game_teams: List[str] = None) -> Optional[LineupResult]:
+    async def optimize_lineup(
+        self,
+        players: List[Player],
+        contest_type: str = 'gpp',
+        single_game_teams: List[str] = None,
+    ) -> Optional[LineupResult]:
         """Optimize with Monte Carlo-enhanced objective function"""
-
         try:
             # Filter for single game
             if single_game_teams:
@@ -209,8 +241,8 @@ class EnhancedDFSOptimizer:
             # Create optimization problem
             prob = pulp.LpProblem("DFS_Optimization", pulp.LpMaximize)
 
-            player_vars = {}
-            for i, player in enumerate(players):
+            player_vars: Dict[int, pulp.LpVariable] = {}
+            for i, _ in enumerate(players):
                 player_vars[i] = pulp.LpVariable(f"player_{i}", cat='Binary')
 
             # ENHANCED objective function using Monte Carlo data
@@ -251,14 +283,13 @@ class EnhancedDFSOptimizer:
 
     def _calculate_monte_carlo_value(self, player: Player, contest_type: str) -> float:
         """Calculate player value using Monte Carlo variance data"""
-
         base_value = player.projection
 
         if contest_type == 'gpp':
             # GPP: Heavily weight ceiling potential and boom rate
             ceiling_bonus = (player.ceiling_90 - player.projection) * 2.0
             boom_bonus = player.boom_rate * 10.0  # Strong boom bonus
-            bust_penalty = player.bust_rate * 5.0   # Light bust penalty
+            bust_penalty = player.bust_rate * 5.0  # Light bust penalty
 
             # Ownership leverage
             if 20 <= player.ownership <= 35:
@@ -302,23 +333,22 @@ class EnhancedDFSOptimizer:
 
     async def _enhance_lineup_result_with_monte_carlo(self, lineup_result: LineupResult) -> LineupResult:
         """Enhance lineup result with full Monte Carlo analysis"""
-
         try:
             # Convert lineup to format for Monte Carlo
-            lineup_data = []
+            lineup_data: List[Dict[str, Any]] = []
             for player in lineup_result.players:
                 lineup_data.append({
                     'name': player.name,
                     'position': player.position,
                     'team': player.team,
                     'salary': player.salary,
-                    'projected_points': player.projection
+                    'projected_points': player.projection,
                 })
 
             # Run full lineup Monte Carlo simulation
             mc_results = await enhance_lineup_with_monte_carlo(
                 lineup_data,
-                num_simulations=self.mc_simulations
+                num_simulations=self.mc_simulations,
             )
 
             lineup_sim = mc_results['simulation_results']['lineup_simulation']
@@ -335,7 +365,7 @@ class EnhancedDFSOptimizer:
             lineup_result.monte_carlo_insights = {
                 'recommendations': insights['optimization_recommendations'],
                 'player_analysis': insights['player_analysis'],
-                'correlation_strength': insights['correlation_strength']
+                'correlation_strength': insights['correlation_strength'],
             }
 
             # Calculate boom/bust probabilities for lineup
@@ -343,8 +373,10 @@ class EnhancedDFSOptimizer:
             lineup_result.boom_probability = self._calculate_boom_probability(lineup_sim, mean_score)
             lineup_result.bust_probability = self._calculate_bust_probability(lineup_sim, mean_score)
 
-            logger.info(f"Enhanced lineup with Monte Carlo: {lineup_result.risk_level} risk, "
-                       f"{lineup_result.boom_probability:.1%} boom rate")
+            logger.info(
+                f"Enhanced lineup with Monte Carlo: {lineup_result.risk_level} risk, "
+                f"{lineup_result.boom_probability:.1%} boom rate"
+            )
 
         except Exception as e:
             logger.error(f"Error enhancing lineup with Monte Carlo: {e}")
@@ -367,16 +399,19 @@ class EnhancedDFSOptimizer:
         floor_25 = lineup_sim.get('floor_25', mean_score)
 
         if floor_25 < bust_threshold:
-            return 0.3   # 30% bust rate indicates risk
+            return 0.3  # 30% bust rate indicates risk
         else:
             return 0.15  # 15% for safer lineups
 
-    # Keep all existing methods (_add_fanduel_constraints, _predict_friends_league_ownership, etc.)
-    # These remain the same from your current optimizer.py
-
-    def _add_fanduel_constraints(self, prob, players: List[Player], player_vars: Dict,
-                                contest_type: str, single_game_teams: List[str]):
-        """EXACT FanDuel constraints (unchanged from existing code)"""
+    def _add_fanduel_constraints(
+        self,
+        prob,
+        players: List[Player],
+        player_vars: Dict,
+        contest_type: str,
+        single_game_teams: List[str],
+    ):
+        """EXACT FanDuel constraints"""
         # Salary cap
         prob += pulp.lpSum([players[i].salary * player_vars[i] for i in range(len(players))]) <= FANDUEL_SALARY_CAP
 
@@ -427,11 +462,9 @@ class EnhancedDFSOptimizer:
         prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == 9
 
         # Team diversity
-        team_counts = {}
+        team_counts: Dict[str, List[int]] = {}
         for i, player in enumerate(players):
-            if player.team not in team_counts:
-                team_counts[player.team] = []
-            team_counts[player.team].append(i)
+            team_counts.setdefault(player.team, []).append(i)
 
         max_per_team = 3 if contest_type == 'cash' else 4
         for team, player_indices in team_counts.items():
@@ -441,7 +474,7 @@ class EnhancedDFSOptimizer:
             self._add_stacking_incentive(prob, players, player_vars, qb_indices, wr_indices)
 
     def _add_friends_league_constraints(self, prob, players: List[Player], player_vars: Dict, contest_type: str):
-        """Friends league constraints (unchanged from existing code)"""
+        """Friends league constraints"""
         if contest_type == 'gpp':
             expensive_players = [i for i, p in enumerate(players) if p.salary >= 9000]
             if expensive_players:
@@ -452,23 +485,23 @@ class EnhancedDFSOptimizer:
             if high_value_players:
                 prob += pulp.lpSum([player_vars[i] for i in high_value_players]) >= 3
 
-    def _add_stacking_incentive(self, prob, players: List[Player], player_vars: Dict,
-                               qb_indices: List[int], wr_indices: List[int]):
-        """QB+WR stacking (unchanged from existing code)"""
-        team_qbs = {}
-        team_wrs = {}
+    def _add_stacking_incentive(
+        self,
+        prob,
+        players: List[Player],
+        player_vars: Dict,
+        qb_indices: List[int],
+        wr_indices: List[int],
+    ):
+        """QB+WR stacking"""
+        team_qbs: Dict[str, List[int]] = {}
+        team_wrs: Dict[str, List[int]] = {}
 
         for i in qb_indices:
-            team = players[i].team
-            if team not in team_qbs:
-                team_qbs[team] = []
-            team_qbs[team].append(i)
+            team_qbs.setdefault(players[i].team, []).append(i)
 
         for i in wr_indices:
-            team = players[i].team
-            if team not in team_wrs:
-                team_wrs[team] = []
-            team_wrs[team].append(i)
+            team_wrs.setdefault(players[i].team, []).append(i)
 
         for team in team_qbs:
             if team in team_wrs:
@@ -479,7 +512,7 @@ class EnhancedDFSOptimizer:
                     prob += pulp.lpSum(wr_vars) >= 0.5 * pulp.lpSum(qb_vars)
 
     def _predict_friends_league_ownership(self, player: Player, contest_type: str) -> float:
-        """Ultra-conservative ownership for 12-person league (unchanged)"""
+        """Ultra-conservative ownership for 12-person league"""
         ownership = 12.0
 
         if player.salary >= 9500:
@@ -542,7 +575,7 @@ class EnhancedDFSOptimizer:
 
     def _extract_result(self, prob, players: List[Player], player_vars: Dict, contest_type: str) -> LineupResult:
         """Extract lineup results with FanDuel ordering"""
-        selected_players = []
+        selected_players: List[Player] = []
         total_salary = 0
         total_ownership = 0
 
@@ -567,19 +600,17 @@ class EnhancedDFSOptimizer:
             total_value=sum(p.value for p in ordered_players),
             ownership_total=total_ownership,
             correlation_score=self._calculate_correlation(ordered_players),
-            weather_impact=np.mean([p.weather_factor for p in ordered_players]),
-            contest_type=contest_type
+            weather_impact=float(np.mean([p.weather_factor for p in ordered_players])) if ordered_players else 1.0,
+            contest_type=contest_type,
         )
 
     def _format_lineup_for_fanduel(self, players: List[Player]) -> List[Player]:
         """Order players in FanDuel format"""
-        ordered = []
+        ordered: List[Player] = []
 
-        by_position = {}
+        by_position: Dict[str, List[Player]] = {}
         for player in players:
-            if player.position not in by_position:
-                by_position[player.position] = []
-            by_position[player.position].append(player)
+            by_position.setdefault(player.position, []).append(player)
 
         for pos in by_position:
             by_position[pos].sort(key=lambda p: p.salary, reverse=True)
@@ -596,7 +627,7 @@ class EnhancedDFSOptimizer:
         if 'TE' in by_position:
             ordered.append(by_position['TE'][0])
 
-        flex_candidates = []
+        flex_candidates: List[Player] = []
         if 'RB' in by_position and len(by_position['RB']) > 2:
             flex_candidates.extend(by_position['RB'][2:])
         if 'WR' in by_position and len(by_position['WR']) > 3:
@@ -625,7 +656,7 @@ class EnhancedDFSOptimizer:
             if same_team_wrs > 0:
                 correlation += 0.3 * same_team_wrs
 
-        team_counts = {}
+        team_counts: Dict[str, int] = {}
         for player in players:
             team_counts[player.team] = team_counts.get(player.team, 0) + 1
 
@@ -637,10 +668,15 @@ class EnhancedDFSOptimizer:
 
         return min(1.0, correlation)
 
-    async def generate_multiple_lineups(self, players: List[Player], num_lineups: int = 10,
-                                      contest_type: str = 'gpp', single_game_teams: List[str] = None) -> List[LineupResult]:
+    async def generate_multiple_lineups(
+        self,
+        players: List[Player],
+        num_lineups: int = 10,
+        contest_type: str = 'gpp',
+        single_game_teams: List[str] = None,
+    ) -> List[LineupResult]:
         """Generate diverse lineups with Monte Carlo enhancement"""
-        lineups = []
+        lineups: List[LineupResult] = []
         used_combinations = set()
         max_attempts = num_lineups * 3
 
@@ -649,13 +685,20 @@ class EnhancedDFSOptimizer:
                 break
 
             # Moderate randomization
-            randomized_players = []
+            randomized_players: List[Player] = []
             for player in players:
                 new_player = Player(
-                    id=player.id, name=player.name, position=player.position,
-                    team=player.team, salary=player.salary, projection=player.projection,
-                    ownership=player.ownership, weather_factor=player.weather_factor,
-                    injury_risk=player.injury_risk, value=player.value, variance=player.variance
+                    id=player.id,
+                    name=player.name,
+                    position=player.position,
+                    team=player.team,
+                    salary=player.salary,
+                    projection=player.projection,
+                    ownership=player.ownership,
+                    weather_factor=player.weather_factor,
+                    injury_risk=player.injury_risk,
+                    value=player.value,
+                    variance=player.variance,
                 )
 
                 # Copy Monte Carlo data
@@ -676,14 +719,14 @@ class EnhancedDFSOptimizer:
                     random_factor = random.uniform(0.75, 1.25)
 
                 new_player.projection *= random_factor
-                new_player.value = new_player.projection / (new_player.salary / 1000)
+                new_player.value = new_player.projection / (new_player.salary / 1000) if new_player.salary else 0.0
                 randomized_players.append(new_player)
 
-            lineup = self.optimize_lineup(randomized_players, contest_type, single_game_teams)
+            lineup = await self.optimize_lineup(randomized_players, contest_type, single_game_teams)
             if lineup:
                 # Diversity check
                 if len(lineups) > 0:
-                    player_usage = {}
+                    player_usage: Dict[str, int] = {}
                     for existing_lineup in lineups:
                         for player in existing_lineup.players:
                             player_usage[player.id] = player_usage.get(player.id, 0) + 1
@@ -719,73 +762,205 @@ class EnhancedDFSOptimizer:
         return lineups
 
 
-# Enhanced main optimization function with Monte Carlo
-async def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None, vegas_multipliers: Dict = None,
-                              num_lineups: int = 10, contest_type: str = 'gpp',
-                              single_game_teams: List[str] = None, use_monte_carlo: bool = True) -> List[LineupResult]:
-    """AI-Enhanced optimization with Monte Carlo variance modeling"""
+# -----------------------------
+# Public API (sync)
+# -----------------------------
+def _run_coro_sync(coro):
+    """
+    Run coroutine from both sync and async contexts without raising "loop is running".
+    Spawns a dedicated thread with its own loop when already inside an event loop.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        is_running = loop.is_running()
+    except RuntimeError:
+        loop = None
+        is_running = False
 
-    logger.info(f"Starting Monte Carlo enhanced {contest_type} optimization...")
+    if not is_running:
+        return asyncio.run(coro)
 
-    # Step 1: Get AI strategic analysis (if available)
+    # Running inside an event loop (e.g., FastAPI) -> use a thread
+    import threading
+
+    result_box: Dict[str, Any] = {}
+    exc_box: Dict[str, BaseException] = {}
+
+    def runner():
+        try:
+            result_box["result"] = asyncio.run(coro)
+        except BaseException as ex:
+            exc_box["ex"] = ex
+
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+    t.join()
+
+    if exc_box:
+        raise exc_box["ex"]
+
+    return result_box.get("result")
+
+
+# Enhanced main optimization function with Monte Carlo - FIXED TO NOT USE ASYNC
+def optimize_dfs_lineups(
+    player_data: List[Dict],
+    weather_data: Dict = None,
+    vegas_multipliers: Dict = None,
+    num_lineups: int = 10,
+    contest_type: str = 'gpp',
+    single_game_teams: List[str] = None,
+    use_monte_carlo: bool = True,
+    mc_simulations: int = 5000,
+) -> List[LineupResult]:
+    """
+    AI-Enhanced optimization with Monte Carlo variance modeling (synchronous wrapper).
+    Safe to call from CLI, scripts, and FastAPI handlers.
+    """
+    logger.info(f"Starting {contest_type.upper()} optimization | "
+                f"Lineups: {num_lineups} | Monte Carlo: {'ON' if use_monte_carlo and MONTE_CARLO_AVAILABLE else 'OFF'}")
+
+    # --- Optional: AI pre-processing for ownership/strategy ---
     if AI_AVAILABLE:
         try:
             analyzer = DualAIDFSAnalyzer()
             ai_analysis = analyzer.analyze_slate_for_optimization(
-                player_data, weather_data or {}, {}, contest_type
+                player_data, weather_data or {}, vegas_multipliers or {}, contest_type
             )
 
-            if ai_analysis.get('ai_enabled', False):
-                logger.info(f"AI Strategy: {ai_analysis.get('ai_strategy', 'No strategy')[:100]}...")
+            if ai_analysis and isinstance(ai_analysis, dict):
+                # Apply ownership adjustments if provided
+                ownership_adj = ai_analysis.get('ownership_adjustments') or {}
+                if ownership_adj:
+                    adjusted = 0
+                    for rec in player_data:
+                        name = rec.get('player_name', rec.get('name', ''))
+                        if name in ownership_adj:
+                            # If dataset includes explicit ownership, scale it, otherwise stash hint
+                            if 'ownership' in rec and isinstance(rec['ownership'], (int, float)):
+                                rec['ownership'] = max(0.0, float(rec['ownership']) * float(ownership_adj[name]))
+                            else:
+                                rec['ownership_hint'] = float(ownership_adj[name])
+                            adjusted += 1
+                    logger.info(f"AI adjusted ownership hints for {adjusted} players")
 
-                # Apply AI ownership adjustments
-                ownership_adjustments = ai_analysis.get('ownership_adjustments', {})
-                if ownership_adjustments:
-                    adjusted_count = 0
-                    for player in player_data:
-                        player_name = player.get('name', '')
-                        if player_name in ownership_adjustments:
-                            adjustment_factor = ownership_adjustments[player_name]
-                            if 'ownership' not in player:
-                                player['ownership'] = 15.0
-                            player['ownership'] *= adjustment_factor
-                            adjusted_count += 1
-
-                    logger.info(f"AI adjusted ownership for {adjusted_count} players")
-
-            cost_summary = analyzer.get_cost_summary()
-            logger.info(f"AI Cost: ${cost_summary['weekly_spend']:.3f} of ${cost_summary['weekly_budget']:.2f} budget")
-
+                # Log cost tracking if available
+                cost_summary = getattr(analyzer, "get_cost_summary", lambda: {})()
+                if cost_summary:
+                    logger.info(
+                        f"AI cost: used ${cost_summary.get('weekly_spend', 0):.2f} / "
+                        f"${cost_summary.get('weekly_budget', 0):.2f}"
+                    )
         except Exception as e:
-            logger.warning(f"AI analysis failed, continuing without: {e}")
-    else:
-        logger.info("AI analysis not available - using Monte Carlo optimization")
+            logger.warning(f"AI analysis failed, continuing without it: {e}")
 
-    # Step 2: Run Monte Carlo enhanced optimization
-    mc_simulations = 5000 if use_monte_carlo else 0
+    # --- Build optimizer ---
     optimizer = EnhancedDFSOptimizer(use_monte_carlo=use_monte_carlo, mc_simulations=mc_simulations)
-    optimizer.vegas_multipliers = vegas_multipliers or {}
 
-    players = await optimizer.prepare_players(player_data, weather_data, vegas_multipliers)
+    # Stash vegas multipliers on the instance for potential downstream use
+    setattr(optimizer, "vegas_multipliers", vegas_multipliers or {})
+
+    # --- Prepare players (async -> sync) ---
+    players: List[Player] = _run_coro_sync(
+        optimizer.prepare_players(player_data, weather_data or {}, vegas_multipliers or {})
+    )
 
     if not players:
-        logger.error("No valid players for optimization")
+        logger.error("No valid players after preparation")
         return []
 
-    if use_monte_carlo:
-        monte_carlo_count = sum(1 for p in players if p.monte_carlo_analyzed)
-        logger.info(f"Monte Carlo: {monte_carlo_count}/{len(players)} players analyzed with variance modeling")
+    if use_monte_carlo and MONTE_CARLO_AVAILABLE:
+        mc_count = sum(1 for p in players if p.monte_carlo_analyzed)
+        logger.info(f"Monte Carlo enriched players: {mc_count}/{len(players)}")
 
-    logger.info(f"Optimization: {num_lineups} {contest_type} lineups with {len(players)} active players")
+    logger.info(f"Optimization dataset size: {len(players)} active players")
 
-    # Generate lineups
-    lineups = await optimizer.generate_multiple_lineups(players, num_lineups, contest_type, single_game_teams)
+    # --- Generate lineups (async -> sync) ---
+    lineups: List[LineupResult] = _run_coro_sync(
+        optimizer.generate_multiple_lineups(
+            players=players,
+            num_lineups=num_lineups,
+            contest_type=contest_type,
+            single_game_teams=single_game_teams,
+        )
+    )
 
-    # Log Monte Carlo insights for generated lineups
-    if use_monte_carlo and lineups:
-        for i, lineup in enumerate(lineups[:3]):  # Show top 3
-            if lineup.monte_carlo_insights:
-                logger.info(f"Lineup {i+1} Monte Carlo: {lineup.risk_level} risk, "
-                           f"Ceiling: {lineup.ceiling_90:.1f}, Floor: {lineup.floor_10:.1f}")
+    if not lineups:
+        logger.error("No lineups generated")
+        return []
+
+    # --- Optional: persist top lineups JSON for UI/export ---
+    try:
+        export_dir = Path(DATA_DIR) / "lineups"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = export_dir / f"lineups_{contest_type}_{ts}.json"
+
+        payload = []
+        for lu in lineups:
+            payload.append({
+                "contest_type": lu.contest_type,
+                "total_salary": lu.total_salary,
+                "projected_points": round(lu.projected_points, 2),
+                "total_value": round(lu.total_value, 3),
+                "ownership_total": round(lu.ownership_total, 2),
+                "correlation_score": round(lu.correlation_score, 3),
+                "weather_impact": round(lu.weather_impact, 3),
+                "ceiling_90": round(lu.ceiling_90, 2),
+                "ceiling_95": round(lu.ceiling_95, 2),
+                "floor_10": round(lu.floor_10, 2),
+                "floor_25": round(lu.floor_25, 2),
+                "variance_score": round(lu.variance_score, 3),
+                "sharpe_ratio": round(lu.sharpe_ratio, 3),
+                "risk_level": lu.risk_level,
+                "boom_probability": round(lu.boom_probability, 4),
+                "bust_probability": round(lu.bust_probability, 4),
+                "players": [
+                    {
+                        "id": p.id,
+                        "name": p.name,
+                        "position": p.position,
+                        "team": p.team,
+                        "salary": p.salary,
+                        "projection": round(p.projection, 2),
+                        "ownership": round(p.ownership, 2),
+                        "value": round(p.value, 3),
+                        "floor_10": round(getattr(p, "floor_10", 0.0), 2),
+                        "ceiling_90": round(getattr(p, "ceiling_90", 0.0), 2),
+                        "ceiling_95": round(getattr(p, "ceiling_95", 0.0), 2),
+                        "boom_rate": round(getattr(p, "boom_rate", 0.0), 4),
+                        "bust_rate": round(getattr(p, "bust_rate", 0.0), 4),
+                    }
+                    for p in lu.players
+                ],
+                "insights": lu.monte_carlo_insights or {},
+            })
+
+        with out_path.open("w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "generated_at": datetime.now().isoformat(),
+                    "contest_type": contest_type,
+                    "num_lineups": len(lineups),
+                    "use_monte_carlo": bool(use_monte_carlo and MONTE_CARLO_AVAILABLE),
+                    "lineups": payload,
+                },
+                f,
+                indent=2,
+            )
+        logger.info(f"Saved lineups to {out_path}")
+    except Exception as e:
+        # Non-fatal; file I/O should never break the flow
+        logger.warning(f"Failed to export lineups: {e}")
+
+    # --- Short MC summary in logs ---
+    if use_monte_carlo and MONTE_CARLO_AVAILABLE:
+        top = lineups[0]
+        if top.ceiling_90 or top.floor_10:
+            logger.info(
+                f"Top lineup MC: risk={top.risk_level} | "
+                f"Ceil90={top.ceiling_90:.1f} | Floor10={top.floor_10:.1f} | "
+                f"Boom={top.boom_probability:.1%} | Bust={top.bust_probability:.1%}"
+            )
 
     return lineups
