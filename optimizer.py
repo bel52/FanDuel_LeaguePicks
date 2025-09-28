@@ -404,24 +404,46 @@ class EnhancedDFSOptimizer:
             return 0.15  # 15% for safer lineups
 
     def _add_fanduel_constraints(
-        self,
-        prob,
-        players: List[Player],
-        player_vars: Dict,
-        contest_type: str,
-        single_game_teams: List[str],
+            self,
+            prob,
+            players: List[Player],
+            player_vars: Dict,
+            contest_type: str,
+            single_game_teams: List[str],
     ):
-        """EXACT FanDuel constraints"""
+        """EXACT FanDuel constraints with proper lock validation"""
         # Salary cap
         prob += pulp.lpSum([players[i].salary * player_vars[i] for i in range(len(players))]) <= FANDUEL_SALARY_CAP
 
-        # Handle locked players
-        locked_players = []
+        # Handle locked players with validation
+        locked_players_indices = []
+        locked_salary = 0
+        locked_positions = {'QB': 0, 'RB': 0, 'WR': 0, 'TE': 0, 'D': 0}
+
         for i, player in enumerate(players):
-            if hasattr(player, 'locked') and player.locked:
+            # Check multiple ways a player can be marked as locked
+            is_locked = (
+                    (hasattr(player, 'locked') and player.locked) or
+                    (hasattr(player, 'player_id') and str(player.player_id) in [str(pid) for pid in []]) or
+                    (hasattr(player, 'id') and str(player.id) in [str(pid) for pid in []])
+            )
+
+            if is_locked:
                 prob += player_vars[i] == 1
-                locked_players.append(i)
-                logger.info(f"🔒 LOCKED: {player.name} ({player.position})")
+                locked_players_indices.append(i)
+                locked_salary += player.salary
+                locked_positions[player.position] += 1
+                logger.info(f"🔒 LOCKED: {player.name} ({player.position}) ${player.salary}")
+
+        # Validate locked constraints don't break FanDuel rules
+        if locked_salary > FANDUEL_SALARY_CAP:
+            raise ValueError(f"Locked players exceed salary cap: ${locked_salary:,}")
+
+        if locked_positions['QB'] > 1 or locked_positions['RB'] > 3 or locked_positions['WR'] > 4 or locked_positions[
+            'TE'] > 2 or locked_positions['D'] > 1:
+            raise ValueError(f"Locked players violate position limits: {locked_positions}")
+
+        logger.info(f"✅ Locked validation passed: ${locked_salary:,} salary, {locked_positions}")
 
         if single_game_teams:
             prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == 6

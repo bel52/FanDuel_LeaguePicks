@@ -2,6 +2,7 @@
 FastAPI web interface for DFS optimization system
 ENHANCED: FanDuel-style lineup display with player controls
 """
+from fastapi import Request
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -187,6 +188,7 @@ async def read_root():
                             <button class="button" onclick="generateLineups()" id="generateBtn">Generate</button>
                             <button class="button" onclick="refreshData()" id="refreshBtn">Refresh</button>
                             <button class="button" onclick="checkBreakingNews()" id="newsBtn">📰 News</button>
+                            <button class="button" onclick="analyzeLiveSlate()" id="liveBtn">📊 Live Analysis</button>
                         </div>
 
                         <div class="search-section">
@@ -474,20 +476,20 @@ async def read_root():
                     const contestType = document.getElementById('contestType').value;
                     const numLineups = parseInt(document.getElementById('numLineups').value);
 
-                    if (lockedPlayers.size > 9) {
-                        throw new Error(`Too many locked players (${lockedPlayers.size}). Maximum is 9.`);
-                    }
+                    if (lockedPlayers.size > 8) {
+    throw new Error(`Too many locked players (${lockedPlayers.size}). Maximum is 8.`);
+}
 
                     log(`🧠 Generating ${numLineups} ${contestType.toUpperCase()} lineups...`, 'loading');
 
                     const requestBody = {
-                        contest_type: contestType,
-                        num_lineups: numLineups,
-                        locked_players: Array.from(lockedPlayers),
-                        excluded_players: Array.from(excludedPlayers),
-                        avoid_high_ownership: contestType === 'gpp' || contestType === 'contrarian',
-                        force_stacks: contestType !== 'cash'
-                    };
+    contest_type: contestType,
+    num_lineups: parseInt(document.getElementById('numLineups').value),
+    locked_players: Array.from(lockedPlayers),
+    excluded_players: Array.from(excludedPlayers),
+    avoid_high_ownership: contestType === 'gpp' || contestType === 'contrarian',
+    force_stacks: contestType !== 'cash'
+};
 
                     const response = await fetch('/optimize', {
                         method: 'POST',
@@ -794,7 +796,70 @@ function formatTimeAgo(timestamp) {
             function closeNewsModal() {
                 document.getElementById('newsModal').style.display = 'none';
             }
+async function analyzeLiveSlate() {
+    try {
+        document.getElementById('liveBtn').disabled = true;
+        log('📊 Analyzing live slate impact...', 'loading');
 
+        // Get currently locked players from UI state
+const currentlyLocked = Array.from(lockedPlayers).map(playerId => {
+    // Find player data for each locked ID
+    for (const pos of ['QB', 'RB', 'WR', 'TE', 'D']) {
+        const posPlayers = playerData[pos] || [];
+        const player = posPlayers.find(p => p.id === playerId);
+        if (player) {
+            return {
+                name: player.name,
+                team: player.team,
+                position: player.position,
+                projected_points: player.projected_points || 0
+            };
+        }
+    }
+    return null;
+}).filter(p => p !== null);
+
+const response = await fetch('/analyze-live-slate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ locked_players: currentlyLocked })
+});
+
+        const data = await response.json();
+
+        if (response.ok) {
+            displayLiveAnalysis(data);
+            log('📊 Live analysis completed', 'success');
+        } else {
+            throw new Error(data.error || 'Analysis failed');
+        }
+    } catch (error) {
+        log(`❌ Live analysis failed: ${error.message}`, 'error');
+    } finally {
+        document.getElementById('liveBtn').disabled = false;
+    }
+}
+
+function displayLiveAnalysis(data) {
+    let html = '<h3>📊 Live Slate Analysis</h3>';
+    
+    // Show locked player performance
+    const locked = data.locked_performance || {};
+    for (const [player, perf] of Object.entries(locked)) {
+        html += `<div style="margin: 5px 0; padding: 8px; background: #f0f8ff; border-radius: 4px;">`;
+        html += `<strong>${player}</strong>: ${perf.game_script} | `;
+        html += `Projected: ${perf.projected_final} pts (${perf.vs_expectation > 0 ? '+' : ''}${perf.vs_expectation})`;
+        html += `</div>`;
+    }
+    
+    // Show strategy changes
+    const strategy = data.strategy_changes || [];
+    strategy.forEach(change => {
+        html += `<div style="margin: 5px 0; padding: 8px; background: #fff3cd; border-radius: 4px;">${change}</div>`;
+    });
+    
+    document.getElementById('output').innerHTML += `<div style="margin-top: 15px;">${html}</div>`;
+}
             // Auto-check for news on Sunday every 15 minutes
             function startNewsMonitoring() {
                 const now = new Date();
@@ -901,76 +966,121 @@ async def get_players():
 
 @app.post("/optimize")
 async def optimize_lineups(request: OptimizationRequest):
-    """Generate optimized lineups with player locks and exclusions"""
+    """Generate optimized lineups using the request data"""
     try:
-        log(f"🧠 Starting {request.contest_type} optimization with locks/exclusions...")
+        logger.info(f"DEBUG: Received locked_players: {request.locked_players}")
+        logger.info(f"DEBUG: Received excluded_players: {request.excluded_players}")
+        logger.info(f"🧠 Starting {request.contest_type} optimization with locks/exclusions...")
 
-        # Use cached player data if available
-        if current_player_data is None:
-            data = await get_fresh_data()
-        else:
-            data = current_player_data
+        # Get current players
+        if not current_player_data or not current_player_data.get('players'):
+            raise HTTPException(status_code=400, detail="No player data available. Please refresh first.")
 
-        if not data or not data.get('players'):
-            raise HTTPException(status_code=400, detail="No player data available")
+        all_players = current_player_data['players']
 
-        # Apply player locks and exclusions
+        # Apply locks/exclusions with debug logging
         filtered_players = []
-        for player in data['players']:
-            player_id = player.get('player_id', player.get('name', ''))
+        locked_count = 0
+        excluded_count = 0
+
+        for player in all_players:
+            player_id = str(player.get('id', ''))
+
+            # Mark locked players with type safety
+            if player_id in request.locked_players:
+                if isinstance(player, dict):
+                    player['locked'] = True
+                    locked_count += 1
+                    logger.info(f"🔒 MARKING LOCKED: {player.get('name')} (ID: {player_id})")
+                else:
+                    logger.error(f"Player is not a dict: {type(player)} - {player}")
+            else:
+                if isinstance(player, dict):
+                    player['locked'] = False
 
             # Skip excluded players
             if player_id in request.excluded_players:
+                excluded_count += 1
+                logger.info(f"❌ EXCLUDING: {player.get('name')} (ID: {player_id})")
                 continue
-
-            # Mark locked players
-            if player_id in request.locked_players:
-                player['locked'] = True
 
             filtered_players.append(player)
 
         logger.info(
-            f"✅ Filtered players: {len(filtered_players)} total, {len(request.locked_players)} locked, {len(request.excluded_players)} excluded")
+            f"✅ Filtered players: {len(filtered_players)} total, {locked_count} locked, {excluded_count} excluded")
 
-        # Validate locked players don't exceed roster spots
-        if len(request.locked_players) > 9:
+        # Validate we have enough locked players
+        if len(request.locked_players) > 8:
             raise HTTPException(status_code=400,
-                                detail=f"Too many locked players ({len(request.locked_players)}). Maximum is 9.")
+                                detail=f"Too many locked players ({len(request.locked_players)}). Maximum is 8.")
 
-        lineups = optimize_dfs_lineups(
-            player_data=filtered_players,
-            weather_data=data.get('weather', {}),
-            vegas_multipliers=data.get('vegas_multipliers', {}),
-            num_lineups=request.num_lineups,
-            contest_type=request.contest_type
-        )
+            # Optimize lineups - use standalone function
+            lineups = optimize_dfs_lineups(
+                players=filtered_players,
+                contest_type=request.contest_type,
+                num_lineups=request.num_lineups
+            )
 
         if not lineups:
             raise HTTPException(status_code=400, detail="Optimization failed to generate valid lineups")
 
         logger.info(f"✅ Generated {len(lineups)} lineups with player constraints")
 
-        # Save to organized CSV files
-        await save_lineups_to_csv(lineups, request.contest_type, data.get('data_quality', {}))
+        # Save to CSV
+        week_num = current_player_data.get('week', 1)
+        csv_path = save_lineups_to_csv(lineups, request.contest_type, week_num)
 
-        response_lineups = []
-        for lineup in lineups:
-            response_lineups.append(LineupResponse(
-                players=[f"{p.name} (${p.salary:,}) - {p.position}-{p.team}" for p in lineup.players],
-                total_salary=lineup.total_salary,
-                projected_points=round(lineup.projected_points, 2),
-                ownership_total=round(lineup.ownership_total, 1),
-                correlation_score=round(lineup.correlation_score, 3)
-            ))
+        return {
+            'lineups': lineups,
+            'contest_type': request.contest_type,
+            'num_lineups': len(lineups),
+            'csv_path': csv_path,
+            'locked_count': locked_count,
+            'excluded_count': excluded_count
+        }
 
-        return response_lineups
-
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in optimization: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Optimization error: {str(e)}")
 
 
+@app.post("/analyze-live-slate")
+async def analyze_live_slate(request: Request):
+    """Analyze locked players vs late slate strategy"""
+    try:
+        # Get locked players from request body
+        request_data = await request.json()
+        locked_players = request_data.get('locked_players', [])
+
+        # Mock early game results for testing
+        early_results = {
+            'LAC': {'score_differential': 14, 'time_remaining_pct': 25},
+            'TB': {'score_differential': -7, 'time_remaining_pct': 30},
+            'BUF': {'score_differential': 3, 'time_remaining_pct': 40}
+        }
+
+        late_slate_players = current_player_data.get('players', [])[:20] if current_player_data else []
+
+        from ai_analyzer import DualAIDFSAnalyzer
+        analyzer = DualAIDFSAnalyzer()
+
+        analysis = await analyzer.analyze_live_game_impact(
+            locked_players, early_results, late_slate_players
+        )
+
+        return {
+            'live_analysis': analysis,
+            'locked_performance': analysis.get('locked_performance', {}),
+            'strategy_changes': analysis.get('strategy_changes', []),
+            'late_slate_adjustments': analysis.get('late_slate_adjustments', [])
+        }
+
+    except Exception as e:
+        logger.error(f"Live slate analysis failed: {e}")
+        return {'error': str(e)}
 @app.get("/breaking-news")
 async def get_breaking_news_endpoint():
     """Get breaking news for the GUI"""
