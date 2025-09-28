@@ -1,199 +1,170 @@
 #!/usr/bin/env python3
 """
-Enhanced main entry point for the NFL DFS Optimization System
+SIMPLIFIED: On-demand DFS optimization for friends league
+Removes complex scheduling - you control when it runs
 """
 import asyncio
-import os
-from dotenv import load_dotenv
-load_dotenv()  # This loads .env file
 import sys
-import signal
-from pathlib import Path
 import argparse
+from pathlib import Path
+from datetime import datetime
 from loguru import logger
 
-# Add the project directory to the Python path
+# Add project directory to path
 project_dir = Path(__file__).parent
 sys.path.insert(0, str(project_dir))
 
-try:
-    from config import LOGS_DIR, LOGGING_CONFIG, API_PORT
-    from scheduler import start_background_scheduler, stop_background_scheduler, get_scheduler
-    from data_collector import get_fresh_data
-    from optimizer import optimize_dfs_lineups  # This should exist
-except ImportError as e:
-    print(f"❌ Import error: {e}")
-    print("🔧 Installing missing dependencies...")
-    import subprocess
-
-    subprocess.run([sys.executable, "-m", "pip", "install", "loguru>=0.7.0"], check=True)
-
-    # Try importing again
-    try:
-        from loguru import logger
-        from config import LOGS_DIR, LOGGING_CONFIG, API_PORT
-        from scheduler import start_background_scheduler, stop_background_scheduler, get_scheduler
-        from data_collector import get_fresh_data
-        from optimizer import optimize_dfs_lineups
-
-        print("✅ Dependencies installed successfully")
-    except ImportError as e2:
-        print(f"❌ Still missing dependencies: {e2}")
-        print("🔧 Run: pip install -r requirements.txt")
-        sys.exit(1)
+from config import API_PORT, LOGS_DIR
+from data_collector import get_fresh_data
+from optimizer import optimize_dfs_lineups
 
 
 def setup_logging():
-    """Configure logging for the application"""
+    """Simple logging setup"""
     logger.remove()
-
-    # Add file logging
     logger.add(
         LOGS_DIR / "dfs_optimizer_{time:YYYY-MM-DD}.log",
-        rotation=LOGGING_CONFIG['rotation'],
-        retention=LOGGING_CONFIG['retention'],
-        format=LOGGING_CONFIG['format'],
-        level=LOGGING_CONFIG['level']
+        rotation="7 days",
+        retention="30 days",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
+        level="INFO"
+    )
+    logger.add(sys.stderr, level="INFO")
+
+
+async def generate_lineups(contest_type: str = 'gpp', num_lineups: int = 10):
+    """Generate lineups on-demand with fresh data"""
+
+    logger.info(f"🏈 Generating {num_lineups} {contest_type.upper()} lineups...")
+
+    # Step 1: Collect ALL fresh data
+    logger.info("📡 Collecting fresh data...")
+    data = await get_fresh_data()
+
+    if not data or not data.get('players'):
+        logger.error("❌ No player data available. Make sure data/fanduel_salaries_manual.csv exists!")
+        return None
+
+    logger.info(f"✅ Loaded {len(data['players'])} players")
+
+    # Step 2: Show data quality summary
+    quality = data.get('data_quality', {})
+    logger.info(f"📊 Data Quality:")
+    logger.info(f"   • Week: {quality.get('current_week', 'Unknown')}")
+    logger.info(f"   • Games: {quality.get('main_slate_games', 0)}")
+    logger.info(f"   • Real projections: {quality.get('real_projections', 0)}")
+    logger.info(f"   • Teams: {len(quality.get('teams_in_slate', []))}")
+
+    # Step 3: Generate optimized lineups
+    logger.info(f"🧠 Optimizing {contest_type} lineups...")
+    lineups = optimize_dfs_lineups(
+        player_data=data['players'],
+        weather_data=data.get('weather', {}),
+        num_lineups=num_lineups,
+        contest_type=contest_type
     )
 
-    # Add console logging
-    logger.add(
-        sys.stderr,
-        format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> | <level>{message}</level>",
-        level=LOGGING_CONFIG['level']
-    )
+    if not lineups:
+        logger.error("❌ Optimization failed!")
+        return None
+
+    # Step 4: Display results
+    logger.info(f"✅ Generated {len(lineups)} {contest_type.upper()} lineups!")
+
+    for i, lineup in enumerate(lineups[:3]):  # Show first 3
+        logger.info(
+            f"Lineup {i + 1}: ${lineup.total_salary:,} | {lineup.projected_points:.1f} pts | {lineup.ownership_total:.1f}% owned")
+
+        # Show players in FanDuel order
+        for j, player in enumerate(lineup.players):
+            pos_label = ['QB', 'RB', 'RB', 'WR', 'WR', 'WR', 'TE', 'FLEX', 'DEF'][j]
+            logger.info(f"  {pos_label}: {player.name} (${player.salary:,})")
+
+    # Step 5: Export to CSV
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    csv_file = f"data/lineups/{contest_type}_lineups_{timestamp}.csv"
+
+    # Create CSV export
+    lineup_data = []
+    for i, lineup in enumerate(lineups):
+        lineup_row = {
+            'Lineup': i + 1,
+            'QB': f"{lineup.players[0].name}",
+            'RB1': f"{lineup.players[1].name}",
+            'RB2': f"{lineup.players[2].name}",
+            'WR1': f"{lineup.players[3].name}",
+            'WR2': f"{lineup.players[4].name}",
+            'WR3': f"{lineup.players[5].name}",
+            'TE': f"{lineup.players[6].name}",
+            'FLEX': f"{lineup.players[7].name}",
+            'DEF': f"{lineup.players[8].name}",
+            'Salary': lineup.total_salary,
+            'Projected': round(lineup.projected_points, 1),
+            'Ownership': round(lineup.ownership_total, 1)
+        }
+        lineup_data.append(lineup_row)
+
+    import pandas as pd
+    df = pd.DataFrame(lineup_data)
+    df.to_csv(csv_file, index=False)
+
+    logger.info(f"💾 Exported to: {csv_file}")
+    logger.info(f"📁 Ready to upload to FanDuel!")
+
+    return lineups
 
 
-def signal_handler(signum, frame):
-    """Handle shutdown signals gracefully"""
-    logger.info(f"Received signal {signum}, shutting down...")
-    stop_background_scheduler()
-    sys.exit(0)
-
-
-async def run_data_collection_only():
-    """Run data collection once and exit"""
-    logger.info("Running data collection...")
+def run_web_interface():
+    """Run the web interface"""
     try:
-        data = await get_fresh_data()
-        if data and 'players' in data:
-            logger.info(f"✅ Successfully collected data for {len(data['players'])} players")
-            logger.info(f"📊 Data quality: {data.get('data_quality', {})}")
-            return True
-        else:
-            logger.error("❌ Data collection failed or returned empty data")
-            return False
-    except Exception as e:
-        logger.error(f"❌ Error in data collection: {e}")
-        return False
-
-
-async def run_optimization_only():
-    """Run optimization once with current data and exit"""
-    logger.info("Running lineup optimization...")
-    try:
-        # Get fresh data first
-        data = await get_fresh_data()
-        if not data or not data.get('players'):
-            logger.error("❌ No player data available for optimization")
-            return False
-
-        # Test different contest types
-        contest_types = [
-            ('gpp', 10, 'Tournament'),
-            ('cash', 5, 'Cash Game'),
-            ('contrarian', 8, 'Contrarian')
-        ]
-
-        all_lineups = {}
-
-        for contest_type, num_lineups, display_name in contest_types:
-            logger.info(f"Generating {num_lineups} {display_name} lineups...")
-
-            lineups = optimize_dfs_lineups(
-                player_data=data['players'],
-                weather_data=data.get('weather', {}),
-                num_lineups=num_lineups,
-                contest_type=contest_type
-            )
-
-            if lineups:
-                all_lineups[contest_type] = lineups
-                logger.info(f"✅ Generated {len(lineups)} {display_name} lineups")
-
-                # Show sample lineup
-                sample = lineups[0]
-                logger.info(f"Sample {display_name} lineup:")
-                logger.info(f"  Salary: ${sample.total_salary:,} | Projected: {sample.projected_points:.1f}")
-                logger.info(f"  Ownership: {sample.ownership_total:.1f}% | Correlation: {sample.correlation_score:.3f}")
-                for player in sample.players[:3]:  # Show first 3 players
-                    logger.info(f"    {player.position}: {player.name} (${player.salary:,})")
-            else:
-                logger.warning(f"❌ Failed to generate {display_name} lineups")
-
-        return len(all_lineups) > 0
-
-    except Exception as e:
-        logger.error(f"❌ Error in optimization: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return False
-
-
-def run_web_api():
-    """Run the web API server"""
-    logger.info(f"🌐 Starting Enhanced DFS Optimizer Web API on port {API_PORT}...")
-
-    try:
+        from app import app
         import uvicorn
 
-        # Import the API
-        try:
-            from app import app
-        except Exception as e:
-            logger.error(f"❌ Error importing API: {e}")
-            return False
+        logger.info(f"🌐 Starting web interface on http://localhost:{API_PORT}")
+        logger.info("💡 Use this for interactive lineup generation")
 
-        # Start the background scheduler
-        start_background_scheduler()
-
-        # Run the API server
-        uvicorn.run(
-            "app:app",
-            host="0.0.0.0",
-            port=API_PORT,
-            reload=False,
-            log_level="info"
-        )
+        uvicorn.run("app:app", host="0.0.0.0", port=API_PORT, reload=False, log_level="info")
 
     except Exception as e:
-        logger.error(f"❌ Web API failed to start: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        logger.error(f"❌ Web interface failed: {e}")
         return False
-    finally:
-        stop_background_scheduler()
 
     return True
 
 
-def test_system():
-    """Run system tests"""
-    logger.info("🧪 Running system tests...")
+async def test_system():
+    """Test the system end-to-end"""
+    logger.info("🧪 Testing DFS system...")
 
     try:
-        # Test imports
-        import pandas as pd
-        from data_collector import EnhancedDataCollector
-        from optimizer import EnhancedDFSOptimizer
-        from config import get_current_nfl_week, is_game_day
-        logger.info("✅ All imports successful")
+        # Test data collection
+        logger.info("Testing data collection...")
+        data = await get_fresh_data()
 
-        # Test current week detection
-        current_week = get_current_nfl_week()
-        game_day = is_game_day()
-        logger.info(f"✅ Current NFL week: {current_week}, Game day: {game_day}")
+        if data and data.get('players'):
+            player_count = len(data['players'])
+            week = data.get('data_quality', {}).get('current_week', 'Unknown')
+            logger.info(f"✅ Data collection: {player_count} players, Week {week}")
+        else:
+            logger.error("❌ Data collection failed")
+            return False
 
+        # Test optimization
+        logger.info("Testing lineup optimization...")
+        lineups = optimize_dfs_lineups(
+            player_data=data['players'][:50],  # Use subset for speed
+            weather_data={},
+            num_lineups=2,
+            contest_type='gpp'
+        )
+
+        if lineups:
+            logger.info(f"✅ Optimization: Generated {len(lineups)} test lineups")
+        else:
+            logger.error("❌ Optimization failed")
+            return False
+
+        logger.info("✅ All systems working!")
         return True
 
     except Exception as e:
@@ -201,142 +172,59 @@ def test_system():
         return False
 
 
-def display_welcome():
-    """Display welcome message and system info"""
-    welcome_message = """
-🏈 NFL DFS OPTIMIZER v2.1 - ENHANCED
-====================================================
-
-🎯 Enhanced Features:
-- Proper contest type differentiation (GPP vs Cash vs Contrarian)
-- Current week game detection and filtering
-- Advanced correlation modeling with weather integration
-- Real-time ownership projection with contest-specific adjustments
-- Single game format support (MVP + 5 FLEX)
-- Enhanced weather impact for outdoor stadiums only
-
-📊 Data Sources:
-- NFL-data-py (comprehensive player stats with week filtering)
-- ESPN API (real-time scores and current week games)
-- Weather.gov (stadium weather conditions for outdoor venues)
-- Enhanced injury report monitoring
-
-⚡ Optimization Engine:
-- Contest-specific strategies that actually differ
-- Proper single game team filtering
-- Enhanced correlation matrices with game context
-- Monte Carlo simulation for ceiling/floor projections
-- Advanced diversification algorithms
-
-🎮 Contest Types:
-- Tournament/GPP: High-ceiling, correlation stacking, ownership leverage
-- Cash Game: High-floor, consistent plays, minimal stacking
-- Contrarian: Low-ownership fades, unconventional stacks
-- Single Game: MVP selection + game-specific correlation plays
-
-🔧 Technical Improvements:
-- Fixed syntax errors and import issues
-- Enhanced error handling and logging
-- Proper async/await patterns
-- Multi-level caching with intelligent invalidation
-- Real-time current week detection
-"""
-    print(welcome_message)
-
-
 def main():
-    """Enhanced main entry point with better error handling"""
-    parser = argparse.ArgumentParser(description="Enhanced NFL DFS Optimization System")
-    parser.add_argument(
-        'mode',
-        choices=['scheduler', 'web', 'collect', 'optimize', 'test'],
-        help='Operation mode: scheduler (automated), web (API server), collect (data only), optimize (lineups only), test (system test)'
-    )
-    parser.add_argument(
-        '--debug',
-        action='store_true',
-        help='Enable debug logging'
-    )
+    """Simplified main function"""
+    parser = argparse.ArgumentParser(description="FanDuel DFS Optimizer for Friends League")
+    parser.add_argument('mode', choices=['gpp', 'cash', 'contrarian', 'web', 'test'],
+                        help='Operation mode')
+    parser.add_argument('-n', '--num-lineups', type=int, default=10,
+                        help='Number of lineups to generate (default: 10)')
 
     args = parser.parse_args()
 
     # Setup logging
-    if args.debug:
-        LOGGING_CONFIG['level'] = 'DEBUG'
     setup_logging()
 
-    # Display welcome message
-    display_welcome()
+    # Ensure directories exist
+    Path('data/lineups').mkdir(parents=True, exist_ok=True)
+    Path('logs').mkdir(exist_ok=True)
 
-    # Ensure required directories exist
-    for directory in [LOGS_DIR, Path('data'), Path('cache')]:
-        directory.mkdir(exist_ok=True)
+    print(f"""
+🏈 FanDuel Friends League Optimizer
+====================================
+Mode: {args.mode.upper()}
+Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}
 
-    logger.info(f"🔧 Running in {args.mode} mode")
-
-    success = False
+📋 USAGE WORKFLOW:
+1. Download FanDuel salary CSV manually
+2. Save as: data/fanduel_salaries_manual.csv  
+3. Run: python main.py {args.mode}
+4. Upload generated CSV to FanDuel
+""")
 
     try:
-        if args.mode == 'scheduler':
-            success = run_scheduler_mode()
-        elif args.mode == 'web':
-            success = run_web_api()
-        elif args.mode == 'collect':
-            success = asyncio.run(run_data_collection_only())
-        elif args.mode == 'optimize':
-            success = asyncio.run(run_optimization_only())
+        if args.mode == 'web':
+            success = run_web_interface()
         elif args.mode == 'test':
-            success = test_system()
+            success = asyncio.run(test_system())
+        else:
+            # Generate lineups for contest type
+            lineups = asyncio.run(generate_lineups(args.mode, args.num_lineups))
+            success = lineups is not None
+
+        if success:
+            logger.info("✅ Operation completed successfully!")
+            print("\n🎯 Next steps:")
+            print("1. Review generated lineups")
+            print("2. Upload CSV to FanDuel")
+            print("3. Dominate your friends! 🏆")
+        else:
+            logger.error("❌ Operation failed!")
 
     except KeyboardInterrupt:
-        logger.info("👋 Interrupted by user")
-        success = True
+        logger.info("👋 Stopped by user")
     except Exception as e:
         logger.error(f"❌ Unexpected error: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        success = False
-
-    if success:
-        logger.info("✅ Operation completed successfully")
-        sys.exit(0)
-    else:
-        logger.error("❌ Operation failed")
-        sys.exit(1)
-
-
-def run_scheduler_mode():
-    """Run the automated scheduler"""
-    logger.info("🚀 Starting DFS Optimizer in scheduler mode...")
-
-    # Setup signal handlers for graceful shutdown
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-    try:
-        # Start the scheduler
-        scheduler = start_background_scheduler()
-
-        logger.info("📅 Automated scheduler started successfully!")
-        logger.info("🌐 Web interface available at: http://localhost:8020")
-        logger.info("⏹️  Press Ctrl+C to stop")
-
-        # Keep the main thread alive
-        while True:
-            try:
-                import time
-                time.sleep(1)
-
-            except KeyboardInterrupt:
-                break
-
-    except Exception as e:
-        logger.error(f"❌ Error in scheduler mode: {e}")
-        return False
-    finally:
-        stop_background_scheduler()
-
-    return True
 
 
 if __name__ == "__main__":

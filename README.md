@@ -1,360 +1,368 @@
-# 🏈 NFL DFS Optimizer v2.0
+# 🏈 FanDuel NFL DFS Optimizer v2.1
+**An AI-Enhanced Daily Fantasy Sports System for Tournament Winning**
 
-A production-grade Daily Fantasy Sports lineup optimization system for FanDuel NFL contests. This system automatically collects data from multiple free sources, applies advanced optimization algorithms, and generates tournament-winning lineups.
+> **Status: Active Development** - Built for a 12-person friends league with tournament-winning strategies
 
-## ✨ Features
+## 🎯 Project Mission
 
-### 🤖 Automated Data Collection
-- **NFL-data-py**: Comprehensive player statistics and projections
-- **ESPN API**: Real-time scores, news, and player updates
-- **Weather.gov**: Stadium weather conditions affecting gameplay
-- **Injury Reports**: Automated monitoring of player availability
-- **Vegas Lines**: Implied game totals and spreads
+This system is designed to **WIN WEEKLY** against 11 friends in a season-long FanDuel tournament. Unlike generic DFS tools that optimize for mathematical perfection, this system focuses on:
 
-### ⚡ Advanced Optimization Engine
-- **Integer Linear Programming (ILP)** for guaranteed optimal solutions
-- **Correlation-aware stacking** (QB-WR, game stacks, bring-backs)
-- **Weather impact modeling** for outdoor stadiums
-- **Ownership projection** for contrarian strategies
-- **Multi-objective optimization** for different contest types
+- **Beating Human Psychology**: Leverage spots that casual players miss
+- **Real Tournament Strategy**: Correlation, stacking, and ownership leverage
+- **Weekly Automation**: From Wednesday prep to Sunday late-swap execution
+- **AI-Enhanced Analysis**: Strategic insights for competitive advantage
 
-### 🎯 Contest Type Support
-- **Tournament/GPP**: High-upside lineups with correlation strategies
-- **Cash Games**: Consistent, high-floor lineups
-- **Contrarian**: Low-ownership, high-leverage plays
+## ⚡ Core Capabilities
 
-### 🌐 Web Interface
-- Real-time dashboard with system status
-- Interactive lineup generation
+### 🤖 Automated Data Pipeline
+- **Real NFL Schedule Detection**: Automatically finds current week games via ESPN API
+- **FanDuel Salary Integration**: Processes manually downloaded salary files with real FPPG data
+- **Weather Intelligence**: Outdoor stadium conditions affecting game scripts
+- **Injury Opportunity Detection**: Identifies backup players with increased value
+- **Smart Player Filtering**: Conservative filtering preserves tournament-winning options
+
+### 🧠 AI-Powered Strategic Analysis
+- **Dual AI Integration**: OpenAI GPT-4o-mini + Anthropic Claude for comprehensive analysis
+- **Contest Differentiation**: Actual strategic differences between GPP/Cash/Contrarian
+- **Ownership Projection**: Predicts what your friends will do (not perfect ownership)
+- **Leverage Identification**: Finds low-owned players with tournament upside
+- **Cost Management**: $15/week budget with ROI tracking
+
+### ⚙️ Advanced Optimization Engine
+- **Exact FanDuel Format**: QB + 2RB + 3WR + 1TE + 1FLEX + 1DEF = 9 players
+- **Contest-Specific Strategy**: Different algorithms for different contest types
+- **Correlation Modeling**: QB-WR stacking, game stacks, bring-back strategies
+- **Friends League Psychology**: Optimized for beating 11 casual players, not DraftKings pros
+
+### 📅 NFL Weekly Cadence Automation
+- **Wednesday 9 AM**: Baseline lineup construction + exposure planning
+- **Thu-Sat**: Daily data refreshes + strategy refinements  
+- **Sunday 11:30 AM**: Final early-slate preparation + inactive processing
+- **Sunday 2:15 PM**: Lock started games + analyze early results + pivot late slate
+- **Sunday 4:00 PM**: Final late-swap opportunities with leverage logic
+
+## 📁 File Structure & Functions
+
+### Core Application Files
+
+**`main.py`** - Enhanced entry point with multiple operation modes
+- `python main.py web` - Start web dashboard (recommended)
+- `python main.py collect` - Data collection only
+- `python main.py optimize` - Generate lineups only
+- `python main.py scheduler` - Full automation mode
+- `python main.py test` - System diagnostics
+
+**`data_collector.py`** - FIXED data pipeline with smart filtering
+- Real-time ESPN API integration for current week games
+- Conservative player filtering (preserves tournament options)
+- Injury opportunity detection applied BEFORE filtering
+- Weather data for outdoor stadiums only
+- Projection enhancement with real FanDuel FPPG data
+
+**`optimizer.py`** - Enhanced DFS optimization with FRIENDS LEAGUE strategy
+- Exact FanDuel position constraints (9 players total)
+- Contest-specific algorithms that actually differ
+- Friends league ownership psychology (not perfect projections)
+- Correlation-aware stacking (QB+WR, game stacks, bring-backs)
+- Lineup diversification for multiple entries
+
+**`ai_analyzer.py`** - Dual AI strategic analysis system
+- OpenAI GPT-4o-mini for slate analysis and leverage spots
+- Anthropic Claude for alternative perspectives
+- Cost tracking with $15/week budget management
+- Ownership adjustments applied to optimization
+- Fallback analysis when AI unavailable
+
+**`scheduler.py`** - NFL weekly cadence automation
+- Background data collection every 15-60 minutes
+- Game-day aware scheduling (more frequent updates)
+- Late-swap engine with game locking logic
+- Performance tracking and ROI analysis
+
+**`app.py`** - FastAPI web interface
+- Real-time dashboard with lineup generation
+- Contest type selection (GPP/Cash/Contrarian/Best Ball)
 - Data freshness monitoring
-- Downloadable CSV files for DFS sites
-- Weather and injury report displays
+- Exportable CSV files for FanDuel upload
 
-## 🚀 Quick Start
+### Data Processing Files
 
-### Automated Installation (Ubuntu)
+**`fanduel_salary_scraper.py`** - Manual CSV file processor
+- Converts FanDuel download format to internal structure
+- Preserves real FPPG data (not salary-based estimates)
+- Conservative injury status handling
+- Team and position normalization
 
+**`injury_opportunity_detector.py`** - Value opportunity identification
+- Identifies backup players with increased opportunity
+- Conservative boost calculations (avoids false positives)
+- Team-specific depth chart analysis
+- Applied BEFORE general player filtering
+
+**`enhanced_projections.py`** - Projection enhancement system
+- FanDuel FPPG utilization (real data over estimates)
+- Position-specific ceiling/floor calculations
+- Contest-specific variance adjustments
+
+### Configuration & Support
+
+**`config.py`** - Enhanced system configuration
+- NFL stadium data with indoor/outdoor classification
+- Contest-specific optimization parameters
+- Current week detection with multiple fallbacks
+- API endpoints and rate limiting
+
+**`requirements.txt`** - Python dependencies
+- Core optimization: pandas, numpy, pulp
+- Web framework: FastAPI, uvicorn
+- AI integration: openai, anthropic
+- Data sources: nfl-data-py, aiohttp
+- Scheduling: apscheduler
+
+## 🎮 Contest Type Strategies
+
+### **Tournament/GPP** - High-Ceiling Plays
+- **Target**: Beat 11 friends weekly with boom-or-bust lineups
+- **Strategy**: Correlation stacking, low ownership leverage, ceiling optimization
+- **Ownership**: Target 15-35% owned players (avoid super chalk)
+- **Stacking**: QB+2WR from high-total games, bring-back strategies
+- **Use Case**: Season-long tournament where you need weekly wins
+
+### **Cash Game** - Consistent Value
+- **Target**: Finish in top half consistently 
+- **Strategy**: High-floor players, value optimization, minimal stacking
+- **Ownership**: Exploit obvious value plays that friends miss (>3.5x)
+- **Risk**: Low variance, weather-aware, injury-free lineups
+- **Use Case**: Head-to-head or double-up contests
+
+### **Contrarian** - Fade the Chalk
+- **Target**: Differentiate from friends playing obvious lineups
+- **Strategy**: Heavy chalk fades, unique stacking, narrative leverage
+- **Ownership**: Target <20% owned skill players aggressively
+- **Stacking**: Unconventional QB+TE, RB+Defense correlations
+- **Use Case**: When you expect friends to play obvious "chalk" lineups
+
+### **Best Ball/Single Game** - MVP Format
+- **Target**: Highest raw scoring potential regardless of ownership
+- **Strategy**: Pure ceiling optimization with MVP selection
+- **Format**: 1 MVP (1.5x points) + 5 FLEX (any position)
+- **Focus**: Game-specific correlation within single matchup
+- **Use Case**: Single-game tournaments or showdown formats
+
+## 🚀 Quick Start Guide
+
+### 1. **Installation & Setup**
 ```bash
-# Navigate to your existing directory
+# Clone/download to your server
 cd /home/brett/fanduel
 
-# Download and run the setup script
-curl -o setup.sh https://raw.githubusercontent.com/yourusername/dfs-optimizer/main/setup.sh
-chmod +x setup.sh
-./setup.sh
-```
-
-### Manual Installation
-
-1. **Install Dependencies**
-```bash
-sudo apt update && sudo apt install -y python3 python3-pip python3-venv redis-server
-```
-
-2. **Setup Project Environment**
-```bash
-cd /home/brett/fanduel
-python3 -m venv venv
-source venv/bin/activate
-```
-
-3. **Install Python Packages**
-```bash
+# Install dependencies  
 pip install -r requirements.txt
+
+# Copy environment template
+cp .env.example .env
+
+# Edit .env with your API keys (optional for basic functionality)
+nano .env
 ```
 
-4. **Start Redis**
+### 2. **Data Preparation**
 ```bash
-sudo systemctl start redis-server
-sudo systemctl enable redis-server
-```
+# Download FanDuel salary CSV manually from FanDuel
+# Save as: data/fanduel_salaries_manual.csv
+# Required columns: Id,Position,First Name,Last Name,FPPG,Salary,Game,Team,Opponent,Injury Indicator
 
-## 🎮 Usage
-
-### Web Interface (Recommended)
-```bash
-cd /home/brett/fanduel
-source venv/bin/activate
-python main.py web
-```
-Then open http://localhost:8000 in your browser.
-
-### Command Line Options
-
-```bash
-# Collect fresh data only
+# Test data collection
 python main.py collect
+```
 
-# Generate optimized lineups only
+### 3. **Generate Lineups**
+```bash
+# Web interface (recommended)
+python main.py web
+# Then visit: http://localhost:8020
+
+# Command line generation
 python main.py optimize
 
-# Start automated scheduler
+# Full automation
 python main.py scheduler
-
-# Enable debug logging
-python main.py web --debug
 ```
 
-### System Service (Auto-start)
-```bash
-# Install as system service
-sudo systemctl start dfs-optimizer
-sudo systemctl enable dfs-optimizer
+### 4. **Contest-Specific Generation**
+Through web interface or API calls:
+- **GPP Lineups**: High ceiling, correlation stacking
+- **Cash Lineups**: High floor, value plays  
+- **Contrarian Lineups**: Low ownership fades
+- **Single Game**: MVP + 5 FLEX format
 
-# Check status
-sudo systemctl status dfs-optimizer
+## 🔄 System Lifecycle
 
-# View logs
-sudo journalctl -u dfs-optimizer -f
+### Data Collection Pipeline
 ```
-
-## 📊 How It Works
-
-### 1. Data Collection Pipeline
-```
-ESPN API → Player Stats & News
-NFL-data-py → Historical Performance 
-Weather.gov → Stadium Conditions
-Reddit/RSS → Breaking News
+ESPN API → Current Week Games → Team Filtering
      ↓
-Data Validation & Processing
+FanDuel CSV → Salary/FPPG Data → Position Validation
      ↓
-Cached for Optimization
-```
-
-### 2. Optimization Process
-```
-Player Pool → Weather Adjustments → Correlation Matrix
-     ↓              ↓                    ↓
-Ownership Projection → ILP Solver → Lineup Generation
+Weather.gov → Outdoor Stadium Conditions → Game Impact
      ↓
-Export to CSV → Upload to FanDuel
+Injury Analysis → Backup Opportunities → Value Detection
+     ↓
+CONSERVATIVE Filtering → Tournament Viable Players → Optimization Ready
 ```
 
-### 3. Automated Scheduling
-- **Every 15 minutes**: Data updates on game days
-- **Every hour**: Regular data collection
-- **Every 30 minutes**: Lineup re-optimization
-- **Daily 3 AM**: Cleanup and maintenance
-
-## 🎯 Optimization Strategies
-
-### Correlation-Aware Stacking
-- **QB-WR Stack**: 0.62 correlation coefficient
-- **Game Stacks**: QB + 2 receivers + opposing player
-- **Bring-Back**: Primary stack + opposing player
-- **Defense Correlations**: Negative correlation with opposing offense
-
-### Weather Impact Modeling
-- **Wind >15 mph**: Reduces passing efficiency 15%
-- **Precipitation**: Favors running games, hurts passing
-- **Cold Weather**: Reduces overall offensive production
-- **Dome Games**: No weather adjustments
-
-### Ownership Projection
-- **Salary-based modeling**: Higher salaries = higher ownership
-- **News sentiment analysis**: Positive news increases ownership
-- **Contrarian targeting**: Avoid players >30% ownership in GPP
-
-## 📁 File Structure
-
+### AI Enhancement Workflow
 ```
-/home/brett/fanduel/
-├── main.py              # Main entry point
-├── config.py            # Configuration settings
-├── data_collector.py    # Data collection engine
-├── optimizer.py         # Optimization algorithms
-├── scheduler.py         # Automated scheduling
-├── api.py              # Web API interface
-├── requirements.txt     # Python dependencies
-├── setup.sh            # Installation script
-├── data/               # Data storage
-│   ├── lineups/        # Generated lineup files
-│   └── historical/     # Historical data
-├── logs/               # Application logs
-└── cache/              # Cached data
+Player Pool + Weather + Vegas → AI Strategic Analysis
+     ↓
+Leverage Spots + Ownership Adjustments + Contest Strategy
+     ↓  
+Applied to Optimization Engine → Enhanced Player Values
+     ↓
+Lineup Generation → Contest-Specific Strategies → Export Ready
 ```
 
-## ⚙️ Configuration
-
-Edit `.env` file to customize settings:
-
-```env
-# Environment
-ENVIRONMENT=production
-LOG_LEVEL=INFO
-DATA_RETENTION_DAYS=7
-
-# API Settings  
-API_HOST=0.0.0.0
-API_PORT=8000
-
-# Redis Cache
-REDIS_URL=redis://localhost:6379/0
-
-# Optional AI Integration
-AI_ENABLED=false
-OPENAI_API_KEY=your_key_here
+### Optimization Process
+```
+Filtered Players → Friends League Ownership Psychology
+     ↓
+Contest Type Selection → Strategy Application (GPP/Cash/Contrarian)
+     ↓
+Correlation Modeling → Stacking Logic → Position Constraints
+     ↓
+ILP Solver → Optimal Lineups → FanDuel Format Ordering
+     ↓
+CSV Export → Manual Upload to FanDuel → Tournament Victory
 ```
 
-Edit `config.py` for advanced optimization settings:
-
-```python
-# Salary cap and position requirements
-FANDUEL_SALARY_CAP = 60000
-FANDUEL_POSITIONS = {
-    'QB': 1, 'RB': 2, 'WR': 3, 'TE': 1, 'FLEX': 1, 'DST': 1
-}
-
-# Update intervals (minutes)
-UPDATE_INTERVALS = {
-    'player_stats': 60,
-    'injury_reports': 30,
-    'weather': 60
-}
-
-# Optimization parameters
-OPTIMIZATION_CONFIG = {
-    'max_lineups': 150,
-    'correlation_threshold': 0.6,
-    'ownership_threshold': 30.0
-}
+### Weekly Automation Cycle
+```
+Wednesday 9 AM → Baseline Build + AI Analysis + Exposure Planning
+     ↓
+Thu-Sat Daily → Data Refresh + Strategy Refinement
+     ↓
+Sunday 11:30 AM → Final Preparation + Inactive Processing
+     ↓
+Sunday 2:15 PM → Lock Started Games + Early Results Analysis
+     ↓
+Sunday 4:00 PM → Final Late Swaps + Leverage Pivots
 ```
 
-## 🏆 Contest Strategy Guide
+## 🔧 Operation Modes
 
-### Tournament (GPP) Strategy
-- **Correlation stacking** for ceiling potential
-- **Low ownership players** for differentiation  
-- **Weather leverage** in outdoor games
-- **News-based pivots** for late edges
-
-### Cash Game Strategy
-- **High floor players** with consistent production
-- **Salary efficiency** (points per $1000)
-- **Safe game environments** (avoid bad weather)
-- **Injury-free lineups** with backup plans
-
-### Advanced Techniques
-- **Bring-back stacks** in high-total games
-- **Defense-RB correlation** in game script spots
-- **Contrarian chalky fades** in large field tournaments
-- **Late swap optimization** based on breaking news
-
-## 🔧 Troubleshooting
-
-### Common Issues
-
-**Data Collection Fails**
+### **Web Dashboard** (Recommended)
 ```bash
-# Check internet connection
-curl -s https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard
-
-# Update NFL data package
-pip install --upgrade nfl-data-py
-
-# Check Redis
-redis-cli ping
+python main.py web
 ```
+- Interactive lineup generation
+- Real-time data status monitoring
+- Contest type selection
+- CSV export for FanDuel upload
+- AI analysis integration
 
-**Optimization Errors**
+### **Automated Scheduler**
 ```bash
-# Install CBC solver
-sudo apt install coinor-cbc
-
-# Check player data
-python -c "from data_collector import get_fresh_data; import asyncio; print(asyncio.run(get_fresh_data()))"
+python main.py scheduler
 ```
+- Full NFL weekly cadence automation
+- Background data collection
+- Scheduled lineup optimization
+- Late-swap automation
+- Performance tracking
 
-**Service Won't Start**
+### **Data Collection Only**
 ```bash
-# Check logs
-sudo journalctl -u dfs-optimizer -n 50
-
-# Restart service
-sudo systemctl restart dfs-optimizer
-
-# Check Redis status
-sudo systemctl status redis-server
+python main.py collect
 ```
+- Test data pipeline
+- Verify current week detection
+- Check player filtering logic
+- Validate injury opportunities
 
-### Performance Tuning
+### **Optimization Only**
+```bash
+python main.py optimize
+```
+- Generate sample lineups
+- Test contest strategies
+- Verify position constraints
+- Export lineup files
 
-**For Large Contests (1000+ lineups)**
-- Increase `max_lineups` in config.py
-- Use faster correlation algorithms
-- Enable multiprocessing optimization
-- Increase Redis memory allocation
+### **System Diagnostics**
+```bash
+python main.py test
+```
+- Verify all imports
+- Test NFL week detection
+- Check configuration
+- Validate dependencies
 
-**For Real-time Updates**
-- Reduce update intervals on game days
-- Enable WebSocket connections
-- Use faster data sources
-- Implement push notifications
+## 🎯 Key Features for Friends League
 
-## 📈 Performance Benchmarks
+### **Psychological Advantage**
+- **Conservative Ownership Projections**: 5-40% range for 12-person league
+- **Value Spot Identification**: Finds obvious plays friends miss
+- **Leverage Detection**: Low-owned players with tournament upside
+- **Chalk Fade Logic**: Identifies when to fade popular plays
 
-### Data Collection Speed
-- **NFL-data-py**: ~10 seconds for weekly data
-- **ESPN API**: ~2 seconds per endpoint
-- **Weather.gov**: ~1 second per stadium
-- **Total collection time**: 30-45 seconds
+### **Strategic Differentiation** 
+- **Contest-Specific Algorithms**: Actually different optimization for each contest type
+- **Correlation Awareness**: Proper stacking vs individual player optimization
+- **Weather Integration**: Outdoor games only (friends often ignore)
+- **Injury Opportunities**: Backup players with increased roles
 
-### Optimization Performance  
-- **Single lineup**: <1 second
-- **10 lineups**: 2-5 seconds
-- **100 lineups**: 30-60 seconds
-- **Memory usage**: ~500MB for large datasets
+### **Operational Excellence**
+- **Real Schedule Detection**: No hardcoded games or weeks
+- **Conservative Filtering**: Preserves tournament-winning options
+- **AI Budget Management**: $15/week maximum with ROI tracking
+- **Export Integration**: Ready-to-upload CSV files
 
-### System Requirements
-- **CPU**: 2+ cores recommended
-- **RAM**: 4GB minimum, 8GB recommended  
-- **Storage**: 10GB for data retention
-- **Network**: Broadband for API calls
+## ⚠️ Current Development Status
 
-## 🤝 Contributing
+### ✅ **Working Components**
+- Real-time ESPN API integration
+- FanDuel salary processing with real FPPG
+- Exact position constraint optimization
+- Contest type differentiation
+- Basic AI analysis integration
+- Web dashboard interface
 
-This is a personal project, but suggestions are welcome:
+### 🔄 **In Development**
+- Late-swap automation engine
+- Advanced correlation modeling
+- Historical performance tracking
+- Mobile-responsive interface
+- Enhanced AI prompt engineering
 
-1. **Issue Reports**: Describe bugs with logs and reproduction steps
-2. **Feature Requests**: Explain use case and expected behavior
-3. **Code Improvements**: Focus on performance and reliability
-4. **Documentation**: Help improve setup and usage guides
+### 📋 **Planned Features**
+- Machine learning projection models
+- Advanced weather impact algorithms
+- Real-time lineup adjustment
+- Slack/Discord notifications
+- Multi-week strategy optimization
 
-## ⚠️ Legal Disclaimer
+## 🤝 Usage Philosophy
 
-- **Educational Use Only**: This tool is for learning DFS optimization techniques
-- **Respect API Terms**: All data sources have usage limitations
-- **No Guarantees**: Past performance doesn't predict future results
-- **Responsible Gaming**: Set limits and play within your means
-- **Data Accuracy**: Always verify projections against multiple sources
+This system is built for **actual tournament winning**, not mathematical perfection. It focuses on:
 
-## 📄 License
+1. **Beating Human Opponents** - Optimized for 12-person friend dynamics
+2. **Weekly Wins Matter** - Tournament structure rewards consistent performance  
+3. **Strategic Intelligence** - AI analysis for leverage and ownership spots
+4. **Operational Excellence** - Automated execution of proven strategies
+5. **Cost-Effective Enhancement** - $15/week AI budget with measurable ROI
 
-MIT License - See LICENSE file for details.
+The goal is sustainable competitive advantage in your specific league format, not generic DFS optimization.
 
-## 🎯 Roadmap
+## 🏆 Success Metrics
 
-### v2.1 (Coming Soon)
-- [ ] Machine learning projection models
-- [ ] Advanced weather impact algorithms  
-- [ ] Real-time lineup adjustment engine
-- [ ] Mobile-responsive web interface
-
-### v2.2 (Future)
-- [ ] Multi-site optimization (DraftKings support)
-- [ ] Historical backtest engine
-- [ ] Advanced correlation modeling
-- [ ] Slack/Discord notifications
-
-### v3.0 (Long-term)
-- [ ] AI-powered news analysis
-- [ ] Video analysis integration
-- [ ] Custom projection models
-- [ ] Tournament simulation engine
+- **Weekly Win Rate**: Percentage of weeks finishing 1st in 12-person league
+- **ROI Performance**: Return on entry fees vs friends
+- **Leverage Success**: Low-owned players that outperform projections  
+- **AI Cost Efficiency**: Strategic value per dollar of AI analysis
+- **Automation Reliability**: Successful execution of weekly cadence
 
 ---
 
-**Ready to dominate your DFS contests? Get started with the automated setup and let the optimizer do the heavy lifting while you focus on strategy!**
+**Ready to dominate your friends league? Start with `python main.py web` and let the AI-enhanced optimization give you the competitive edge!**
 
-For support, check the logs in `~/dfs-optimizer/logs/` or create an issue with detailed error information.
+For troubleshooting, check the logs in `logs/` directory or run `python main.py test` for system diagnostics.
