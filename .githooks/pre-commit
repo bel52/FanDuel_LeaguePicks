@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# block envs
+if git diff --cached --name-only | grep -E '(^|/)\.env($|\.|/)|\.env\..*|.*\.env$' >/dev/null; then
+  echo "❌ Abort: env-like file is staged."
+  exit 1
+fi
+
+# block big files (> 5MB)
+big=$(git diff --cached --name-only --diff-filter=AM | xargs -r -n1 -I{} sh -c 'test -f "{}" && [ $(stat -c%s "{}") -gt 5242880 ] && echo "{}" || true')
+if [ -n "${big:-}" ]; then
+  echo "❌ Abort: large files staged:"
+  echo "$big"
+  exit 1
+fi
+
+# block generated data
+if git diff --cached --name-only | grep -E '^data/(?!fanduel_salary_template\.csv)' >/dev/null; then
+  echo "❌ Abort: generated data under data/ detected."
+  exit 1
+fi
