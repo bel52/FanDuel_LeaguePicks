@@ -1,0 +1,11 @@
+Lineup,QB,RB,RB2,WR,WR2,WR3,TE,FLEX,D,Total_Salary,Projected_Points,Ownership_Total,Correlation_Score
+1,J.Hurts (00-0036389),S.Barkley (00-0034844),J.Gibbs (00-0039139),K.Raymond (00-0032464),A.Brown (00-0035676),J.Williams (00-0037240),I.Likely (00-0037838),,Baltimore Ravens Defense (DST_BAL),59843,159.5,199.5,0.28
+2,J.Hurts (00-0036389),S.Barkley (00-0034844),J.Gibbs (00-0039139),K.Raymond (00-0032464),J.Williams (00-0037240),K.Shakir (00-0037261),I.Likely (00-0037838),,Baltimore Ravens Defense (DST_BAL),59984,158.38,199.9,0.28
+3,J.Hurts (00-0036389),S.Barkley (00-0034844),J.Gibbs (00-0039139),D.Hopkins (00-0030564),A.Brown (00-0035676),J.Williams (00-0037240),I.Likely (00-0037838),,Baltimore Ravens Defense (DST_BAL),59965,157.8,199.9,0.41
+4,J.Hurts (00-0036389),S.Barkley (00-0034844),J.Gibbs (00-0039139),O.Zaccheaus (00-0035208),A.Brown (00-0035676),J.Williams (00-0037240),I.Likely (00-0037838),,Baltimore Ravens Defense (DST_BAL),59967,157.8,199.9,0.41
+5,J.Hurts (00-0036389),S.Barkley (00-0034844),J.Gibbs (00-0039139),J.Watson (00-0034386),A.Brown (00-0035676),J.Williams (00-0037240),I.Likely (00-0037838),,Baltimore Ravens Defense (DST_BAL),60000,157.8,200.0,0.41
+6,J.Hurts (00-0036389),S.Barkley (00-0034844),J.Gibbs (00-0039139),A.Brown (00-0035676),J.Williams (00-0037240),J.Metchie (00-0037614),I.Likely (00-0037838),,Atlanta Falcons Defense (DST_ATL),59955,157.3,199.8,0.41
+7,L.Jackson (00-0034796),S.Barkley (00-0034844),J.Gibbs (00-0039139),A.Brown (00-0035676),J.Williams (00-0037240),K.Shakir (00-0037261),I.Likely (00-0037838),,Baltimore Ravens Defense (DST_BAL),59964,155.98,199.9,0.32
+8,C.Stroud (00-0039163),S.Barkley (00-0034844),J.Gibbs (00-0039139),A.Brown (00-0035676),J.Williams (00-0037240),P.Nacua (00-0039075),I.Likely (00-0037838),,Baltimore Ravens Defense (DST_BAL),59986,155.97,200.0,0.41
+9,J.Hurts (00-0036389),S.Barkley (00-0034844),J.Gibbs (00-0039139),D.Robinson (00-0032775),J.Williams (00-0037240),J.Metchie (00-0037614),I.Likely (00-0037838),,Baltimore Ravens Defense (DST_BAL),59878,155.93,199.6,0.41
+10,C.Stroud (00-0039163),S.Barkley (00-0034844),J.Gibbs (00-0039139),K.Raymond (00-0032464),A.St. Brown (00-0036963),J.Williams (00-0037240),I.Likely (00-0037838),,Baltimore Ravens Defense (DST_BAL),59790,155.9,199.3,0.215

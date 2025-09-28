@@ -1,0 +1,6 @@
+Lineup,QB,RB,RB2,WR,WR2,WR3,TE,FLEX,D,Total_Salary,Projected_Points,Ownership_Total,Correlation_Score
+1,J.Hurts (00-0036389),S.Barkley (00-0034844),J.Gibbs (00-0039139),K.Raymond (00-0032464),A.Brown (00-0035676),L.McCaffrey (00-0039355),T.Higbee (00-0033110),,Baltimore Ravens Defense (DST_BAL),59987,152.6,200.0,0.41
+2,J.Hurts (00-0036389),S.Barkley (00-0034844),J.Gibbs (00-0039139),D.Hopkins (00-0030564),A.Brown (00-0035676),L.McCaffrey (00-0039355),T.Higbee (00-0033110),,Baltimore Ravens Defense (DST_BAL),59971,150.9,199.9,0.41
+3,J.Hurts (00-0036389),S.Barkley (00-0034844),J.Gibbs (00-0039139),K.Raymond (00-0032464),D.Smith (00-0036912),K.Shakir (00-0037261),T.Kelce (00-0030506),,Baltimore Ravens Defense (DST_BAL),59910,150.75,199.7,0.515
+4,J.Hurts (00-0036389),J.Mixon (00-0033897),J.Gibbs (00-0039139),K.Raymond (00-0032464),T.McLaurin (00-0035659),K.Shakir (00-0037261),T.Higbee (00-0033110),,Atlanta Falcons Defense (DST_ATL),59971,150.68,199.9,0.41
+5,J.Hurts (00-0036389),S.Barkley (00-0034844),J.Gibbs (00-0039139),D.Hopkins (00-0030564),K.Raymond (00-0032464),K.Shakir (00-0037261),Z.Ertz (00-0030061),,Baltimore Ravens Defense (DST_BAL),59992,150.68,200.0,0.41

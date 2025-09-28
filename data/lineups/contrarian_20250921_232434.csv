@@ -1,0 +1,11 @@
+Lineup,QB,RB,RB2,WR,WR2,WR3,TE,FLEX,D,Total_Salary,Projected_Points,Ownership_Total,Correlation_Score
+1,J.Daniels (00-0039910),S.Barkley (00-0034844),J.Gibbs (00-0039139),N.Collins (00-0036554),D.Smith (00-0036912),J.Dotson (00-0037741),I.Likely (00-0037838),,Atlanta Falcons Defense (DST_ATL),59999,154.33,200.0,0.28
+2,J.Daniels (00-0039910),S.Barkley (00-0034844),J.Gibbs (00-0039139),N.Collins (00-0036554),A.St. Brown (00-0036963),J.Dotson (00-0037741),J.Bates (00-0036628),,Baltimore Ravens Defense (DST_BAL),59779,154.23,199.3,0.41
+3,J.Daniels (00-0039910),S.Barkley (00-0034844),J.Gibbs (00-0039139),A.St. Brown (00-0036963),J.Williams (00-0037240),J.Dotson (00-0037741),J.Bates (00-0036628),,Baltimore Ravens Defense (DST_BAL),59980,153.63,199.9,0.28
+4,J.Daniels (00-0039910),S.Barkley (00-0034844),J.Gibbs (00-0039139),N.Collins (00-0036554),A.St. Brown (00-0036963),J.Dotson (00-0037741),B.Sinnott (00-0039912),,Atlanta Falcons Defense (DST_ATL),59987,153.23,200.0,0.365
+5,J.Daniels (00-0039910),J.Cook (00-0037248),J.Gibbs (00-0039139),N.Collins (00-0036554),D.Smith (00-0036912),J.Williams (00-0037240),I.Likely (00-0037838),,Baltimore Ravens Defense (DST_BAL),59973,152.73,199.9,0.41
+6,J.Daniels (00-0039910),S.Barkley (00-0034844),J.Gibbs (00-0039139),N.Collins (00-0036554),J.Williams (00-0037240),J.Dotson (00-0037741),T.Kelce (00-0030506),,Baltimore Ravens Defense (DST_BAL),59494,152.7,198.3,0.41
+7,C.Stroud (00-0039163),S.Barkley (00-0034844),J.Gibbs (00-0039139),A.Brown (00-0035676),N.Collins (00-0036554),J.Williams (00-0037240),I.Likely (00-0037838),,Atlanta Falcons Defense (DST_ATL),59971,152.37,199.9,0.41
+8,J.Daniels (00-0039910),S.Barkley (00-0034844),J.Gibbs (00-0039139),A.Brown (00-0035676),J.Williams (00-0037240),J.Dotson (00-0037741),T.Kelce (00-0030506),,Baltimore Ravens Defense (DST_BAL),59822,152.36,199.4,0.28
+9,J.Hurts (00-0036389),S.Barkley (00-0034844),J.Gibbs (00-0039139),N.Collins (00-0036554),J.Williams (00-0037240),J.Dotson (00-0037741),D.Schultz (00-0034383),,Baltimore Ravens Defense (DST_BAL),59940,152.33,199.8,0.515
+10,J.Daniels (00-0039910),J.Cook (00-0037248),J.Gibbs (00-0039139),A.Brown (00-0035676),N.Collins (00-0036554),D.Smith (00-0036912),I.Likely (00-0037838),,Atlanta Falcons Defense (DST_ATL),60000,152.0,200.0,0.28

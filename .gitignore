@@ -20,3 +20,28 @@ __pycache__/
 .DS_Store
 data/weekly/*
 logs/*
+# Local secrets
+.env.*
+# Virtual envs & caches
+venv/
+.venv/
+.mypy_cache/
+# Editors & OS
+.idea/
+.vscode/
+# Logs & temp
+logs/
+# Archived/local-only artifacts
+*.bak
+*.bak.*
+*.old
+*.old.*
+.auth/
+# Editor & OS
+cache/
+
+# env files (keep the template)
+.env
+.env.*
+*.env
+!.env.example

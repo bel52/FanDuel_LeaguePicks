@@ -1,0 +1,19 @@
+{
+  "timestamp": "2025-09-24T06:48:22.914034",
+  "lineup_counts": {
+    "tournament": 5,
+    "cash_game": 5,
+    "contrarian": 5
+  },
+  "data_quality": {
+    "player_count": 250,
+    "total_games": 9,
+    "main_slate_games": 7,
+    "current_week": 3,
+    "avg_projection": 12.587197999999994,
+    "weather_locations": 11,
+    "vegas_games": 9
+  },
+  "weather_conditions": 11,
+  "injury_reports": 0
+}
