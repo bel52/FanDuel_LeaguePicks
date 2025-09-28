@@ -305,7 +305,7 @@ class EnhancedDataCollector:
 
         for game_id, game_data in games.items():
             total = game_data.get('total_points', avg_total)
-            spread = abs(game_data.get('spread', 0))
+            spread = abs(game_data.get('spread') or 0)
             home_team = game_data.get('home_team')
             away_team = game_data.get('away_team')
 
