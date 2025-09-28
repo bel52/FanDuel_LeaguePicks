@@ -107,6 +107,27 @@ class DualAIDFSAnalyzer:
             logger.error(f"AI analysis pipeline failed: {e}")
             return self._fallback_analysis(player_data, contest_type)
 
+    async def analyze_breaking_news(self, news_events, current_players):
+        """AI analysis of breaking news impact on lineups"""
+        if not news_events:
+            return {'news_impact': 'none'}
+
+        news_text = str(news_events)
+        prompt = f"Breaking NFL news: {news_text}. How does this affect these players: {[p.get('name', '') for p in current_players[:10]]}?"
+
+        try:
+            if self.claude_client:
+                response = self.claude_client.messages.create(
+                    model="claude-3-haiku-20240307",
+                    max_tokens=200,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                return {'analysis': response.content[0].text}
+            else:
+                return {'analysis': 'AI unavailable'}
+        except:
+            return {'analysis': 'Analysis failed'}
+
     def _prepare_slate_data(self, player_data: List[Dict], weather_data: Dict,
                            vegas_data: Dict, contest_type: str) -> Dict:
         """Prepare comprehensive slate data for AI analysis"""
@@ -430,25 +451,3 @@ Be specific with player names and actionable advice."""
 
 # Backwards compatibility
 WinningDFSAIAnalyzer = DualAIDFSAnalyzer
-
-
-async def analyze_breaking_news(self, news_events, current_players):
-    """AI analysis of breaking news impact on lineups"""
-    if not news_events:
-        return {'news_impact': 'none'}
-
-    news_text = str(news_events)
-    prompt = f"Breaking NFL news: {news_text}. How does this affect these players: {[p.get('name', '') for p in current_players[:10]]}?"
-
-    try:
-        if self.claude_client:
-            response = self.claude_client.messages.create(
-                model="claude-3-haiku-20240307",
-                max_tokens=200,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return {'analysis': response.content[0].text}
-        else:
-            return {'analysis': 'AI unavailable'}
-    except:
-        return {'analysis': 'Analysis failed'}
