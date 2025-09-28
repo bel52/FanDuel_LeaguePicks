@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+if git diff --cached --name-only | grep -E '(^|/)\.env($|\.|/)|\.env\..*|.*\.env$' >/dev/null; then
+  echo "❌ Abort: env file is staged. Remove it from the index before pushing."
+  exit 1
+fi
+exit 0
