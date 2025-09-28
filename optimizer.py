@@ -104,13 +104,6 @@ class EnhancedDFSOptimizer:
                     weather_factor = weather_data[team].get('factor', 1.0)
                     player.weather_factor = weather_factor
                     player.projection *= weather_factor
-                # Apply Vegas multipliers (GAME-CHANGING for tournament success)
-                if hasattr(self, "vegas_multipliers") and player.team in self.vegas_multipliers:
-                    vegas_mult = self.vegas_multipliers[player.team]
-                    player.projection *= vegas_mult
-                    logger.info(f"VEGAS BOOST: {player.name} ({player.team}) {vegas_mult:.2f}x = {player.projection:.1f} pts")
-                elif hasattr(self, "vegas_multipliers"):
-                    logger.debug(f"No Vegas data for {player.team}")
 
                 player.value = player.projection / (player.salary / 1000) if player.salary > 0 else 0
                 players.append(player)
@@ -609,7 +602,7 @@ class EnhancedDFSOptimizer:
         return filename
 
 # Main optimization function with AI integration
-def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None, vegas_multipliers: Dict = None,
+ddef optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None, vegas_multipliers: Dict = None,
                         num_lineups: int = 10, contest_type: str = 'gpp',
                         single_game_teams: List[str] = None) -> List[LineupResult]:
     """AI-Enhanced optimization entry point with FRIENDS LEAGUE STRATEGY"""
@@ -656,13 +649,7 @@ def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None, veg
 
     # Step 2: Run optimization with AI-enhanced data and FRIENDS LEAGUE STRATEGY
     optimizer = EnhancedDFSOptimizer()
-    # Store vegas multipliers for prepare_players
-        if "vegas_multipliers" in locals() or "vegas_multipliers" in globals():
-        # Pass Vegas multipliers to optimizer
-        optimizer.vegas_multipliers = vegas_multipliers or {}
-        # Pass Vegas multipliers to optimizer
-        # Pass Vegas multipliers to optimizer
-        optimizer.vegas_multipliers = vegas_multipliers or {}
+    optimizer.vegas_multipliers = vegas_multipliers or {}
     players = optimizer.prepare_players(player_data, weather_data)
 
     if not players:
