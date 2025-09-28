@@ -57,3 +57,13 @@ data/lineups/
 # track only the placeholder in logs
 logs/
 !logs/.gitkeep
+
+# build/run detritus
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+.DS_Store
+.vscode/
+.idea/
+.notebooks/
