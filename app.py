@@ -634,41 +634,162 @@ async def read_root():
             }
 
             function showNewsModal(newsData) {
-                const modal = document.getElementById('newsModal');
-                const content = document.getElementById('newsContent');
+    const modal = document.getElementById('newsModal');
+    const content = document.getElementById('newsContent');
 
-                let html = '';
+    let html = '';
 
-                if (newsData.news_events && newsData.news_events.length > 0) {
-                    newsData.news_events.forEach(news => {
-                        const alertClass = news.dfs_impact >= 7 ? 'news-critical' : 'news-alert';
-                        html += `
-                            <div class="${alertClass}">
-                                <strong>${news.source}</strong> - Impact: ${news.dfs_impact}/10<br>
-                                ${news.headline}<br>
-                                <small>${new Date(news.timestamp).toLocaleTimeString()}</small>
-                            </div>
-                        `;
-                    });
+    if (newsData.news_events && newsData.news_events.length > 0) {
+        newsData.news_events.forEach(news => {
+            // Clean up source name
+            const sourceName = cleanSourceName(news.source);
+            
+            // Get impact level with emoji
+            const impactInfo = getImpactDisplay(news.dfs_impact);
+            
+            // Format timestamp
+            const timeAgo = formatTimeAgo(news.timestamp);
+            
+            // Choose alert style based on impact
+            const alertClass = news.dfs_impact >= 7 ? 'news-critical' : 'news-alert';
+            
+            html += `
+                <div class="${alertClass}" style="margin-bottom: 12px; padding: 12px; border-radius: 6px;">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px;">
+                        <span style="font-weight: 600; color: #2c3e50; font-size: 14px;">${sourceName}</span>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="background: ${impactInfo.color}; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 600;">
+                                ${impactInfo.emoji} ${impactInfo.level}
+                            </span>
+                            <span style="color: #6c757d; font-size: 11px;">${timeAgo}</span>
+                        </div>
+                    </div>
+                    <div style="font-size: 14px; line-height: 1.4; color: #2c3e50;">
+                        ${news.headline}
+                    </div>
+                    ${news.summary ? `<div style="font-size: 12px; color: #6c757d; margin-top: 4px; line-height: 1.3;">${news.summary}</div>` : ''}
+                </div>
+            `;
+        });
 
-                    // Show AI analysis if available
-                    if (newsData.impact_analysis && newsData.impact_analysis.ai_analysis) {
-                        html += `
-                            <div style="margin-top: 15px; padding: 10px; background: #e9ecef; border-radius: 5px;">
-                                <strong>🤖 AI Analysis:</strong><br>
-                                <div style="font-size: 13px; margin-top: 5px;">
-                                    ${newsData.impact_analysis.ai_analysis.substring(0, 300)}...
-                                </div>
-                            </div>
-                        `;
-                    }
-                } else {
-                    html = '<p>No breaking news found at this time.</p>';
-                }
+        // Show AI analysis if available
+        if (newsData.impact_analysis && newsData.impact_analysis.ai_analysis) {
+            html += `
+                <div style="margin-top: 15px; padding: 12px; background: #f8f9fa; border-radius: 6px; border-left: 4px solid #007bff;">
+                    <div style="font-weight: 600; color: #007bff; margin-bottom: 6px; font-size: 13px;">
+                        🤖 DFS Impact Analysis
+                    </div>
+                    <div style="font-size: 13px; line-height: 1.4; color: #495057;">
+                        ${newsData.impact_analysis.ai_analysis.substring(0, 200)}...
+                    </div>
+                </div>
+            `;
+        }
+    } else {
+        html = `
+            <div style="text-align: center; padding: 20px; color: #6c757d;">
+                <div style="font-size: 48px; margin-bottom: 10px;">📰</div>
+                <div style="font-size: 16px; margin-bottom: 5px;">No breaking news at this time</div>
+                <div style="font-size: 13px;">We'll notify you when DFS-relevant updates are available</div>
+            </div>
+        `;
+    }
 
-                content.innerHTML = html;
-                modal.style.display = 'block';
-            }
+    content.innerHTML = html;
+    modal.style.display = 'block';
+}
+
+function cleanSourceName(source) {
+    const sourceMap = {
+        'espn_nfl': 'ESPN',
+        'cbs_sports': 'CBS Sports',
+        'yahoo_sports': 'Yahoo Sports', 
+        'nfl_com': 'NFL.com',
+        'usa_today': 'USA Today',
+        'nfl_official': 'NFL.com',
+        'rotoworld': 'Rotoworld', 
+        'fantasypros': 'FantasyPros'
+    };
+    return sourceMap[source] || source.toUpperCase();
+}
+
+function getImpactDisplay(impact) {
+    if (impact >= 8) {
+        return { level: 'HIGH', emoji: '🚨', color: '#dc3545' };
+    } else if (impact >= 6) {
+        return { level: 'MED', emoji: '⚠️', color: '#ffc107' };
+    } else if (impact >= 4) {
+        return { level: 'LOW', emoji: 'ℹ️', color: '#17a2b8' };
+    } else {
+        return { level: 'INFO', emoji: '📝', color: '#6c757d' };
+    }
+}
+
+function formatTimeAgo(timestamp) {
+    if (!timestamp) return 'Unknown';
+    
+    try {
+        const newsTime = new Date(timestamp);
+        const now = new Date();
+        const diffMs = now - newsTime;
+        const diffMins = Math.floor(diffMs / (1000 * 60));
+        const diffHours = Math.floor(diffMins / 60);
+        
+        if (diffMins < 60) {
+            return `${diffMins}m ago`;
+        } else if (diffHours < 24) {
+            return `${diffHours}h ago`;
+        } else {
+            return newsTime.toLocaleDateString();
+        }
+    } catch (e) {
+        return 'Recent';
+    }
+}
+
+function cleanSourceName(source) {
+    const sourceMap = {
+        'espn_nfl': 'ESPN',
+        'nfl_official': 'NFL.com',
+        'rotoworld': 'Rotoworld', 
+        'fantasypros': 'FantasyPros'
+    };
+    return sourceMap[source] || source.toUpperCase();
+}
+
+function getImpactDisplay(impact) {
+    if (impact >= 8) {
+        return { level: 'HIGH', emoji: '🚨', color: '#dc3545' };
+    } else if (impact >= 6) {
+        return { level: 'MED', emoji: '⚠️', color: '#ffc107' };
+    } else if (impact >= 4) {
+        return { level: 'LOW', emoji: 'ℹ️', color: '#17a2b8' };
+    } else {
+        return { level: 'INFO', emoji: '📝', color: '#6c757d' };
+    }
+}
+
+function formatTimeAgo(timestamp) {
+    if (!timestamp) return 'Unknown';
+    
+    try {
+        const newsTime = new Date(timestamp);
+        const now = new Date();
+        const diffMs = now - newsTime;
+        const diffMins = Math.floor(diffMs / (1000 * 60));
+        const diffHours = Math.floor(diffMins / 60);
+        
+        if (diffMins < 60) {
+            return `${diffMins}m ago`;
+        } else if (diffHours < 24) {
+            return `${diffHours}h ago`;
+        } else {
+            return newsTime.toLocaleDateString();
+        }
+    } catch (e) {
+        return 'Recent';
+    }
+}
 
             function closeNewsModal() {
                 document.getElementById('newsModal').style.display = 'none';
@@ -859,8 +980,8 @@ async def get_breaking_news_endpoint():
             from news_monitor import get_breaking_news
             from ai_analyzer import DualAIDFSAnalyzer
 
-            # Get breaking news
-            news_events = await get_breaking_news(force_check=True)
+            # Get breaking news - FIXED: removed force_check parameter
+            news_events = await get_breaking_news()
 
             # If we have current player data, analyze impact
             impact_analysis = {}
