@@ -602,7 +602,7 @@ class EnhancedDFSOptimizer:
         return filename
 
 # Main optimization function with AI integration
-ddef optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None, vegas_multipliers: Dict = None,
+def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None, vegas_multipliers: Dict = None,
                         num_lineups: int = 10, contest_type: str = 'gpp',
                         single_game_teams: List[str] = None) -> List[LineupResult]:
     """AI-Enhanced optimization entry point with FRIENDS LEAGUE STRATEGY"""

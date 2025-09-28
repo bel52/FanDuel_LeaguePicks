@@ -305,7 +305,7 @@ class EnhancedDataCollector:
 
         for game_id, game_data in games.items():
             total = game_data.get('total_points', avg_total)
-            spread = abs(game_data.get('spread', 0) or 0)
+            spread = abs(game_data.get('spread', 0))
             home_team = game_data.get('home_team')
             away_team = game_data.get('away_team')
 
@@ -559,26 +559,14 @@ class EnhancedDataCollector:
                 team = player_data.get('team', '').upper()
                 salary = int(player_data.get('salary', 5000))
 
-                # Use REAL FPPG from FanDuel data
+                # Use REAL FPPG from FanDuel data ONLY
                 fppg = player_data.get('projected_points', 0)
-
                 if fppg > 0:
                     projection = fppg
                     logger.debug(f"✅ {name}: Using real FPPG {fppg}")
                 else:
-                    logger.warning(f"⚠️ {name}: No FPPG data, using salary estimate")
-                    if position == 'QB':
-                        projection = max(12, (salary - 5500) / 200 + 15)
-                    elif position == 'RB':
-                        projection = max(8, (salary - 4000) / 300 + 10)
-                    elif position == 'WR':
-                        projection = max(6, (salary - 3500) / 400 + 8)
-                    elif position == 'TE':
-                        projection = max(5, (salary - 3500) / 350 + 7)
-                    elif position == 'D':
-                        projection = max(4, (salary - 3000) / 200 + 6)
-                    else:
-                        projection = 8
+                    logger.warning(f"⚠️ {name}: No FPPG data, skipping player")
+                    continue  # Skip players with no real data
 
                 # Filter by teams (if applicable)
                 if playing_teams and team not in playing_teams:
@@ -592,7 +580,7 @@ class EnhancedDataCollector:
                     'salary': salary,
                     'projected_points': round(projection, 2),
                     'projection': round(projection, 2),
-                    'fppg_source': 'real' if fppg > 0 else 'estimated',
+                    'fppg_source': 'real',
                     'ceiling': round(projection * 1.4, 2),
                     'floor': round(projection * 0.7, 2),
                     'weather_factor': 1.0,
@@ -640,9 +628,8 @@ class EnhancedDataCollector:
             logger.info(f"Enhanced {len(winning_players)} players with REAL projections")
 
             # Log projection source breakdown
-            real_count = sum(1 for p in winning_players if p['fppg_source'] == 'real')
-            estimated_count = len(winning_players) - real_count
-            logger.info(f"Projection sources: {real_count} real FPPG, {estimated_count} estimated")
+            real_count = len(winning_players)  # All are real now
+            logger.info(f"Projection sources: {real_count} real FPPG, 0 estimated")
 
             # Log injury opportunities applied
             injury_opportunities = sum(1 for p in winning_players if p.get('injury_opportunity', False))
