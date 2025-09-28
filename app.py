@@ -114,7 +114,7 @@ async def read_root():
                 <button class="button" onclick="generateContrarian()">Generate Contrarian Lineups</button>
                 <button class="button" onclick="generateBestBall()">Generate Best Ball Lineups</button>
                 <button class="button" onclick="forceUpdate()">Force Data Update</button>
-                
+                <button class="button" onclick="processBreakingNews()">Breaking News Alert</button>
                 <h3>Contest Type</h3>
                 <select id="contestType" style="margin: 10px; padding: 8px;">
                     <option value="gpp">Tournament/GPP - High ceiling lineups</option>
@@ -160,6 +160,29 @@ async def read_root():
             async function generateBestBall() {
                 await generateLineupsType('bestball');
             }
+            async function processBreakingNews() {
+    const news = prompt('Enter breaking NFL news:\n(e.g., "Jonathan Taylor ruled OUT with injury")');
+    
+    if (news) {
+        try {
+            const response = await fetch('/process-news', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({news: news})
+            });
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                alert('AI Analysis:\n' + result.ai_analysis);
+            } else {
+                alert('Error: ' + result.message);
+            }
+        } catch (error) {
+            alert('Error processing news: ' + error.message);
+        }
+    }
+}
+            emergency_lineup_swap}
             async function generateLineupsType(type) {
                 try {
                     const numLineups = parseInt(document.getElementById('numLineups').value);
@@ -276,14 +299,41 @@ async def health_check():
         "version": "2.0.0"
     }
 
-if __name__ == "__main__":
-    import uvicorn
-    
-    logger.info(f"Starting DFS Optimizer API on {API_HOST}:{API_PORT}")
-    uvicorn.run(
-        "app:app",
-        host=API_HOST,
-        port=API_PORT,
-        reload=False,
-        log_level="info"
-    )
+
+@app.post("/emergency-swap")
+async def emergency_lineup_swap():
+    """Manual trigger for breaking news swaps"""
+    return {"status": "success", "message": "Ready for news input"}
+
+
+@app.post("/process-news")
+async def process_breaking_news(request):
+    """Process actual breaking news input"""
+    try:
+        data = await request.json()
+        news_text = data.get('news', '')
+
+        if not news_text:
+            return {"status": "error", "message": "No news provided"}
+
+        # Get current data
+        fresh_data = await get_fresh_data()
+        if not fresh_data or not fresh_data.get('players'):
+            return {"status": "error", "message": "No player data available"}
+
+        # Use AI to analyze the news
+        from ai_analyzer import DualAIDFSAnalyzer
+        analyzer = DualAIDFSAnalyzer()
+
+        news_events = [{'text': news_text}]
+        analysis = await analyzer.analyze_breaking_news(news_events, fresh_data['players'][:20])
+
+        return {
+            "status": "success",
+            "news": news_text,
+            "ai_analysis": analysis.get('analysis', 'No analysis available'),
+            "message": "News analyzed - check response for recommendations"
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": f"Failed: {str(e)}"}

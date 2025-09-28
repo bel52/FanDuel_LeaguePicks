@@ -178,3 +178,38 @@ BLOWOUT_SPREAD_THRESHOLD = 14.0
 
 # Print loaded config summary on import
 print(f"Config loaded - AI: {AI_ENABLED}, OpenAI: {'✅' if OPENAI_API_KEY else '❌'}, Anthropic: {'✅' if ANTHROPIC_API_KEY else '❌'}")
+# FanDuel specific constants for optimizer
+FANDUEL_POSITIONS = {
+    'QB': {'min': 1, 'max': 1},
+    'RB': {'min': 2, 'max': 3}, 
+    'WR': {'min': 3, 'max': 4},
+    'TE': {'min': 1, 'max': 2},
+    'FLEX': {'min': 1, 'max': 1},
+    'D': {'min': 1, 'max': 1}
+}
+
+FANDUEL_SALARY_CAP = 60000
+
+OPTIMIZATION_CONFIG = {
+    'gpp': {
+        'variance_weight': 0.3,
+        'ownership_threshold': 25.0,
+        'correlation_bonus': 1.2
+    },
+    'cash': {
+        'variance_weight': -0.1,
+        'ownership_threshold': 40.0,
+        'correlation_bonus': 1.0
+    },
+    'contrarian': {
+        'variance_weight': 0.4,
+        'ownership_threshold': 15.0,
+        'correlation_bonus': 1.3
+    }
+}
+
+UPDATE_INTERVALS = {
+    'player_stats': 60,
+    'weather': 120,
+    'vegas': 300
+}
