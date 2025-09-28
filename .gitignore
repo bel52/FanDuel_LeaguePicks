@@ -53,3 +53,7 @@ data/**/*.db
 data/output/
 data/lineups/
 !data/fanduel_salary_template.csv         # keep the template if you want
+
+# track only the placeholder in logs
+logs/
+!logs/.gitkeep
