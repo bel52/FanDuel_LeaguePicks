@@ -2,7 +2,7 @@
 FastAPI web interface for DFS optimization system
 Provides REST endpoints for data access and lineup generation
 """
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Request
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -182,7 +182,6 @@ async def read_root():
         }
     }
 }
-            emergency_lineup_swap}
             async function generateLineupsType(type) {
                 try {
                     const numLineups = parseInt(document.getElementById('numLineups').value);
@@ -307,7 +306,7 @@ async def emergency_lineup_swap():
 
 
 @app.post("/process-news")
-async def process_breaking_news(request):
+async def process_breaking_news(request: Request):
     """Process actual breaking news input"""
     try:
         data = await request.json()
