@@ -266,9 +266,82 @@ class EnhancedDataCollector:
         }
 
     async def get_vegas_odds_data(self) -> Dict[str, Any]:
-        """Placeholder for Vegas odds"""
-        logger.info("Using placeholder Vegas odds")
-        return {'placeholder': {'total_points': 45.5, 'spread': -3.5}}
+        """Get REAL Vegas odds data (GAME-CHANGING for tournament success)"""
+        try:
+            from vegas_data_collector import VegasDataCollector
+            collector = VegasDataCollector()
+            vegas_data = await collector.get_nfl_odds_data()
+
+            if vegas_data and vegas_data.get('games'):
+                high_total_count = len(vegas_data.get('high_total_games', []))
+                logger.info(f"🎯 VEGAS DATA: {high_total_count} high-total games (47+ pts) found")
+
+                # Log the high-total games (these drive tournament wins)
+                for high_game in vegas_data.get('high_total_games', []):
+                    logger.info(f"🔥 {high_game['game_id']}: {high_game['total']} total points")
+
+                return vegas_data
+            else:
+                logger.warning("No Vegas games data returned")
+                return {'games': {}, 'high_total_games': [], 'data_source': 'empty'}
+
+        except ImportError:
+            logger.warning("Vegas data collector not available")
+            return {'games': {}, 'high_total_games': [], 'data_source': 'unavailable'}
+        except Exception as e:
+            logger.error(f"Vegas data collection failed: {e}")
+            return {'games': {}, 'high_total_games': [], 'data_source': 'error'}
+
+    def calculate_vegas_multipliers(self, vegas_data: Dict) -> Dict[str, float]:
+        """Calculate team multipliers based on game totals - GAME CHANGING"""
+
+        multipliers = {}
+        games = vegas_data.get('games', {})
+        avg_total = vegas_data.get('avg_total', 45.0)
+
+        if not games:
+            logger.warning("No Vegas games data for multipliers")
+            return {}
+
+        for game_id, game_data in games.items():
+            total = game_data.get('total_points', avg_total)
+            spread = abs(game_data.get('spread', 0) or 0)
+            home_team = game_data.get('home_team')
+            away_team = game_data.get('away_team')
+
+            # TOTAL MULTIPLIER: Higher totals = higher DFS scoring
+            if total >= 50:
+                total_mult = 1.35  # MAJOR boost for 50+ games
+            elif total >= 47:
+                total_mult = 1.25  # Significant boost for 47+ games
+            elif total >= 44:
+                total_mult = 1.10  # Moderate boost
+            elif total <= 40:
+                total_mult = 0.85  # Penalty for low totals
+            else:
+                total_mult = 1.0
+
+            # SPREAD MULTIPLIER: Close games = more passing
+            if spread <= 3:
+                spread_mult = 1.15  # Close games = shootouts
+            elif spread >= 10:
+                spread_mult = 0.90  # Blowouts = fewer points
+            else:
+                spread_mult = 1.0
+
+            # COMBINED MULTIPLIER
+            final_mult = total_mult * spread_mult
+
+            # Apply to both teams
+            if home_team:
+                multipliers[home_team] = final_mult
+            if away_team:
+                multipliers[away_team] = final_mult
+
+            logger.info(f"VEGAS WEIGHT: {game_id} ({total} total, {spread} spread) = {final_mult:.2f}x")
+
+        logger.info(f"Applied Vegas multipliers to {len(multipliers)} teams")
+        return multipliers
 
     async def get_nfl_projections(self) -> Dict[str, float]:
         """Get NFL projections with better error handling"""
@@ -759,11 +832,15 @@ async def get_fresh_data() -> Dict[str, Any]:
         weather_data = await collector.get_weather_for_games(games_info)
         vegas_data = await collector.get_vegas_odds_data()
 
+        # CALCULATE VEGAS MULTIPLIERS
+        vegas_multipliers = collector.calculate_vegas_multipliers(vegas_data)
+
         return {
             'players': players,
             'games_info': games_info,
             'weather': weather_data,
             'vegas_odds': vegas_data,
+            'vegas_multipliers': vegas_multipliers,
             'last_updated': datetime.now().isoformat(),
             'data_quality': {
                 'player_count': len(players),
@@ -780,6 +857,7 @@ async def get_fresh_data() -> Dict[str, Any]:
                     'min': min(p['salary'] for p in players) if players else 0,
                     'max': max(p['salary'] for p in players) if players else 0
                 },
-                'vegas_games': len(vegas_data) if vegas_data else 0
+                'vegas_games': len(vegas_data) if vegas_data else 0,
+                'vegas_multipliers': len(vegas_multipliers)
             }
         }
