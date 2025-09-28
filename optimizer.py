@@ -657,12 +657,12 @@ def optimize_dfs_lineups(player_data: List[Dict], weather_data: Dict = None, veg
     # Step 2: Run optimization with AI-enhanced data and FRIENDS LEAGUE STRATEGY
     optimizer = EnhancedDFSOptimizer()
     # Store vegas multipliers for prepare_players
-    if "vegas_multipliers" in locals() or "vegas_multipliers" in globals():
-    # Pass Vegas multipliers to optimizer
-    optimizer.vegas_multipliers = vegas_multipliers or {}
-    # Pass Vegas multipliers to optimizer
-    # Pass Vegas multipliers to optimizer
-    optimizer.vegas_multipliers = vegas_multipliers or {}
+        if "vegas_multipliers" in locals() or "vegas_multipliers" in globals():
+        # Pass Vegas multipliers to optimizer
+        optimizer.vegas_multipliers = vegas_multipliers or {}
+        # Pass Vegas multipliers to optimizer
+        # Pass Vegas multipliers to optimizer
+        optimizer.vegas_multipliers = vegas_multipliers or {}
     players = optimizer.prepare_players(player_data, weather_data)
 
     if not players:

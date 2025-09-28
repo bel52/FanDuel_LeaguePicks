@@ -57,16 +57,10 @@ async def generate_lineups(contest_type: str = 'gpp', num_lineups: int = 10):
 
     # Step 3: Generate optimized lineups
     logger.info(f"🧠 Optimizing {contest_type} lineups...")
-        lineups = optimize_dfs_lineups(
-            player_data=data["players"],
-            weather_data=data.get("weather", {}),
-            vegas_multipliers=data.get("vegas_multipliers", {}),
-            num_lineups=num_lineups,
-            contest_type=contest_type
-        )
-            vegas_multipliers=data.get("vegas_multipliers", {}),
+    lineups = optimize_dfs_lineups(
         player_data=data['players'],
         weather_data=data.get('weather', {}),
+        vegas_multipliers=data.get('vegas_multipliers', {}),
         num_lineups=num_lineups,
         contest_type=contest_type
     )
@@ -159,15 +153,9 @@ async def test_system():
         # Test optimization
         logger.info("Testing lineup optimization...")
         lineups = optimize_dfs_lineups(
-            player_data=data["players"],
-            weather_data=data.get("weather", {}),
-            vegas_multipliers=data.get("vegas_multipliers", {}),
-            num_lineups=num_lineups,
-            contest_type=contest_type
-        )
-            vegas_multipliers=data.get("vegas_multipliers", {}),
             player_data=data['players'][:50],  # Use subset for speed
             weather_data={},
+            vegas_multipliers={},
             num_lineups=2,
             contest_type='gpp'
         )
