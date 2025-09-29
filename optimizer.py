@@ -1,7 +1,7 @@
 # optimizer.py
 """
 Enhanced DFS lineup optimization with Monte Carlo variance analysis
-Fixed async issues for tournament wins
+Fixed async issues for tournament wins - FIXED LOCKED PLAYER HANDLING
 """
 import asyncio
 import json
@@ -65,6 +65,7 @@ class Player:
     injury_risk: float = 0.0
     value: float = 0.0
     variance: float = 0.0
+    locked: bool = False  # FIXED: Add locked attribute
     # NEW Monte Carlo fields
     floor_10: float = 0.0
     ceiling_90: float = 0.0
@@ -118,10 +119,10 @@ class EnhancedDFSOptimizer:
             logger.warning("Monte Carlo requested but not available - falling back to basic optimization")
 
     async def prepare_players(
-        self,
-        player_data: List[Dict],
-        weather_data: Dict = None,
-        vegas_data: Dict = None,
+            self,
+            player_data: List[Dict],
+            weather_data: Dict = None,
+            vegas_data: Dict = None,
     ) -> List[Player]:
         """Convert player data with optional Monte Carlo enhancement"""
         players: List[Player] = []
@@ -142,6 +143,9 @@ class EnhancedDFSOptimizer:
                 if position in ['DST', 'DEF', 'D/ST']:
                     position = 'D'
 
+                # FIXED: Handle locked status from UI
+                is_locked = data.get('locked', False)
+
                 # Create base player
                 player = Player(
                     id=str(data.get('player_id', data.get('id', player_name))),
@@ -150,6 +154,7 @@ class EnhancedDFSOptimizer:
                     team=team,
                     salary=salary,
                     projection=projection,
+                    locked=is_locked,  # FIXED: Set locked status
                 )
 
                 # Apply weather adjustments
@@ -172,10 +177,10 @@ class EnhancedDFSOptimizer:
         return players
 
     async def _enhance_players_with_monte_carlo(
-        self,
-        players: List[Player],
-        weather_data: Dict = None,
-        vegas_data: Dict = None,
+            self,
+            players: List[Player],
+            weather_data: Dict = None,
+            vegas_data: Dict = None,
     ) -> List[Player]:
         """Enhance players with Monte Carlo variance analysis"""
         sim_data: List[Dict[str, Any]] = []
@@ -220,10 +225,10 @@ class EnhancedDFSOptimizer:
         return enhanced_players
 
     async def optimize_lineup(
-        self,
-        players: List[Player],
-        contest_type: str = 'gpp',
-        single_game_teams: List[str] = None,
+            self,
+            players: List[Player],
+            contest_type: str = 'gpp',
+            single_game_teams: List[str] = None,
     ) -> Optional[LineupResult]:
         """Optimize with Monte Carlo-enhanced objective function"""
         try:
@@ -411,24 +416,18 @@ class EnhancedDFSOptimizer:
             contest_type: str,
             single_game_teams: List[str],
     ):
-        """EXACT FanDuel constraints with proper lock validation"""
+        """EXACT FanDuel constraints with FIXED locked player validation"""
         # Salary cap
         prob += pulp.lpSum([players[i].salary * player_vars[i] for i in range(len(players))]) <= FANDUEL_SALARY_CAP
 
-        # Handle locked players with validation
+        # FIXED: Handle locked players with proper validation
         locked_players_indices = []
         locked_salary = 0
         locked_positions = {'QB': 0, 'RB': 0, 'WR': 0, 'TE': 0, 'D': 0}
 
         for i, player in enumerate(players):
-            # Check multiple ways a player can be marked as locked
-            is_locked = (
-                    (hasattr(player, 'locked') and player.locked) or
-                    (hasattr(player, 'player_id') and str(player.player_id) in [str(pid) for pid in []]) or
-                    (hasattr(player, 'id') and str(player.id) in [str(pid) for pid in []])
-            )
-
-            if is_locked:
+            # FIXED: Check the locked attribute properly
+            if player.locked:
                 prob += player_vars[i] == 1
                 locked_players_indices.append(i)
                 locked_salary += player.salary
@@ -508,12 +507,12 @@ class EnhancedDFSOptimizer:
                 prob += pulp.lpSum([player_vars[i] for i in high_value_players]) >= 3
 
     def _add_stacking_incentive(
-        self,
-        prob,
-        players: List[Player],
-        player_vars: Dict,
-        qb_indices: List[int],
-        wr_indices: List[int],
+            self,
+            prob,
+            players: List[Player],
+            player_vars: Dict,
+            qb_indices: List[int],
+            wr_indices: List[int],
     ):
         """QB+WR stacking"""
         team_qbs: Dict[str, List[int]] = {}
@@ -691,11 +690,11 @@ class EnhancedDFSOptimizer:
         return min(1.0, correlation)
 
     async def generate_multiple_lineups(
-        self,
-        players: List[Player],
-        num_lineups: int = 10,
-        contest_type: str = 'gpp',
-        single_game_teams: List[str] = None,
+            self,
+            players: List[Player],
+            num_lineups: int = 10,
+            contest_type: str = 'gpp',
+            single_game_teams: List[str] = None,
     ) -> List[LineupResult]:
         """Generate diverse lineups with Monte Carlo enhancement"""
         lineups: List[LineupResult] = []
@@ -721,6 +720,7 @@ class EnhancedDFSOptimizer:
                     injury_risk=player.injury_risk,
                     value=player.value,
                     variance=player.variance,
+                    locked=player.locked,  # FIXED: Preserve locked status
                 )
 
                 # Copy Monte Carlo data
@@ -732,16 +732,18 @@ class EnhancedDFSOptimizer:
                     new_player.bust_rate = player.bust_rate
                     new_player.monte_carlo_analyzed = True
 
-                # Apply randomization
-                if contest_type == 'gpp':
-                    random_factor = random.uniform(0.85, 1.15)
-                elif contest_type == 'cash':
-                    random_factor = random.uniform(0.95, 1.05)
-                else:
-                    random_factor = random.uniform(0.75, 1.25)
+                # Apply randomization (but NOT to locked players)
+                if not player.locked:  # FIXED: Don't randomize locked players
+                    if contest_type == 'gpp':
+                        random_factor = random.uniform(0.85, 1.15)
+                    elif contest_type == 'cash':
+                        random_factor = random.uniform(0.95, 1.05)
+                    else:
+                        random_factor = random.uniform(0.75, 1.25)
 
-                new_player.projection *= random_factor
-                new_player.value = new_player.projection / (new_player.salary / 1000) if new_player.salary else 0.0
+                    new_player.projection *= random_factor
+                    new_player.value = new_player.projection / (new_player.salary / 1000) if new_player.salary else 0.0
+
                 randomized_players.append(new_player)
 
             lineup = await self.optimize_lineup(randomized_players, contest_type, single_game_teams)
@@ -757,7 +759,7 @@ class EnhancedDFSOptimizer:
                     max_usage = max(2, num_lineups // 4)
                     for player in lineup.players:
                         usage_count = player_usage.get(player.id, 0)
-                        if usage_count >= max_usage:
+                        if usage_count >= max_usage and not player.locked:  # Allow locked players to repeat
                             overused_players += 1
 
                     if overused_players > 3:
@@ -826,14 +828,14 @@ def _run_coro_sync(coro):
 
 # Enhanced main optimization function with Monte Carlo - FIXED TO NOT USE ASYNC
 def optimize_dfs_lineups(
-    player_data: List[Dict],
-    weather_data: Dict = None,
-    vegas_multipliers: Dict = None,
-    num_lineups: int = 10,
-    contest_type: str = 'gpp',
-    single_game_teams: List[str] = None,
-    use_monte_carlo: bool = True,
-    mc_simulations: int = 5000,
+        player_data: List[Dict],
+        weather_data: Dict = None,
+        vegas_multipliers: Dict = None,
+        num_lineups: int = 10,
+        contest_type: str = 'gpp',
+        single_game_teams: List[str] = None,
+        use_monte_carlo: bool = True,
+        mc_simulations: int = 5000,
 ) -> List[LineupResult]:
     """
     AI-Enhanced optimization with Monte Carlo variance modeling (synchronous wrapper).
@@ -891,6 +893,11 @@ def optimize_dfs_lineups(
         logger.error("No valid players after preparation")
         return []
 
+    # Check for locked players
+    locked_count = sum(1 for p in players if p.locked)
+    if locked_count > 0:
+        logger.info(f"🔒 Found {locked_count} locked players in optimizer")
+
     if use_monte_carlo and MONTE_CARLO_AVAILABLE:
         mc_count = sum(1 for p in players if p.monte_carlo_analyzed)
         logger.info(f"Monte Carlo enriched players: {mc_count}/{len(players)}")
@@ -947,6 +954,7 @@ def optimize_dfs_lineups(
                         "projection": round(p.projection, 2),
                         "ownership": round(p.ownership, 2),
                         "value": round(p.value, 3),
+                        "locked": p.locked,
                         "floor_10": round(getattr(p, "floor_10", 0.0), 2),
                         "ceiling_90": round(getattr(p, "ceiling_90", 0.0), 2),
                         "ceiling_95": round(getattr(p, "ceiling_95", 0.0), 2),

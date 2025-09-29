@@ -1,6 +1,7 @@
 """
 FastAPI web interface for DFS optimization system
 ENHANCED: FanDuel-style lineup display with player controls
+FIXED: Corrected optimization call to handle locked players
 """
 from fastapi import Request
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -17,7 +18,7 @@ import traceback
 
 try:
     from data_collector import get_fresh_data
-    from optimizer import optimize_dfs_lineups
+    from optimizer import optimize_dfs_lineups  # FIXED: Import the corrected function
     from config import API_HOST, API_PORT, DATA_DIR
 except ImportError as e:
     logger.error(f"Import error: {e}")
@@ -544,7 +545,7 @@ function searchPlayers() {
                             <div class="lineup-header">
                                 <h3>Lineup ${index + 1} (${contestType.toUpperCase()})</h3>
                                 <div class="lineup-stats">
-                                    <div class="stat-item"><strong>$${lineup.total_salary.toLocaleString()}</strong></div>
+                                    <div class="stat-item"><strong>${lineup.total_salary.toLocaleString()}</strong></div>
                                     <div class="stat-item"><strong>${lineup.projected_points.toFixed(1)} pts</strong></div>
                                     <div class="stat-item"><strong>${lineup.ownership_total.toFixed(1)}% owned</strong></div>
                                 </div>
@@ -590,7 +591,7 @@ function searchPlayers() {
                                 <div class="player-name">${player.name}</div>
                                 <div class="player-details">${player.position} - ${player.team}</div>
                             </div>
-                            <div class="player-salary">$${player.salary}</div>
+                            <div class="player-salary">${player.salary}</div>
                         </div>
                     `;
                 });
@@ -708,50 +709,6 @@ function cleanSourceName(source) {
         'yahoo_sports': 'Yahoo Sports', 
         'nfl_com': 'NFL.com',
         'usa_today': 'USA Today',
-        'nfl_official': 'NFL.com',
-        'rotoworld': 'Rotoworld', 
-        'fantasypros': 'FantasyPros'
-    };
-    return sourceMap[source] || source.toUpperCase();
-}
-
-function getImpactDisplay(impact) {
-    if (impact >= 8) {
-        return { level: 'HIGH', emoji: '🚨', color: '#dc3545' };
-    } else if (impact >= 6) {
-        return { level: 'MED', emoji: '⚠️', color: '#ffc107' };
-    } else if (impact >= 4) {
-        return { level: 'LOW', emoji: 'ℹ️', color: '#17a2b8' };
-    } else {
-        return { level: 'INFO', emoji: '📝', color: '#6c757d' };
-    }
-}
-
-function formatTimeAgo(timestamp) {
-    if (!timestamp) return 'Unknown';
-    
-    try {
-        const newsTime = new Date(timestamp);
-        const now = new Date();
-        const diffMs = now - newsTime;
-        const diffMins = Math.floor(diffMs / (1000 * 60));
-        const diffHours = Math.floor(diffMins / 60);
-        
-        if (diffMins < 60) {
-            return `${diffMins}m ago`;
-        } else if (diffHours < 24) {
-            return `${diffHours}h ago`;
-        } else {
-            return newsTime.toLocaleDateString();
-        }
-    } catch (e) {
-        return 'Recent';
-    }
-}
-
-function cleanSourceName(source) {
-    const sourceMap = {
-        'espn_nfl': 'ESPN',
         'nfl_official': 'NFL.com',
         'rotoworld': 'Rotoworld', 
         'fantasypros': 'FantasyPros'
@@ -966,10 +923,8 @@ async def get_players():
 
 @app.post("/optimize")
 async def optimize_lineups(request: OptimizationRequest):
-    """Generate optimized lineups using the request data"""
+    """Generate optimized lineups using the request data - FIXED"""
     try:
-        logger.info(f"DEBUG: Received locked_players: {request.locked_players}")
-        logger.info(f"DEBUG: Received excluded_players: {request.excluded_players}")
         logger.info(f"🧠 Starting {request.contest_type} optimization with locks/exclusions...")
 
         # Get current players
@@ -978,39 +933,26 @@ async def optimize_lineups(request: OptimizationRequest):
 
         all_players = current_player_data['players']
 
-        # DEBUG: Show actual player IDs vs requested locked IDs
-        actual_ids = [str(player.get('id', '')) for player in all_players[:10]]
-        logger.info(f"🔍 DEBUG: First 10 actual player IDs: {actual_ids}")
-        logger.info(f"🔍 DEBUG: Requested locked IDs: {request.locked_players}")
-
-        # Apply locks/exclusions with debug logging
+        # FIXED: Apply locks/exclusions with debug logging
         filtered_players = []
         locked_count = 0
         excluded_count = 0
 
         for player in all_players:
-            player_id = str(player.get('id', ''))
             player_name = str(player.get('name', ''))
 
-            # FIXED: Use player name if ID is empty (which it always is)
-            lookup_key = player_name if not player_id else player_id
-
-            # Mark locked players - check against player names from UI
-            if lookup_key in request.locked_players or player_name in request.locked_players:
-                if isinstance(player, dict):
-                    player['locked'] = True
-                    locked_count += 1
-                    logger.info(f"🔒 MARKING LOCKED: {player.get('name')} (using name: {player_name})")
-                else:
-                    logger.error(f"Player is not a dict: {type(player)} - {player}")
+            # FIXED: Mark locked players - check against player names from UI
+            if player_name in request.locked_players:
+                player['locked'] = True  # Add locked flag to data
+                locked_count += 1
+                logger.info(f"🔒 MARKING LOCKED: {player_name}")
             else:
-                if isinstance(player, dict):
-                    player['locked'] = False
+                player['locked'] = False
 
             # Skip excluded players
-            if lookup_key in request.excluded_players or player_name in request.excluded_players:
+            if player_name in request.excluded_players:
                 excluded_count += 1
-                logger.info(f"❌ EXCLUDING: {player.get('name')} (using name: {player_name})")
+                logger.info(f"❌ EXCLUDING: {player_name}")
                 continue
 
             filtered_players.append(player)
@@ -1022,54 +964,46 @@ async def optimize_lineups(request: OptimizationRequest):
             raise HTTPException(status_code=400,
                                 detail=f"Too many locked players ({len(request.locked_players)}). Maximum is 8.")
 
-            # Optimize lineups - convert to Player objects first
-            try:
-                from optimizer import EnhancedDFSOptimizer
-                optimizer = EnhancedDFSOptimizer()
+        # FIXED: Use the corrected optimize_dfs_lineups function (synchronous)
+        lineups = optimize_dfs_lineups(
+            player_data=filtered_players,
+            weather_data=current_player_data.get('weather', {}),
+            vegas_multipliers=current_player_data.get('vegas_multipliers', {}),
+            num_lineups=request.num_lineups,
+            contest_type=request.contest_type,
+            use_monte_carlo=False  # Disable for speed in UI
+        )
 
-                # Convert dict data to Player objects using the prepare_players method
-                player_objects = await optimizer.prepare_players(filtered_players)
+        if not lineups:
+            raise HTTPException(status_code=400, detail="No lineups generated")
 
-                lineups = await optimizer.generate_multiple_lineups(
-                    players=player_objects,
-                    num_lineups=request.num_lineups,
-                    contest_type=request.contest_type
-                )
+        logger.info(f"✅ Generated {len(lineups)} lineups with player constraints")
 
-                if not lineups:
-                    raise Exception("No lineups generated")
-
-                logger.info(f"✅ Generated {len(lineups)} lineups with player constraints")
-
-                # Convert LineupResult objects to dictionaries for JSON serialization
-                lineup_dicts = []
-                for lineup in lineups:
-                    lineup_dict = {
-                        'players': [f"{p.name} (${p.salary:,}) - {p.position}-{p.team}" for p in lineup.players],
-                        'total_salary': lineup.total_salary,
-                        'projected_points': round(lineup.projected_points, 1),
-                        'ownership_total': round(lineup.ownership_total, 1),
-                        'correlation_score': round(lineup.correlation_score, 2),
-                        'contest_type': lineup.contest_type
-                    }
-                    lineup_dicts.append(lineup_dict)
-
-            except Exception as opt_error:
-                logger.error(f"Optimization failed: {opt_error}")
-                raise HTTPException(status_code=400, detail="Optimization failed to generate valid lineups")
-
-            # Save to CSV
-            week_num = current_player_data.get('week', 1)
-            csv_path = save_lineups_to_csv(lineups, request.contest_type, week_num)
-
-            return {
-                'lineups': lineup_dicts,  # Use serializable dicts
-                'contest_type': request.contest_type,
-                'num_lineups': len(lineups),
-                'csv_path': str(csv_path) if csv_path else None,
-                'locked_count': locked_count,
-                'excluded_count': excluded_count
+        # Convert LineupResult objects to dictionaries for JSON serialization
+        lineup_dicts = []
+        for lineup in lineups:
+            lineup_dict = {
+                'players': [f"{p.name} (${p.salary:,}) - {p.position}-{p.team}" for p in lineup.players],
+                'total_salary': lineup.total_salary,
+                'projected_points': round(lineup.projected_points, 1),
+                'ownership_total': round(lineup.ownership_total, 1),
+                'correlation_score': round(lineup.correlation_score, 2),
+                'contest_type': lineup.contest_type
             }
+            lineup_dicts.append(lineup_dict)
+
+        # Save to CSV
+        week_num = current_player_data.get('data_quality', {}).get('current_week', 1)
+        csv_path = await save_lineups_to_csv(lineups, request.contest_type, week_num)
+
+        return {
+            'lineups': lineup_dicts,  # Use serializable dicts
+            'contest_type': request.contest_type,
+            'num_lineups': len(lineups),
+            'csv_path': str(csv_path) if csv_path else None,
+            'locked_count': locked_count,
+            'excluded_count': excluded_count
+        }
 
     except HTTPException:
         raise
@@ -1077,6 +1011,8 @@ async def optimize_lineups(request: OptimizationRequest):
         logger.error(f"Error in optimization: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Optimization error: {str(e)}")
+
+
 @app.post("/analyze-live-slate")
 async def analyze_live_slate(request: Request):
     """Analyze locked players vs late slate strategy"""
@@ -1111,6 +1047,8 @@ async def analyze_live_slate(request: Request):
     except Exception as e:
         logger.error(f"Live slate analysis failed: {e}")
         return {'error': str(e)}
+
+
 @app.get("/breaking-news")
 async def get_breaking_news_endpoint():
     """Get breaking news for the GUI"""
@@ -1224,14 +1162,14 @@ async def health_check():
         return {"status": "unhealthy", "error": str(e), "timestamp": datetime.now().isoformat()}
 
 
-async def save_lineups_to_csv(lineups, contest_type, data_quality):
+async def save_lineups_to_csv(lineups, contest_type, week_num):
     """Save lineups to organized CSV files"""
     try:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
         # Create organized directory structure
         lineup_dir = Path("data/lineups")
-        week_dir = lineup_dir / f"week_{data_quality.get('current_week', 'unknown')}"
+        week_dir = lineup_dir / f"week_{week_num}"
         week_dir.mkdir(parents=True, exist_ok=True)
 
         csv_file = week_dir / f"{contest_type}_lineups_{timestamp}.csv"
@@ -1261,9 +1199,11 @@ async def save_lineups_to_csv(lineups, contest_type, data_quality):
         df.to_csv(csv_file, index=False)
 
         logger.info(f"💾 Exported {len(lineups)} lineups to: {csv_file}")
+        return csv_file
 
     except Exception as e:
         logger.error(f"Failed to save CSV: {e}")
+        return None
 
 
 def log(message: str):
