@@ -923,13 +923,22 @@ async def get_players():
 
 @app.post("/optimize")
 async def optimize_lineups(request: OptimizationRequest):
-    """Generate optimized lineups using the request data - FIXED"""
+    """Generate optimized lineups using the request data - FIXED WITH AUTO-REFRESH"""
+    global current_player_data
+
     try:
         logger.info(f"🧠 Starting {request.contest_type} optimization with locks/exclusions...")
 
-        # Get current players
+        # AUTO-REFRESH if no data available
         if not current_player_data or not current_player_data.get('players'):
-            raise HTTPException(status_code=400, detail="No player data available. Please refresh first.")
+            logger.info("📡 Auto-refreshing data (no cached data available)...")
+            data = await get_fresh_data()
+            if data and data.get('players'):
+                current_player_data = data
+                logger.info(f"✅ Auto-refresh complete: {len(data['players'])} players loaded")
+            else:
+                raise HTTPException(status_code=400,
+                                    detail="No player data available. Check data/fanduel_salaries_manual.csv")
 
         all_players = current_player_data['players']
 
@@ -957,7 +966,8 @@ async def optimize_lineups(request: OptimizationRequest):
 
             filtered_players.append(player)
 
-        logger.info(f"✅ Filtered players: {len(filtered_players)} total, {locked_count} locked, {excluded_count} excluded")
+        logger.info(
+            f"✅ Filtered players: {len(filtered_players)} total, {locked_count} locked, {excluded_count} excluded")
 
         # Validate we have enough locked players
         if len(request.locked_players) > 8:
@@ -1004,8 +1014,6 @@ async def optimize_lineups(request: OptimizationRequest):
         logger.error(f"Error in optimization: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Optimization error: {str(e)}")
-
-
 @app.post("/analyze-live-slate")
 async def analyze_live_slate(request: Request):
     """Analyze locked players vs late slate strategy"""
