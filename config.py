@@ -1,20 +1,59 @@
 """
-Simplified configuration settings for on-demand DFS optimization
-Removed all scheduling-related config
+Enhanced configuration settings for on-demand DFS optimization
+FIXED: Better environment variable loading and validation
 """
 import os
 from pathlib import Path
 from typing import List, Dict
 from datetime import datetime
 
-# Load environment variables from .env file
-try:
-    from dotenv import load_dotenv
+# ENHANCED environment loading with validation
+def load_environment_variables():
+    """Load and validate environment variables with better error handling"""
+    env_loaded = False
 
-    load_dotenv()
-    print("✅ Environment variables loaded from .env file")
-except ImportError:
-    print("⚠️ python-dotenv not installed, using system environment variables only")
+    try:
+        from dotenv import load_dotenv
+
+        # Try multiple .env file locations
+        project_dir = Path(__file__).parent
+        env_files = [
+            project_dir / ".env",
+            project_dir / ".env.local",
+            Path.home() / "fanduel" / ".env"
+        ]
+
+        for env_file in env_files:
+            if env_file.exists():
+                load_dotenv(env_file, override=True)
+                print(f"✅ Loaded environment from: {env_file}")
+                env_loaded = True
+                break
+
+        if not env_loaded:
+            print(f"⚠️ No .env file found in: {[str(f) for f in env_files]}")
+
+    except ImportError:
+        print("⚠️ python-dotenv not installed, using system environment variables only")
+
+    # Validate critical API keys
+    openai_key = os.getenv('OPENAI_API_KEY', '')
+    anthropic_key = os.getenv('ANTHROPIC_API_KEY', '')
+
+    if openai_key and len(openai_key) > 20:
+        print(f"✅ OpenAI API key loaded (starts with: {openai_key[:20]}...)")
+    else:
+        print("❌ OpenAI API key missing or invalid")
+
+    if anthropic_key and len(anthropic_key) > 20:
+        print(f"✅ Anthropic API key loaded (starts with: {anthropic_key[:20]}...)")
+    else:
+        print("❌ Anthropic API key missing or invalid")
+
+    return env_loaded
+
+# Load environment variables immediately
+load_environment_variables()
 
 # Base directories
 BASE_DIR = Path(__file__).parent
@@ -41,7 +80,7 @@ API_PORT = 8020
 PLATFORM = "fanduel"
 CONTEST_TYPES = ["gpp", "cash", "contrarian", "bestball"]
 
-# AI Configuration
+# AI Configuration with validation
 AI_ENABLED = os.getenv('AI_ENABLED', 'true').lower() == 'true'
 AI_WEEKLY_BUDGET = float(os.getenv('AI_WEEKLY_BUDGET', '15.0'))
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -195,6 +234,5 @@ OPTIMIZATION_CONFIG = {
 }
 
 # Print loaded config summary on import
-print(
-    f"Config loaded - AI: {AI_ENABLED}, OpenAI: {'✅' if OPENAI_API_KEY else '❌'}, Anthropic: {'✅' if ANTHROPIC_API_KEY else '❌'}")
-print("✅ Simplified config loaded - no scheduling, on-demand only")
+print(f"Config loaded - AI: {AI_ENABLED}, OpenAI: {'✅' if OPENAI_API_KEY else '❌'}, Anthropic: {'✅' if ANTHROPIC_API_KEY else '❌'}")
+print("✅ Enhanced config loaded with improved environment handling")
