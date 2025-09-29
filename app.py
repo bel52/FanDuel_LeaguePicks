@@ -996,14 +996,7 @@ async def optimize_lineups(request: OptimizationRequest):
         week_num = current_player_data.get('data_quality', {}).get('current_week', 1)
         csv_path = await save_lineups_to_csv(lineups, request.contest_type, week_num)
 
-        return {
-            'lineups': lineup_dicts,  # Use serializable dicts
-            'contest_type': request.contest_type,
-            'num_lineups': len(lineups),
-            'csv_path': str(csv_path) if csv_path else None,
-            'locked_count': locked_count,
-            'excluded_count': excluded_count
-        }
+        return lineup_dicts  # Return array directly for frontend
 
     except HTTPException:
         raise
