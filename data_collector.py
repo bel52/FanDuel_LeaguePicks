@@ -812,90 +812,81 @@ class EnhancedDataCollector:
     def _is_viable_te_adaptive(self, salary: int, fppg: float, fppg_source: str,
                                name: str, team: str) -> bool:
         """TE filtering - position is thin, be more inclusive"""
-
-        # Elite TEs
         if salary >= 6000:
             return True
-
-        # Solid contributors
         if salary >= 4800 and fppg >= 6.0:
             return True
-
-        # Value plays (TE is thin)
         if salary >= 4200 and fppg >= 3.0:
             return True
-
-        # Remove obvious non-contributors
         if salary < 4000 and fppg < 1:
             logger.debug(f"FILTERING practice squad TE: {name}")
             return False
-
-        # Keep most TEs (position scarcity)
         return True
 
     def _is_viable_def_adaptive(self, salary: int, fppg: float, fppg_source: str,
                                 name: str, team: str) -> bool:
         """Defense filtering - all NFL defenses are viable"""
-
-        # All defenses $3000+ are real NFL teams
         if salary >= 3000:
             return True
-
-        # Filter out obvious errors
         if salary < 3000:
             logger.debug(f"FILTERING invalid defense: {name}")
             return False
-
         return True
 
-# Main entry point
-async def get_fresh_data() -> Dict[str, Any]:
-    """Get fresh data with BREAKING NEWS INTEGRATION"""
-    async with EnhancedDataCollector() as collector:
-        # Get games info
-        games_info = await collector.get_current_week_games()
-
-        # Get players with REAL projections
-        players = await collector.collect_players_for_slate(games_info, 'gpp')
-
-        if not players:
-            logger.error("NO VALID PLAYERS FOUND")
-            return {}
-
-        # Get other data
-        weather_data = await collector.get_weather_for_games(games_info)
-        vegas_data = await collector.get_vegas_odds_data()
-        vegas_multipliers = collector.calculate_vegas_multipliers(vegas_data)
-
-        # NEW: Get breaking news impact
-        news_impact = await collector.get_breaking_news_impact(players)
-
+    def _get_ceiling_multiplier(self, position: str) -> float:
+        """Position-specific ceiling multipliers"""
         return {
-            'players': players,
-            'games_info': games_info,
-            'weather': weather_data,
-            'vegas_odds': vegas_data,
-            'vegas_multipliers': vegas_multipliers,
-            'breaking_news': news_impact,
-            'last_updated': datetime.now().isoformat(),
-            'data_quality': {
-                'player_count': len(players),
-                'total_games': len(games_info['all_games']),
-                'main_slate_games': len(games_info['main_slate']),
-                'current_week': games_info['current_week'],
-                'avg_projection': sum(p['projected_points'] for p in players) / len(players) if players else 0,
-                'avg_ownership': sum(p.get('ownership', 0) for p in players) / len(players) if players else 0,
-                'teams_in_slate': sorted(set(p['team'] for p in players)),
-                'real_projections': sum(1 for p in players if p.get('fppg_source') == 'real'),
-                'estimated_projections': sum(1 for p in players if p.get('fppg_source') == 'estimated'),
-                'injury_opportunities': sum(1 for p in players if p.get('injury_opportunity', False)),
-                'salary_range': {
-                    'min': min(p['salary'] for p in players) if players else 0,
-                    'max': max(p['salary'] for p in players) if players else 0
-                },
-                'vegas_games': len(vegas_data) if vegas_data else 0,
-                'vegas_multipliers': len(vegas_multipliers),
-                'breaking_news_items': news_impact.get('news_count', 0),
-                'player_news_items': news_impact.get('player_news_count', 0)
+            'QB': 1.4, 'RB': 1.3, 'WR': 1.5, 'TE': 1.4, 'D': 1.2
+        }.get(position, 1.3)
+
+    # Main entry point
+    async def get_fresh_data() -> Dict[str, Any]:
+        """Get fresh data with BREAKING NEWS INTEGRATION"""
+        async with EnhancedDataCollector() as collector:
+            # Get games info
+            games_info = await collector.get_current_week_games()
+
+            # Get players with REAL projections
+            players = await collector.collect_players_for_slate(games_info, 'gpp')
+
+            if not players:
+                logger.error("NO VALID PLAYERS FOUND")
+                return {}
+
+            # Get other data
+            weather_data = await collector.get_weather_for_games(games_info)
+            vegas_data = await collector.get_vegas_odds_data()
+            vegas_multipliers = collector.calculate_vegas_multipliers(vegas_data)
+
+            # NEW: Get breaking news impact
+            news_impact = await collector.get_breaking_news_impact(players)
+
+            return {
+                'players': players,
+                'games_info': games_info,
+                'weather': weather_data,
+                'vegas_odds': vegas_data,
+                'vegas_multipliers': vegas_multipliers,
+                'breaking_news': news_impact,
+                'last_updated': datetime.now().isoformat(),
+                'data_quality': {
+                    'player_count': len(players),
+                    'total_games': len(games_info['all_games']),
+                    'main_slate_games': len(games_info['main_slate']),
+                    'current_week': games_info['current_week'],
+                    'avg_projection': sum(p['projected_points'] for p in players) / len(players) if players else 0,
+                    'avg_ownership': sum(p.get('ownership', 0) for p in players) / len(players) if players else 0,
+                    'teams_in_slate': sorted(set(p['team'] for p in players)),
+                    'real_projections': sum(1 for p in players if p.get('fppg_source') == 'real'),
+                    'estimated_projections': sum(1 for p in players if p.get('fppg_source') == 'estimated'),
+                    'injury_opportunities': sum(1 for p in players if p.get('injury_opportunity', False)),
+                    'salary_range': {
+                        'min': min(p['salary'] for p in players) if players else 0,
+                        'max': max(p['salary'] for p in players) if players else 0
+                    },
+                    'vegas_games': len(vegas_data) if vegas_data else 0,
+                    'vegas_multipliers': len(vegas_multipliers),
+                    'breaking_news_items': news_impact.get('news_count', 0),
+                    'player_news_items': news_impact.get('player_news_count', 0)
+                }
             }
-        }
