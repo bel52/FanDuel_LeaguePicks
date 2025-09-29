@@ -287,56 +287,60 @@ class EnhancedDFSOptimizer:
             return None
 
     def _calculate_monte_carlo_value(self, player: Player, contest_type: str) -> float:
-        """ULTRA AGGRESSIVE Monte Carlo value for GPP tournament wins"""
+        """Calculate player value using Monte Carlo variance data"""
         base_value = player.projection
 
         if contest_type == 'gpp':
-            # GPP: EXTREME ceiling weights
-            ceiling_bonus = (player.ceiling_90 - player.projection) * 8.0
-            ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 5.0
-            boom_bonus = player.boom_rate * 40.0
+            # GPP: Heavily weight ceiling potential and boom rate
+            ceiling_bonus = (player.ceiling_90 - player.projection) * 2.0
+            boom_bonus = player.boom_rate * 10.0  # Strong boom bonus
+            bust_penalty = player.bust_rate * 5.0  # Light bust penalty
 
-            # HEAVY ownership penalties
-            if player.ownership >= 40:
-                ownership_penalty = -15.0
-            elif player.ownership >= 30:
-                ownership_penalty = -8.0
-            elif 15 <= player.ownership <= 25:
-                ownership_penalty = 5.0
-            else:
-                ownership_penalty = 0.0
-
-            bust_penalty = player.bust_rate * 2.0
-            return base_value + ceiling_bonus + ceiling_95_bonus + boom_bonus + ownership_penalty - bust_penalty
-
-        elif contest_type == 'cash':
-            floor_bonus = player.floor_10 * 2.0
-            consistency_bonus = 5.0 if player.bust_rate < 0.15 else 0.0
-            variance_penalty = player.variance * 0.5
-            return base_value + floor_bonus + consistency_bonus - variance_penalty
-
-        elif contest_type == 'contrarian':
-            ceiling_bonus = (player.ceiling_95 - player.projection) * 10.0
-
-            if player.ownership <= 10:
-                ownership_bonus = 20.0
-            elif player.ownership <= 15:
-                ownership_bonus = 10.0
-            elif player.ownership >= 35:
-                ownership_bonus = -20.0
+            # Ownership leverage
+            if 20 <= player.ownership <= 35:
+                ownership_bonus = 3.0
+            elif player.ownership >= 40:
+                ownership_bonus = -2.0
             else:
                 ownership_bonus = 0.0
 
-            boom_bonus = player.boom_rate * 50.0
+            return base_value + ceiling_bonus + boom_bonus - bust_penalty + ownership_bonus
+
+        elif contest_type == 'cash':
+            # CASH: Heavily weight floor and consistency
+            floor_bonus = player.floor_10 * 2.0
+            consistency_bonus = 5.0 if player.bust_rate < 0.15 else 0.0
+            value_bonus = 3.0 if player.value >= 3.5 else 0.0
+
+            # Penalize high variance heavily
+            variance_penalty = player.variance * 0.5
+
+            return base_value + floor_bonus + consistency_bonus + value_bonus - variance_penalty
+
+        elif contest_type == 'contrarian':
+            # CONTRARIAN: Max ceiling, low ownership
+            ceiling_bonus = (player.ceiling_95 - player.projection) * 3.0
+
+            # Heavy ownership leverage
+            if player.ownership <= 15:
+                ownership_bonus = 8.0
+            elif player.ownership >= 35:
+                ownership_bonus = -10.0
+            else:
+                ownership_bonus = 2.0
+
+            boom_bonus = player.boom_rate * 15.0
+
             return base_value + ceiling_bonus + ownership_bonus + boom_bonus
 
-        else:
-            return base_value + (player.ceiling_90 - player.projection) * 2.0
+        else:  # bestball
+            return base_value + (player.ceiling_90 - player.projection) * 1.5
 
     async def _enhance_lineup_result_with_monte_carlo(self, lineup_result: LineupResult) -> LineupResult:
-        """Enhanced MC with ULTRA AGGRESSIVE GPP metrics"""
+        """Enhance lineup result with full Monte Carlo analysis"""
         try:
-            lineup_data = []
+            # Convert lineup to format for Monte Carlo
+            lineup_data: List[Dict[str, Any]] = []
             for player in lineup_result.players:
                 lineup_data.append({
                     'name': player.name,
@@ -346,64 +350,53 @@ class EnhancedDFSOptimizer:
                     'projected_points': player.projection,
                 })
 
-            mc_results = await enhance_lineup_with_monte_carlo(lineup_data, num_simulations=self.mc_simulations)
+            # Run full lineup Monte Carlo simulation
+            mc_results = await enhance_lineup_with_monte_carlo(
+                lineup_data,
+                num_simulations=self.mc_simulations,
+            )
+
             lineup_sim = mc_results['simulation_results']['lineup_simulation']
             insights = mc_results['insights']
 
+            # Update lineup result with Monte Carlo data
             lineup_result.ceiling_90 = lineup_sim['ceiling_90']
             lineup_result.ceiling_95 = lineup_sim['ceiling_95']
             lineup_result.floor_10 = lineup_sim['floor_10']
             lineup_result.floor_25 = lineup_sim['floor_25']
             lineup_result.variance_score = lineup_sim['std']
             lineup_result.sharpe_ratio = lineup_sim['sharpe_ratio']
+            lineup_result.risk_level = insights['risk_assessment']
+            lineup_result.monte_carlo_insights = {
+                'recommendations': insights['optimization_recommendations'],
+                'player_analysis': insights['player_analysis'],
+                'correlation_strength': insights['correlation_strength'],
+            }
 
+            # Calculate boom/bust probabilities for lineup
             mean_score = lineup_sim['mean']
-            ceiling_distance = (lineup_result.ceiling_90 - mean_score) / mean_score if mean_score > 0 else 0
-
-            if lineup_result.contest_type == 'gpp':
-                # ULTRA AGGRESSIVE thresholds for GPP
-                if ceiling_distance > 0.30:
-                    lineup_result.risk_level = "Tournament Winner"
-                elif ceiling_distance > 0.25:
-                    lineup_result.risk_level = "High Ceiling"
-                elif ceiling_distance > 0.20:
-                    lineup_result.risk_level = "Medium Ceiling"
-                else:
-                    lineup_result.risk_level = "Too Safe"
-            else:
-                lineup_result.risk_level = insights['risk_assessment']
-
-            lineup_result.monte_carlo_insights = insights
             lineup_result.boom_probability = self._calculate_boom_probability(lineup_sim, mean_score)
             lineup_result.bust_probability = self._calculate_bust_probability(lineup_sim, mean_score)
 
             logger.info(
-                f"Enhanced lineup: {lineup_result.risk_level}, {lineup_result.boom_probability:.1%} boom, Ceil90={lineup_result.ceiling_90:.1f}")
+                f"Enhanced lineup with Monte Carlo: {lineup_result.risk_level} risk, "
+                f"{lineup_result.boom_probability:.1%} boom rate"
+            )
 
         except Exception as e:
-            logger.error(f"MC enhancement error: {e}")
+            logger.error(f"Error enhancing lineup with Monte Carlo: {e}")
 
         return lineup_result
 
     def _calculate_boom_probability(self, lineup_sim: Dict, mean_score: float) -> float:
-        """ULTRA AGGRESSIVE boom calculation for GPP"""
+        """Calculate probability of boom performance (90th+ percentile)"""
+        boom_threshold = mean_score * 1.3  # 30% above projection
         ceiling_90 = lineup_sim.get('ceiling_90', mean_score)
-        ceiling_95 = lineup_sim.get('ceiling_95', ceiling_90)
 
-        ceiling_distance_90 = (ceiling_90 - mean_score) / mean_score if mean_score > 0 else 0
-        ceiling_distance_95 = (ceiling_95 - mean_score) / mean_score if mean_score > 0 else 0
-
-        # Lower thresholds = higher boom rates
-        if ceiling_distance_95 > 0.35:
-            return 0.25
-        elif ceiling_distance_90 > 0.30:
-            return 0.20
-        elif ceiling_distance_90 > 0.25:
-            return 0.15
-        elif ceiling_distance_90 > 0.20:
-            return 0.12
+        if ceiling_90 > boom_threshold:
+            return 0.15  # Roughly 15% boom rate for good lineups
         else:
-            return 0.08
+            return 0.05
 
     def _calculate_bust_probability(self, lineup_sim: Dict, mean_score: float) -> float:
         """Calculate probability of bust performance (bottom 25%)"""
