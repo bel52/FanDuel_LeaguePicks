@@ -706,13 +706,13 @@ class EnhancedDFSOptimizer:
         """Generate diverse lineups with Monte Carlo enhancement"""
         lineups: List[LineupResult] = []
         used_combinations = set()
-        max_attempts = num_lineups * 3
+        max_attempts = num_lineups * 5  # INCREASED from 3x to 5x
 
         for attempt in range(max_attempts):
             if len(lineups) >= num_lineups:
                 break
 
-            # Moderate randomization
+            # INCREASED randomization for better diversity
             randomized_players: List[Player] = []
             for player in players:
                 new_player = Player(
@@ -727,7 +727,7 @@ class EnhancedDFSOptimizer:
                     injury_risk=player.injury_risk,
                     value=player.value,
                     variance=player.variance,
-                    locked=player.locked,  # FIXED: Preserve locked status
+                    locked=player.locked,
                 )
 
                 # Copy Monte Carlo data
@@ -739,14 +739,14 @@ class EnhancedDFSOptimizer:
                     new_player.bust_rate = player.bust_rate
                     new_player.monte_carlo_analyzed = True
 
-                # Apply randomization (but NOT to locked players)
-                if not player.locked:  # FIXED: Don't randomize locked players
+                # INCREASED randomization ranges
+                if not player.locked:
                     if contest_type == 'gpp':
-                        random_factor = random.uniform(0.85, 1.15)
+                        random_factor = random.uniform(0.75, 1.25)  # INCREASED from 0.85-1.15
                     elif contest_type == 'cash':
-                        random_factor = random.uniform(0.95, 1.05)
+                        random_factor = random.uniform(0.92, 1.08)  # INCREASED from 0.95-1.05
                     else:
-                        random_factor = random.uniform(0.75, 1.25)
+                        random_factor = random.uniform(0.65, 1.35)  # INCREASED from 0.75-1.25
 
                     new_player.projection *= random_factor
                     new_player.value = new_player.projection / (new_player.salary / 1000) if new_player.salary else 0.0
@@ -755,7 +755,7 @@ class EnhancedDFSOptimizer:
 
             lineup = await self.optimize_lineup(randomized_players, contest_type, single_game_teams)
             if lineup:
-                # Diversity check
+                # RELAXED diversity check
                 if len(lineups) > 0:
                     player_usage: Dict[str, int] = {}
                     for existing_lineup in lineups:
@@ -763,35 +763,51 @@ class EnhancedDFSOptimizer:
                             player_usage[player.id] = player_usage.get(player.id, 0) + 1
 
                     overused_players = 0
-                    max_usage = max(2, num_lineups // 4)
+                    # RELAXED: Allow more reuse based on num_lineups
+                    if num_lineups <= 3:
+                        max_usage = 2
+                    elif num_lineups <= 5:
+                        max_usage = 3  # Allow players 3 times in 5 lineups
+                    elif num_lineups <= 10:
+                        max_usage = 5  # Allow players 5 times in 10 lineups
+                    else:
+                        max_usage = 7  # Allow players 7 times in 15 lineups
+
                     for player in lineup.players:
                         usage_count = player_usage.get(player.id, 0)
-                        if usage_count >= max_usage and not player.locked:  # Allow locked players to repeat
+                        if usage_count >= max_usage and not player.locked:
                             overused_players += 1
 
-                    if overused_players > 3:
+                    # RELAXED: Scale threshold with num_lineups
+                    max_overused = min(5, max(3, num_lineups // 2))
+                    if overused_players > max_overused:
                         continue
 
-                core_players = tuple(sorted([p.id for p in lineup.players if p.salary > 6500]))
+                # Check core uniqueness (only high-salary players)
+                core_players = tuple(sorted([p.id for p in lineup.players if p.salary > 7000]))  # INCREASED from 6500
                 if core_players not in used_combinations:
                     lineups.append(lineup)
                     used_combinations.add(core_players)
+                    logger.info(f"✅ Lineup {len(lineups)}/{num_lineups} generated")
 
         # Sort by appropriate metric
         if contest_type == 'cash':
-            if lineups and lineups[0].floor_25 > 0:  # Monte Carlo enhanced
+            if lineups and lineups[0].floor_25 > 0:
                 lineups.sort(key=lambda x: x.floor_25, reverse=True)
             else:
                 lineups.sort(key=lambda x: x.projected_points - (x.variance_score * 0.5), reverse=True)
         else:
-            if lineups and lineups[0].ceiling_90 > 0:  # Monte Carlo enhanced
+            if lineups and lineups[0].ceiling_90 > 0:
                 lineups.sort(key=lambda x: x.ceiling_90 - (x.ownership_total * 0.3), reverse=True)
             else:
                 lineups.sort(key=lambda x: x.projected_points + (x.variance_score * 0.8), reverse=True)
 
-        logger.info(f"Generated {len(lineups)} {contest_type} lineups with Monte Carlo enhancement")
-        return lineups
+        if len(lineups) < num_lineups:
+            logger.warning(f"⚠️ Only generated {len(lineups)}/{num_lineups} lineups (diversity constraints)")
+        else:
+            logger.info(f"✅ Generated {len(lineups)} {contest_type} lineups with Monte Carlo enhancement")
 
+        return lineups
 
 # -----------------------------
 # Public API (sync)
