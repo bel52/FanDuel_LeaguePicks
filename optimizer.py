@@ -294,6 +294,16 @@ class EnhancedDFSOptimizer:
         # FRIENDS LEAGUE: Beat 11 people weekly
         # ============================================================
         if contest_type == 'friends_league':
+            # CRITICAL: Check if player is in high-total game (47+ points)
+            vegas_multipliers = getattr(self, 'vegas_multipliers', {})
+            vegas_boost = vegas_multipliers.get(player.team, 1.0)
+
+            # MASSIVE boost for high-total games (where tournaments are won)
+            if vegas_boost >= 1.25:  # 47+ point games
+                base_value *= 1.40  # 40% boost - GAME CHANGER
+            elif vegas_boost >= 1.15:  # 44+ point games
+                base_value *= 1.20  # 20% boost
+
             # MASSIVE ceiling emphasis (need top score)
             ceiling_bonus = (player.ceiling_90 - player.projection) * 10.0
             ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 6.0
@@ -548,16 +558,28 @@ class EnhancedDFSOptimizer:
             self._add_stacking_incentive(prob, players, player_vars, qb_indices, wr_indices)
 
     def _add_friends_league_constraints(self, prob, players: List[Player], player_vars: Dict, contest_type: str):
-        """Friends league constraints"""
+        """Friends league constraints with MANDATORY stacking"""
+
+        # CRITICAL: Get Vegas data to identify high-total games
+        vegas_multipliers = getattr(self, 'vegas_multipliers', {})
+        high_total_teams = [team for team, mult in vegas_multipliers.items() if mult >= 1.25]
+
+        if high_total_teams and contest_type == 'friends_league':
+            # FORCE at least 4 players from high-total games
+            high_total_player_indices = [
+                i for i, p in enumerate(players)
+                if p.team in high_total_teams
+            ]
+
+            if high_total_player_indices:
+                prob += pulp.lpSum([player_vars[i] for i in high_total_player_indices]) >= 4
+                logger.info(f"🎯 FORCING 4+ players from high-total games: {high_total_teams[:6]}")
+
+        # Original logic below...
         if contest_type == 'gpp':
             expensive_players = [i for i, p in enumerate(players) if p.salary >= 9000]
             if expensive_players:
                 prob += pulp.lpSum([player_vars[i] for i in expensive_players]) >= 1
-
-        elif contest_type == 'cash':
-            high_value_players = [i for i, p in enumerate(players) if p.value >= 3.5]
-            if high_value_players:
-                prob += pulp.lpSum([player_vars[i] for i in high_value_players]) >= 3
 
     def _add_stacking_incentive(
             self,
@@ -754,15 +776,28 @@ class EnhancedDFSOptimizer:
         used_combinations = set()
 
         # CRITICAL: Calculate max appearances BEFORE loop
+        # CRITICAL: Calculate max appearances BEFORE loop
         max_appearances = {}
-        if num_lineups <= 3:
-            max_appearances = {'QB': 2, 'RB': 2, 'WR': 2, 'TE': 2, 'D': 1}
-        elif num_lineups <= 5:
-            max_appearances = {'QB': 3, 'RB': 3, 'WR': 3, 'TE': 3, 'D': 2}
-        elif num_lineups <= 10:
-            max_appearances = {'QB': 4, 'RB': 5, 'WR': 5, 'TE': 4, 'D': 3}
+        if contest_type == 'friends_league':
+            # RELAXED for friends league - need more lineup diversity
+            if num_lineups <= 3:
+                max_appearances = {'QB': 2, 'RB': 3, 'WR': 3, 'TE': 2, 'D': 2}
+            elif num_lineups <= 5:
+                max_appearances = {'QB': 3, 'RB': 4, 'WR': 4, 'TE': 3, 'D': 3}
+            elif num_lineups <= 10:
+                max_appearances = {'QB': 5, 'RB': 6, 'WR': 6, 'TE': 5, 'D': 4}  # Was 4,5,5,4,3
+            else:
+                max_appearances = {'QB': 7, 'RB': 8, 'WR': 8, 'TE': 6, 'D': 5}
         else:
-            max_appearances = {'QB': 6, 'RB': 7, 'WR': 7, 'TE': 5, 'D': 4}
+            # Original logic for other contest types
+            if num_lineups <= 3:
+                max_appearances = {'QB': 2, 'RB': 2, 'WR': 2, 'TE': 2, 'D': 1}
+            elif num_lineups <= 5:
+                max_appearances = {'QB': 3, 'RB': 3, 'WR': 3, 'TE': 3, 'D': 2}
+            elif num_lineups <= 10:
+                max_appearances = {'QB': 4, 'RB': 5, 'WR': 5, 'TE': 4, 'D': 3}
+            else:
+                max_appearances = {'QB': 6, 'RB': 7, 'WR': 7, 'TE': 5, 'D': 4}
 
         logger.info(f"Diversity limits: {max_appearances}")
 
@@ -804,20 +839,20 @@ class EnhancedDFSOptimizer:
 
                 # CONTEST-SPECIFIC randomization
                 if not player.locked:
-                    if contest_type in ['friends_league', 'gpp']:
-                        # AGGRESSIVE randomization for tournament modes
+                    if contest_type == 'friends_league':
+                        # ULTRA AGGRESSIVE for beating 11 people
+                        random_factor = random.uniform(0.50, 1.50)  # Was 0.70-1.30
+
+                        # Extra chaos for non-QB positions to force diversity
+                        if player.position in ['TE', 'D']:
+                            random_factor *= random.uniform(0.80, 1.20)
+
+                    elif contest_type == 'gpp':
                         random_factor = random.uniform(0.70, 1.30)
                     elif contest_type == 'cash':
-                        # Conservative for cash
                         random_factor = random.uniform(0.92, 1.08)
                     else:  # contrarian
-                        # Extreme for contrarian
                         random_factor = random.uniform(0.60, 1.40)
-
-                    new_player.projection *= random_factor
-                    new_player.value = new_player.projection / (new_player.salary / 1000) if new_player.salary else 0.0
-
-                randomized_players.append(new_player)
 
             # Generate lineup
             lineup = await self.optimize_lineup(randomized_players, contest_type, single_game_teams)

@@ -233,7 +233,7 @@ class DualAIDFSAnalyzer:
 
     def _parse_edge_case_recommendations(self, analysis_text: str,
                                          players: List[Dict]) -> List[Dict]:
-        """Parse AI analysis into actionable recommendations"""
+        """Parse AI analysis into actionable recommendations - MORE AGGRESSIVE"""
 
         recommendations = []
         analysis_lower = analysis_text.lower()
@@ -241,7 +241,6 @@ class DualAIDFSAnalyzer:
         for player in players:
             player_name = player.get('name', '').lower()
 
-            # Find player mention in analysis
             if player_name not in analysis_lower:
                 continue
 
@@ -251,18 +250,34 @@ class DualAIDFSAnalyzer:
             context_end = min(len(analysis_text), player_pos + 200)
             context = analysis_lower[context_start:context_end]
 
-            # Parse confidence rating (look for numbers 1-10)
+            # Parse confidence (look for numbers 1-10)
             confidence = 5  # Default
             import re
             confidence_match = re.search(r'confidence[:\s]+(\d+)', context)
             if confidence_match:
                 confidence = int(confidence_match.group(1))
+            else:
+                # ENHANCED: Infer confidence from language strength
+                if any(word in context for word in ['must', 'definitely', 'excellent', 'top']):
+                    confidence = 8
+                elif any(word in context for word in ['should', 'good', 'solid']):
+                    confidence = 7
+                elif any(word in context for word in ['avoid', 'risky', 'pass']):
+                    confidence = 7
 
-            # Parse recommendation
-            if 'start' in context or 'play' in context or 'roster' in context:
+            # Parse recommendation - MORE SENSITIVE to positive/negative words
+            positive_words = ['start', 'play', 'roster', 'target', 'good', 'value', 'like', 'strong']
+            negative_words = ['fade', 'avoid', 'skip', 'pass', 'risky', 'overpriced', 'bust']
+
+            positive_score = sum(1 for word in positive_words if word in context)
+            negative_score = sum(1 for word in negative_words if word in context)
+
+            if positive_score > negative_score:
                 recommendation = 'START'
-            elif 'fade' in context or 'avoid' in context or 'skip' in context:
+                confidence = max(confidence, 7)  # Boost confidence for positive recs
+            elif negative_score > positive_score:
                 recommendation = 'FADE'
+                confidence = max(confidence, 7)  # Boost confidence for negative recs
             elif 'monitor' in context or 'watch' in context:
                 recommendation = 'MONITOR'
             else:
@@ -273,8 +288,7 @@ class DualAIDFSAnalyzer:
                 'position': player.get('position'),
                 'salary': player.get('salary'),
                 'confidence': confidence,
-                'recommendation': recommendation,
-                'ai_reasoning': context[max(0, player_pos - 100):min(len(context), player_pos + 100)]
+                'recommendation': recommendation
             })
 
         return recommendations
@@ -723,6 +737,12 @@ SLATE OVERVIEW:
 - Players available: {data['slate_size']}
 - Average salary: ${data['avg_salary']:.0f}
 
+HIGH-TOTAL GAMES (47+ points - DFS GOLD):
+{[(g['game_id'], f"{g['total']}pts") for g in vegas_data.get('high_total_games', [])[:6]]}
+
+CRITICAL: Players from these high-scoring games should be prioritized heavily in friends league format.
+In a 12-person league, you need ceiling plays from games expected to produce 24+ points per team.
+
 TOP PLAYERS BY POSITION:
 QBs: {[(p['name'], f"${p['salary']}") for p in data['top_players']['QB'][:4]]}
 RBs: {[(p['name'], f"${p['salary']}") for p in data['top_players']['RB'][:6]]}  
@@ -765,6 +785,12 @@ SLATE DATA:
 Contest Type: {contest_type.upper()}
 Total Players: {data['slate_size']}
 Average Salary: ${data['avg_salary']:.0f}
+
+HIGH-TOTAL GAMES (47+ points - DFS GOLD):
+{[(g['game_id'], f"{g['total']}pts") for g in vegas_data.get('high_total_games', [])[:6]]}
+
+CRITICAL: Players from these high-scoring games should be prioritized heavily in friends league format.
+In a 12-person league, you need ceiling plays from games expected to produce 24+ points per team.
 
 TOP PLAYERS:
 QBs: {[(p['name'], f"${p['salary']}") for p in data['top_players']['QB'][:4]]}
