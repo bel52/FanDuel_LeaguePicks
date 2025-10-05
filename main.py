@@ -183,8 +183,8 @@ async def test_system():
 def main():
     """Simplified main function"""
     parser = argparse.ArgumentParser(description="FanDuel DFS Optimizer for Friends League")
-    parser.add_argument('mode', choices=['gpp', 'cash', 'contrarian', 'web', 'test'],
-                        help='Operation mode')
+    parser.add_argument('mode', choices=['gpp', 'cash', 'contrarian', 'friends_league', 'web', 'test'],
+                        help='Contest type or special mode')
     parser.add_argument('-n', '--num-lineups', type=int, default=10,
                         help='Number of lineups to generate (default: 10)')
 

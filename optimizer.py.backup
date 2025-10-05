@@ -287,60 +287,56 @@ class EnhancedDFSOptimizer:
             return None
 
     def _calculate_monte_carlo_value(self, player: Player, contest_type: str) -> float:
-        """Calculate player value using Monte Carlo variance data"""
+        """ULTRA AGGRESSIVE Monte Carlo value for GPP tournament wins"""
         base_value = player.projection
 
         if contest_type == 'gpp':
-            # GPP: Heavily weight ceiling potential and boom rate
-            ceiling_bonus = (player.ceiling_90 - player.projection) * 2.0
-            boom_bonus = player.boom_rate * 10.0  # Strong boom bonus
-            bust_penalty = player.bust_rate * 5.0  # Light bust penalty
+            # GPP: EXTREME ceiling weights
+            ceiling_bonus = (player.ceiling_90 - player.projection) * 8.0
+            ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 5.0
+            boom_bonus = player.boom_rate * 40.0
 
-            # Ownership leverage
-            if 20 <= player.ownership <= 35:
-                ownership_bonus = 3.0
-            elif player.ownership >= 40:
-                ownership_bonus = -2.0
+            # HEAVY ownership penalties
+            if player.ownership >= 40:
+                ownership_penalty = -15.0
+            elif player.ownership >= 30:
+                ownership_penalty = -8.0
+            elif 15 <= player.ownership <= 25:
+                ownership_penalty = 5.0
+            else:
+                ownership_penalty = 0.0
+
+            bust_penalty = player.bust_rate * 2.0
+            return base_value + ceiling_bonus + ceiling_95_bonus + boom_bonus + ownership_penalty - bust_penalty
+
+        elif contest_type == 'cash':
+            floor_bonus = player.floor_10 * 2.0
+            consistency_bonus = 5.0 if player.bust_rate < 0.15 else 0.0
+            variance_penalty = player.variance * 0.5
+            return base_value + floor_bonus + consistency_bonus - variance_penalty
+
+        elif contest_type == 'contrarian':
+            ceiling_bonus = (player.ceiling_95 - player.projection) * 10.0
+
+            if player.ownership <= 10:
+                ownership_bonus = 20.0
+            elif player.ownership <= 15:
+                ownership_bonus = 10.0
+            elif player.ownership >= 35:
+                ownership_bonus = -20.0
             else:
                 ownership_bonus = 0.0
 
-            return base_value + ceiling_bonus + boom_bonus - bust_penalty + ownership_bonus
-
-        elif contest_type == 'cash':
-            # CASH: Heavily weight floor and consistency
-            floor_bonus = player.floor_10 * 2.0
-            consistency_bonus = 5.0 if player.bust_rate < 0.15 else 0.0
-            value_bonus = 3.0 if player.value >= 3.5 else 0.0
-
-            # Penalize high variance heavily
-            variance_penalty = player.variance * 0.5
-
-            return base_value + floor_bonus + consistency_bonus + value_bonus - variance_penalty
-
-        elif contest_type == 'contrarian':
-            # CONTRARIAN: Max ceiling, low ownership
-            ceiling_bonus = (player.ceiling_95 - player.projection) * 3.0
-
-            # Heavy ownership leverage
-            if player.ownership <= 15:
-                ownership_bonus = 8.0
-            elif player.ownership >= 35:
-                ownership_bonus = -10.0
-            else:
-                ownership_bonus = 2.0
-
-            boom_bonus = player.boom_rate * 15.0
-
+            boom_bonus = player.boom_rate * 50.0
             return base_value + ceiling_bonus + ownership_bonus + boom_bonus
 
-        else:  # bestball
-            return base_value + (player.ceiling_90 - player.projection) * 1.5
+        else:
+            return base_value + (player.ceiling_90 - player.projection) * 2.0
 
     async def _enhance_lineup_result_with_monte_carlo(self, lineup_result: LineupResult) -> LineupResult:
-        """Enhance lineup result with full Monte Carlo analysis"""
+        """Enhanced MC with ULTRA AGGRESSIVE GPP metrics"""
         try:
-            # Convert lineup to format for Monte Carlo
-            lineup_data: List[Dict[str, Any]] = []
+            lineup_data = []
             for player in lineup_result.players:
                 lineup_data.append({
                     'name': player.name,
@@ -350,53 +346,64 @@ class EnhancedDFSOptimizer:
                     'projected_points': player.projection,
                 })
 
-            # Run full lineup Monte Carlo simulation
-            mc_results = await enhance_lineup_with_monte_carlo(
-                lineup_data,
-                num_simulations=self.mc_simulations,
-            )
-
+            mc_results = await enhance_lineup_with_monte_carlo(lineup_data, num_simulations=self.mc_simulations)
             lineup_sim = mc_results['simulation_results']['lineup_simulation']
             insights = mc_results['insights']
 
-            # Update lineup result with Monte Carlo data
             lineup_result.ceiling_90 = lineup_sim['ceiling_90']
             lineup_result.ceiling_95 = lineup_sim['ceiling_95']
             lineup_result.floor_10 = lineup_sim['floor_10']
             lineup_result.floor_25 = lineup_sim['floor_25']
             lineup_result.variance_score = lineup_sim['std']
             lineup_result.sharpe_ratio = lineup_sim['sharpe_ratio']
-            lineup_result.risk_level = insights['risk_assessment']
-            lineup_result.monte_carlo_insights = {
-                'recommendations': insights['optimization_recommendations'],
-                'player_analysis': insights['player_analysis'],
-                'correlation_strength': insights['correlation_strength'],
-            }
 
-            # Calculate boom/bust probabilities for lineup
             mean_score = lineup_sim['mean']
+            ceiling_distance = (lineup_result.ceiling_90 - mean_score) / mean_score if mean_score > 0 else 0
+
+            if lineup_result.contest_type == 'gpp':
+                # ULTRA AGGRESSIVE thresholds for GPP
+                if ceiling_distance > 0.30:
+                    lineup_result.risk_level = "Tournament Winner"
+                elif ceiling_distance > 0.25:
+                    lineup_result.risk_level = "High Ceiling"
+                elif ceiling_distance > 0.20:
+                    lineup_result.risk_level = "Medium Ceiling"
+                else:
+                    lineup_result.risk_level = "Too Safe"
+            else:
+                lineup_result.risk_level = insights['risk_assessment']
+
+            lineup_result.monte_carlo_insights = insights
             lineup_result.boom_probability = self._calculate_boom_probability(lineup_sim, mean_score)
             lineup_result.bust_probability = self._calculate_bust_probability(lineup_sim, mean_score)
 
             logger.info(
-                f"Enhanced lineup with Monte Carlo: {lineup_result.risk_level} risk, "
-                f"{lineup_result.boom_probability:.1%} boom rate"
-            )
+                f"Enhanced lineup: {lineup_result.risk_level}, {lineup_result.boom_probability:.1%} boom, Ceil90={lineup_result.ceiling_90:.1f}")
 
         except Exception as e:
-            logger.error(f"Error enhancing lineup with Monte Carlo: {e}")
+            logger.error(f"MC enhancement error: {e}")
 
         return lineup_result
 
     def _calculate_boom_probability(self, lineup_sim: Dict, mean_score: float) -> float:
-        """Calculate probability of boom performance (90th+ percentile)"""
-        boom_threshold = mean_score * 1.3  # 30% above projection
+        """ULTRA AGGRESSIVE boom calculation for GPP"""
         ceiling_90 = lineup_sim.get('ceiling_90', mean_score)
+        ceiling_95 = lineup_sim.get('ceiling_95', ceiling_90)
 
-        if ceiling_90 > boom_threshold:
-            return 0.15  # Roughly 15% boom rate for good lineups
+        ceiling_distance_90 = (ceiling_90 - mean_score) / mean_score if mean_score > 0 else 0
+        ceiling_distance_95 = (ceiling_95 - mean_score) / mean_score if mean_score > 0 else 0
+
+        # Lower thresholds = higher boom rates
+        if ceiling_distance_95 > 0.35:
+            return 0.25
+        elif ceiling_distance_90 > 0.30:
+            return 0.20
+        elif ceiling_distance_90 > 0.25:
+            return 0.15
+        elif ceiling_distance_90 > 0.20:
+            return 0.12
         else:
-            return 0.05
+            return 0.08
 
     def _calculate_bust_probability(self, lineup_sim: Dict, mean_score: float) -> float:
         """Calculate probability of bust performance (bottom 25%)"""
@@ -699,13 +706,13 @@ class EnhancedDFSOptimizer:
         """Generate diverse lineups with Monte Carlo enhancement"""
         lineups: List[LineupResult] = []
         used_combinations = set()
-        max_attempts = num_lineups * 3
+        max_attempts = num_lineups * 5  # INCREASED from 3x to 5x
 
         for attempt in range(max_attempts):
             if len(lineups) >= num_lineups:
                 break
 
-            # Moderate randomization
+            # INCREASED randomization for better diversity
             randomized_players: List[Player] = []
             for player in players:
                 new_player = Player(
@@ -720,7 +727,7 @@ class EnhancedDFSOptimizer:
                     injury_risk=player.injury_risk,
                     value=player.value,
                     variance=player.variance,
-                    locked=player.locked,  # FIXED: Preserve locked status
+                    locked=player.locked,
                 )
 
                 # Copy Monte Carlo data
@@ -732,14 +739,14 @@ class EnhancedDFSOptimizer:
                     new_player.bust_rate = player.bust_rate
                     new_player.monte_carlo_analyzed = True
 
-                # Apply randomization (but NOT to locked players)
-                if not player.locked:  # FIXED: Don't randomize locked players
+                # INCREASED randomization ranges
+                if not player.locked:
                     if contest_type == 'gpp':
-                        random_factor = random.uniform(0.85, 1.15)
+                        random_factor = random.uniform(0.75, 1.25)  # INCREASED from 0.85-1.15
                     elif contest_type == 'cash':
-                        random_factor = random.uniform(0.95, 1.05)
+                        random_factor = random.uniform(0.92, 1.08)  # INCREASED from 0.95-1.05
                     else:
-                        random_factor = random.uniform(0.75, 1.25)
+                        random_factor = random.uniform(0.65, 1.35)  # INCREASED from 0.75-1.25
 
                     new_player.projection *= random_factor
                     new_player.value = new_player.projection / (new_player.salary / 1000) if new_player.salary else 0.0
@@ -748,7 +755,7 @@ class EnhancedDFSOptimizer:
 
             lineup = await self.optimize_lineup(randomized_players, contest_type, single_game_teams)
             if lineup:
-                # Diversity check
+                # RELAXED diversity check
                 if len(lineups) > 0:
                     player_usage: Dict[str, int] = {}
                     for existing_lineup in lineups:
@@ -756,35 +763,51 @@ class EnhancedDFSOptimizer:
                             player_usage[player.id] = player_usage.get(player.id, 0) + 1
 
                     overused_players = 0
-                    max_usage = max(2, num_lineups // 4)
+                    # RELAXED: Allow more reuse based on num_lineups
+                    if num_lineups <= 3:
+                        max_usage = 2
+                    elif num_lineups <= 5:
+                        max_usage = 3  # Allow players 3 times in 5 lineups
+                    elif num_lineups <= 10:
+                        max_usage = 5  # Allow players 5 times in 10 lineups
+                    else:
+                        max_usage = 7  # Allow players 7 times in 15 lineups
+
                     for player in lineup.players:
                         usage_count = player_usage.get(player.id, 0)
-                        if usage_count >= max_usage and not player.locked:  # Allow locked players to repeat
+                        if usage_count >= max_usage and not player.locked:
                             overused_players += 1
 
-                    if overused_players > 3:
+                    # RELAXED: Scale threshold with num_lineups
+                    max_overused = min(5, max(3, num_lineups // 2))
+                    if overused_players > max_overused:
                         continue
 
-                core_players = tuple(sorted([p.id for p in lineup.players if p.salary > 6500]))
+                # Check core uniqueness (only high-salary players)
+                core_players = tuple(sorted([p.id for p in lineup.players if p.salary > 7000]))  # INCREASED from 6500
                 if core_players not in used_combinations:
                     lineups.append(lineup)
                     used_combinations.add(core_players)
+                    logger.info(f"✅ Lineup {len(lineups)}/{num_lineups} generated")
 
         # Sort by appropriate metric
         if contest_type == 'cash':
-            if lineups and lineups[0].floor_25 > 0:  # Monte Carlo enhanced
+            if lineups and lineups[0].floor_25 > 0:
                 lineups.sort(key=lambda x: x.floor_25, reverse=True)
             else:
                 lineups.sort(key=lambda x: x.projected_points - (x.variance_score * 0.5), reverse=True)
         else:
-            if lineups and lineups[0].ceiling_90 > 0:  # Monte Carlo enhanced
+            if lineups and lineups[0].ceiling_90 > 0:
                 lineups.sort(key=lambda x: x.ceiling_90 - (x.ownership_total * 0.3), reverse=True)
             else:
                 lineups.sort(key=lambda x: x.projected_points + (x.variance_score * 0.8), reverse=True)
 
-        logger.info(f"Generated {len(lineups)} {contest_type} lineups with Monte Carlo enhancement")
-        return lineups
+        if len(lineups) < num_lineups:
+            logger.warning(f"⚠️ Only generated {len(lineups)}/{num_lineups} lineups (diversity constraints)")
+        else:
+            logger.info(f"✅ Generated {len(lineups)} {contest_type} lineups with Monte Carlo enhancement")
 
+        return lineups
 
 # -----------------------------
 # Public API (sync)

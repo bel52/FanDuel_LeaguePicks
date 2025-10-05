@@ -289,13 +289,11 @@ class EnhancedDFSOptimizer:
     def _calculate_monte_carlo_value(self, player: Player, contest_type: str) -> float:
         """ULTRA AGGRESSIVE Monte Carlo value for GPP tournament wins"""
         base_value = player.projection
-
         if contest_type == 'gpp':
             # GPP: EXTREME ceiling weights
             ceiling_bonus = (player.ceiling_90 - player.projection) * 8.0
             ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 5.0
             boom_bonus = player.boom_rate * 40.0
-
             # HEAVY ownership penalties
             if player.ownership >= 40:
                 ownership_penalty = -15.0
@@ -305,19 +303,15 @@ class EnhancedDFSOptimizer:
                 ownership_penalty = 5.0
             else:
                 ownership_penalty = 0.0
-
             bust_penalty = player.bust_rate * 2.0
             return base_value + ceiling_bonus + ceiling_95_bonus + boom_bonus + ownership_penalty - bust_penalty
-
         elif contest_type == 'cash':
             floor_bonus = player.floor_10 * 2.0
             consistency_bonus = 5.0 if player.bust_rate < 0.15 else 0.0
             variance_penalty = player.variance * 0.5
             return base_value + floor_bonus + consistency_bonus - variance_penalty
-
         elif contest_type == 'contrarian':
             ceiling_bonus = (player.ceiling_95 - player.projection) * 10.0
-
             if player.ownership <= 10:
                 ownership_bonus = 20.0
             elif player.ownership <= 15:
@@ -326,12 +320,14 @@ class EnhancedDFSOptimizer:
                 ownership_bonus = -20.0
             else:
                 ownership_bonus = 0.0
-
-            boom_bonus = player.boom_rate * 50.0
+            boom_bonus = player.boom_rate * 20.0
             return base_value + ceiling_bonus + ownership_bonus + boom_bonus
-
+        elif contest_type == 'friends_league':
+            ceiling_bonus = (player.ceiling_90 - player.projection) * 2.0
+            consistency_bonus = 3.0 if player.bust_rate < 0.20 else 0.0
+            return base_value + ceiling_bonus + consistency_bonus
         else:
-            return base_value + (player.ceiling_90 - player.projection) * 2.0
+            return base_value + (player.variance * 1.0)
 
     async def _enhance_lineup_result_with_monte_carlo(self, lineup_result: LineupResult) -> LineupResult:
         """Enhanced MC with ULTRA AGGRESSIVE GPP metrics"""
@@ -578,26 +574,26 @@ class EnhancedDFSOptimizer:
     def _calculate_contest_value(self, player: Player, contest_type: str) -> float:
         """Fallback value calculation when Monte Carlo not available"""
         base_value = player.projection
-
         if contest_type == 'gpp':
             if 25 <= player.ownership <= 40:
                 base_value += 2.0
             elif player.ownership >= 45:
                 base_value -= 1.0
             return base_value + (player.variance * 1.2)
-
         elif contest_type == 'cash':
             if player.value >= 3.5:
                 base_value += 5.0
             return base_value - (player.variance * 0.2)
-
         elif contest_type == 'contrarian':
             if player.ownership <= 20:
                 base_value += 5.0
             elif player.ownership >= 35:
                 base_value -= 8.0
             return base_value + (player.variance * 2.0)
-
+        elif contest_type == 'friends_league':
+            if player.value >= 3.5:
+                base_value += 3.0
+            return base_value + (player.variance * 0.5)
         else:
             return base_value + (player.variance * 1.0)
 
