@@ -92,6 +92,193 @@ class DualAIDFSAnalyzer:
         claude_status = "✅" if self.claude_client else "❌"
         logger.info(f"AI Services: OpenAI {openai_status} | Claude {claude_status}")
 
+    async def analyze_edge_case_players(self, player_data: List[Dict]) -> Dict[str, Any]:
+        """AI analysis of small-sample, injury-opportunity, and edge case players"""
+
+        # Identify edge cases that need AI evaluation
+        small_sample_players = []
+        injury_boost_players = []
+        high_variance_players = []
+
+        for player in player_data:
+            games_played = player.get('games_played', 0)
+            name = player.get('name', '')
+            position = player.get('position', '')
+            salary = player.get('salary', 0)
+            fppg = player.get('projected_points', 0)
+            injury_opp = player.get('injury_opportunity', False)
+
+            # Small sample (1-2 games, high salary, good FPPG)
+            if 0 < games_played <= 2 and salary > 5000 and fppg > 10:
+                small_sample_players.append({
+                    'name': name,
+                    'position': position,
+                    'salary': salary,
+                    'fppg': fppg,
+                    'games': games_played,
+                    'reason': f'{fppg:.1f} FPPG on only {games_played} game(s)'
+                })
+
+            # Injury opportunity players
+            if injury_opp:
+                injured_starter = player.get('injured_starter', '')
+                injury_boost_players.append({
+                    'name': name,
+                    'position': position,
+                    'salary': salary,
+                    'fppg': fppg,
+                    'injured_starter': injured_starter
+                })
+
+            # High variance plays
+            value = (fppg / (salary / 1000)) if salary > 0 else 0
+            if value > 3.5 and salary < 5500:
+                high_variance_players.append({
+                    'name': name,
+                    'position': position,
+                    'salary': salary,
+                    'fppg': fppg,
+                    'value': value
+                })
+
+        # Only call AI if there are edge cases to evaluate
+        if not (small_sample_players or injury_boost_players or high_variance_players):
+            return {'edge_case_recommendations': [], 'ai_analysis': 'No edge cases to evaluate'}
+
+        # Construct AI prompt for strategic evaluation
+        prompt = f"""You're evaluating edge-case NFL DFS players for a 12-person friends league tournament.
+    Your goal: Determine which edge cases are REAL opportunities vs traps.
+
+    SMALL SAMPLE PLAYERS (limited games played):
+    {json.dumps(small_sample_players, indent=2) if small_sample_players else 'None'}
+
+    INJURY OPPORTUNITY PLAYERS (backups getting starts):
+    {json.dumps(injury_boost_players, indent=2) if injury_boost_players else 'None'}
+
+    HIGH VALUE PLAYERS (3.5+ value):
+    {json.dumps(high_variance_players, indent=2) if high_variance_players else 'None'}
+
+    For each player category, provide:
+    1. CONFIDENCE RATING (1-10): How confident are you they'll produce?
+    2. START/FADE/MONITOR: Clear recommendation
+    3. REASONING: Why this rating? (1 sentence)
+
+    Focus on ACTIONABLE recommendations. In a 12-person league, you need to beat 11 people weekly."""
+
+        try:
+            if self.claude_client:
+                response = self.claude_client.messages.create(
+                    model="claude-3-haiku-20240307",
+                    max_tokens=800,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+
+                analysis_text = response.content[0].text
+
+                # Track cost
+                self.weekly_spend += 0.08
+                self._log_cost("edge_case_player_analysis", 0.08)
+
+                # Parse recommendations
+                recommendations = self._parse_edge_case_recommendations(
+                    analysis_text,
+                    small_sample_players + injury_boost_players + high_variance_players
+                )
+
+                logger.info(f"✅ AI evaluated {len(recommendations)} edge case players")
+
+                return {
+                    'edge_case_recommendations': recommendations,
+                    'ai_analysis': analysis_text,
+                    'small_sample_count': len(small_sample_players),
+                    'injury_opp_count': len(injury_boost_players),
+                    'value_play_count': len(high_variance_players)
+                }
+
+            elif self.openai_client:
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=800,
+                    temperature=0.2
+                )
+
+                analysis_text = response.choices[0].message.content
+
+                # Track cost
+                self.weekly_spend += 0.06
+                self._log_cost("edge_case_player_analysis", 0.06)
+
+                recommendations = self._parse_edge_case_recommendations(
+                    analysis_text,
+                    small_sample_players + injury_boost_players + high_variance_players
+                )
+
+                logger.info(f"✅ AI evaluated {len(recommendations)} edge case players")
+
+                return {
+                    'edge_case_recommendations': recommendations,
+                    'ai_analysis': analysis_text,
+                    'small_sample_count': len(small_sample_players),
+                    'injury_opp_count': len(injury_boost_players),
+                    'value_play_count': len(high_variance_players)
+                }
+
+            else:
+                return {'edge_case_recommendations': [], 'ai_analysis': 'AI unavailable'}
+
+        except Exception as e:
+            logger.error(f"Edge case AI analysis failed: {e}")
+            return {'edge_case_recommendations': [], 'ai_analysis': f'Error: {str(e)}'}
+
+    def _parse_edge_case_recommendations(self, analysis_text: str,
+                                         players: List[Dict]) -> List[Dict]:
+        """Parse AI analysis into actionable recommendations"""
+
+        recommendations = []
+        analysis_lower = analysis_text.lower()
+
+        for player in players:
+            player_name = player.get('name', '').lower()
+
+            # Find player mention in analysis
+            if player_name not in analysis_lower:
+                continue
+
+            # Extract context around player name
+            player_pos = analysis_lower.find(player_name)
+            context_start = max(0, player_pos - 200)
+            context_end = min(len(analysis_text), player_pos + 200)
+            context = analysis_lower[context_start:context_end]
+
+            # Parse confidence rating (look for numbers 1-10)
+            confidence = 5  # Default
+            import re
+            confidence_match = re.search(r'confidence[:\s]+(\d+)', context)
+            if confidence_match:
+                confidence = int(confidence_match.group(1))
+
+            # Parse recommendation
+            if 'start' in context or 'play' in context or 'roster' in context:
+                recommendation = 'START'
+            elif 'fade' in context or 'avoid' in context or 'skip' in context:
+                recommendation = 'FADE'
+            elif 'monitor' in context or 'watch' in context:
+                recommendation = 'MONITOR'
+            else:
+                recommendation = 'NEUTRAL'
+
+            recommendations.append({
+                'player_name': player.get('name'),
+                'position': player.get('position'),
+                'salary': player.get('salary'),
+                'confidence': confidence,
+                'recommendation': recommendation,
+                'ai_reasoning': context[max(0, player_pos - 100):min(len(context), player_pos + 100)]
+            })
+
+        return recommendations
+
     def _validate_openai_key(self, key: str) -> bool:
         """Validate OpenAI API key format"""
         if not key:
@@ -802,5 +989,170 @@ Be specific with player names and actionable advice."""
             'cost_log': self.cost_log[-10:] if self.cost_log else []
         }
 
+        async def analyze_edge_case_players(self, player_data: List[Dict]) -> Dict[str, Any]:
+            """AI analysis of small-sample, injury-opportunity, and edge case players"""
+
+            # Identify edge cases needing AI evaluation
+            small_sample_players = []
+            injury_boost_players = []
+            high_variance_players = []
+
+            for player in player_data:
+                games_played = player.get('games_played', 0)
+                name = player.get('name', '')
+                position = player.get('position', '')
+                salary = player.get('salary', 0)
+                fppg = player.get('projected_points', 0)
+                injury_opp = player.get('injury_opportunity', False)
+
+                # Small sample (1-2 games, significant salary, good FPPG)
+                if 0 < games_played <= 2 and salary > 5000 and fppg > 10:
+                    small_sample_players.append({
+                        'name': name,
+                        'position': position,
+                        'salary': salary,
+                        'fppg': fppg,
+                        'games': games_played,
+                        'reason': f'{fppg:.1f} FPPG on only {games_played} game(s)'
+                    })
+
+                # Injury opportunity players
+                if injury_opp:
+                    injured_starter = player.get('injured_starter', '')
+                    injury_boost_players.append({
+                        'name': name,
+                        'position': position,
+                        'salary': salary,
+                        'fppg': fppg,
+                        'injured_starter': injured_starter
+                    })
+
+                # High variance value plays
+                value = (fppg / (salary / 1000)) if salary > 0 else 0
+                if value > 3.5 and salary < 5500:
+                    high_variance_players.append({
+                        'name': name,
+                        'position': position,
+                        'salary': salary,
+                        'fppg': fppg,
+                        'value': value
+                    })
+
+            # Only call AI if there are edge cases
+            if not (small_sample_players or injury_boost_players or high_variance_players):
+                return {'edge_case_recommendations': [], 'ai_analysis': 'No edge cases to evaluate'}
+
+            # Construct AI prompt
+            prompt = f"""You're evaluating edge-case NFL DFS players for a 12-person friends league tournament.
+    Goal: Determine which edge cases are REAL opportunities vs traps.
+
+    SMALL SAMPLE PLAYERS (limited games):
+    {json.dumps(small_sample_players[:10], indent=2) if small_sample_players else 'None'}
+
+    INJURY OPPORTUNITY PLAYERS (backups getting starts):
+    {json.dumps(injury_boost_players[:10], indent=2) if injury_boost_players else 'None'}
+
+    HIGH VALUE PLAYERS (3.5+ value):
+    {json.dumps(high_variance_players[:10], indent=2) if high_variance_players else 'None'}
+
+    For each player, provide:
+    1. CONFIDENCE (1-10): How confident they'll produce?
+    2. RECOMMENDATION: START/FADE/MONITOR
+    3. REASONING: Why? (1 sentence)
+
+    Focus on actionable advice for beating 11 other people weekly."""
+
+            try:
+                if self.claude_client:
+                    response = self.claude_client.messages.create(
+                        model="claude-3-haiku-20240307",
+                        max_tokens=800,
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+
+                    analysis_text = response.content[0].text
+                    self.weekly_spend += 0.08
+                    self._log_cost("edge_case_player_analysis", 0.08)
+
+                elif self.openai_client:
+                    response = self.openai_client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=800,
+                        temperature=0.2
+                    )
+
+                    analysis_text = response.choices[0].message.content
+                    self.weekly_spend += 0.06
+                    self._log_cost("edge_case_player_analysis", 0.06)
+
+                else:
+                    return {'edge_case_recommendations': [], 'ai_analysis': 'AI unavailable'}
+
+                # Parse recommendations
+                recommendations = self._parse_edge_case_recommendations(
+                    analysis_text,
+                    small_sample_players + injury_boost_players + high_variance_players
+                )
+
+                logger.info(f"AI evaluated {len(recommendations)} edge case players")
+
+                return {
+                    'edge_case_recommendations': recommendations,
+                    'ai_analysis': analysis_text,
+                    'small_sample_count': len(small_sample_players),
+                    'injury_opp_count': len(injury_boost_players),
+                    'value_play_count': len(high_variance_players)
+                }
+
+            except Exception as e:
+                logger.error(f"Edge case AI analysis failed: {e}")
+                return {'edge_case_recommendations': [], 'ai_analysis': f'Error: {str(e)}'}
+
+        def _parse_edge_case_recommendations(self, analysis_text: str,
+                                             players: List[Dict]) -> List[Dict]:
+            """Parse AI analysis into actionable recommendations"""
+
+            recommendations = []
+            analysis_lower = analysis_text.lower()
+
+            for player in players:
+                player_name = player.get('name', '').lower()
+
+                if player_name not in analysis_lower:
+                    continue
+
+                # Extract context around player name
+                player_pos = analysis_lower.find(player_name)
+                context_start = max(0, player_pos - 200)
+                context_end = min(len(analysis_text), player_pos + 200)
+                context = analysis_lower[context_start:context_end]
+
+                # Parse confidence (look for numbers 1-10)
+                confidence = 5  # Default
+                import re
+                confidence_match = re.search(r'confidence[:\s]+(\d+)', context)
+                if confidence_match:
+                    confidence = int(confidence_match.group(1))
+
+                # Parse recommendation
+                if 'start' in context or 'play' in context:
+                    recommendation = 'START'
+                elif 'fade' in context or 'avoid' in context:
+                    recommendation = 'FADE'
+                elif 'monitor' in context:
+                    recommendation = 'MONITOR'
+                else:
+                    recommendation = 'NEUTRAL'
+
+                recommendations.append({
+                    'player_name': player.get('name'),
+                    'position': player.get('position'),
+                    'salary': player.get('salary'),
+                    'confidence': confidence,
+                    'recommendation': recommendation
+                })
+
+            return recommendations
 # Backwards compatibility
 WinningDFSAIAnalyzer = DualAIDFSAnalyzer

@@ -680,9 +680,80 @@ class EnhancedDataCollector:
             logger.info(f"Projection sources: {real_count} real FPPG, 0 estimated")
 
             # Log injury opportunities applied
+            # Log injury opportunities applied
             injury_opportunities = sum(1 for p in winning_players if p.get('injury_opportunity', False))
             if injury_opportunities > 0:
                 logger.info(f"Injury opportunities applied: {injury_opportunities} players boosted")
+
+            # ========================================================================
+            # AI EDGE CASE ANALYSIS - Evaluate small sample, injury opp, value plays
+            # ========================================================================
+            logger.info("=" * 60)
+            logger.info("APPLYING AI EDGE CASE ANALYSIS")
+            logger.info("=" * 60)
+
+            try:
+                from ai_analyzer import DualAIDFSAnalyzer
+                analyzer = DualAIDFSAnalyzer()
+
+                # Get AI analysis of edge cases
+                edge_analysis = await analyzer.analyze_edge_case_players(winning_players)
+
+                if edge_analysis.get('edge_case_recommendations'):
+                    logger.info(f"AI evaluated {edge_analysis.get('small_sample_count', 0)} small-sample players")
+                    logger.info(f"AI evaluated {edge_analysis.get('injury_opp_count', 0)} injury opportunities")
+                    logger.info(f"AI evaluated {edge_analysis.get('value_play_count', 0)} value plays")
+
+                    # Apply AI recommendations to projections
+                    for rec in edge_analysis['edge_case_recommendations']:
+                        player_name = rec['player_name']
+                        recommendation = rec['recommendation']
+                        confidence = rec['confidence']
+
+                        # Find player in winning_players list
+                        for player in winning_players:
+                            if player.get('name') == player_name:
+                                # Store AI metadata on player
+                                player['ai_confidence'] = confidence
+                                player['ai_recommendation'] = recommendation
+
+                                # Adjust projection based on AI confidence
+                                if recommendation == 'START' and confidence >= 7:
+                                    # High confidence START = boost projection
+                                    boost_factor = 1.0 + ((confidence - 5) / 20)  # 7=1.10x, 10=1.25x
+                                    original = player.get('projected_points', 0)
+                                    player['projected_points'] = original * boost_factor
+                                    player['projection'] = original * boost_factor
+                                    logger.info(
+                                        f"AI BOOST: {player_name} "
+                                        f"{original:.1f} -> {player['projected_points']:.1f} pts "
+                                        f"(confidence {confidence}/10)"
+                                    )
+
+                                elif recommendation == 'FADE' and confidence >= 7:
+                                    # High confidence FADE = reduce projection
+                                    penalty_factor = 1.0 - ((confidence - 5) / 30)  # 7=0.93x, 10=0.83x
+                                    original = player.get('projected_points', 0)
+                                    player['projected_points'] = original * penalty_factor
+                                    player['projection'] = original * penalty_factor
+                                    logger.info(
+                                        f"AI FADE: {player_name} "
+                                        f"{original:.1f} -> {player['projected_points']:.1f} pts "
+                                        f"(confidence {confidence}/10)"
+                                    )
+
+                                break
+
+                    logger.info("AI edge case analysis complete")
+                else:
+                    logger.info("No edge cases requiring AI evaluation")
+
+            except ImportError:
+                logger.warning("AI analyzer not available for edge case analysis")
+            except Exception as e:
+                logger.error(f"AI edge case analysis failed: {e}")
+
+            logger.info("=" * 60)
 
             return winning_players
 

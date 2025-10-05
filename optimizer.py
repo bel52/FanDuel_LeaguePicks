@@ -287,14 +287,55 @@ class EnhancedDFSOptimizer:
             return None
 
     def _calculate_monte_carlo_value(self, player: Player, contest_type: str) -> float:
-        """ULTRA AGGRESSIVE Monte Carlo value for GPP tournament wins"""
+        """Enhanced value calculation with proper friends_league strategy"""
         base_value = player.projection
-        if contest_type == 'gpp':
-            # GPP: EXTREME ceiling weights
+
+        # ============================================================
+        # FRIENDS LEAGUE: Beat 11 people weekly
+        # ============================================================
+        if contest_type == 'friends_league':
+            # MASSIVE ceiling emphasis (need top score)
+            ceiling_bonus = (player.ceiling_90 - player.projection) * 10.0
+            ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 6.0
+
+            # Boom rate is critical
+            boom_bonus = player.boom_rate * 45.0
+
+            # Salary strategy: Studs and scrubs
+            if player.salary >= 9000:
+                salary_bonus = 10.0  # Pay up for studs
+            elif player.salary <= 5000 and player.value >= 3.0:
+                salary_bonus = 8.0  # Value plays enable studs
+            elif 6500 <= player.salary <= 7500:
+                salary_bonus = -8.0  # Avoid mid-tier
+            else:
+                salary_bonus = 0.0
+
+            # Ownership matters less in 12-person league
+            if player.ownership >= 50:
+                ownership_penalty = -5.0
+            elif player.ownership <= 15:
+                ownership_penalty = 5.0
+            else:
+                ownership_penalty = 0.0
+
+            # Variance is good for tournaments
+            variance_bonus = player.variance * 2.5
+
+            # Bust risk - some is acceptable
+            bust_penalty = player.bust_rate * 8.0
+
+            return (base_value + ceiling_bonus + ceiling_95_bonus + boom_bonus +
+                    salary_bonus + ownership_penalty + variance_bonus - bust_penalty)
+
+        # ============================================================
+        # GPP: Standard tournament
+        # ============================================================
+        elif contest_type == 'gpp':
             ceiling_bonus = (player.ceiling_90 - player.projection) * 8.0
             ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 5.0
             boom_bonus = player.boom_rate * 40.0
-            # HEAVY ownership penalties
+
             if player.ownership >= 40:
                 ownership_penalty = -15.0
             elif player.ownership >= 30:
@@ -303,15 +344,26 @@ class EnhancedDFSOptimizer:
                 ownership_penalty = 5.0
             else:
                 ownership_penalty = 0.0
+
             bust_penalty = player.bust_rate * 2.0
+
             return base_value + ceiling_bonus + ceiling_95_bonus + boom_bonus + ownership_penalty - bust_penalty
+
+        # ============================================================
+        # CASH: Floor focus
+        # ============================================================
         elif contest_type == 'cash':
             floor_bonus = player.floor_10 * 2.0
             consistency_bonus = 5.0 if player.bust_rate < 0.15 else 0.0
             variance_penalty = player.variance * 0.5
             return base_value + floor_bonus + consistency_bonus - variance_penalty
+
+        # ============================================================
+        # CONTRARIAN: Ownership fade
+        # ============================================================
         elif contest_type == 'contrarian':
             ceiling_bonus = (player.ceiling_95 - player.projection) * 10.0
+
             if player.ownership <= 10:
                 ownership_bonus = 20.0
             elif player.ownership <= 15:
@@ -320,12 +372,10 @@ class EnhancedDFSOptimizer:
                 ownership_bonus = -20.0
             else:
                 ownership_bonus = 0.0
+
             boom_bonus = player.boom_rate * 20.0
             return base_value + ceiling_bonus + ownership_bonus + boom_bonus
-        elif contest_type == 'friends_league':
-            ceiling_bonus = (player.ceiling_90 - player.projection) * 2.0
-            consistency_bonus = 3.0 if player.bust_rate < 0.20 else 0.0
-            return base_value + ceiling_bonus + consistency_bonus
+
         else:
             return base_value + (player.variance * 1.0)
 
@@ -699,16 +749,33 @@ class EnhancedDFSOptimizer:
             contest_type: str = 'gpp',
             single_game_teams: List[str] = None,
     ) -> List[LineupResult]:
-        """Generate diverse lineups with Monte Carlo enhancement"""
+        """Generate diverse lineups with AGGRESSIVE diversity enforcement"""
         lineups: List[LineupResult] = []
         used_combinations = set()
-        max_attempts = num_lineups * 5  # INCREASED from 3x to 5x
+
+        # CRITICAL: Calculate max appearances BEFORE loop
+        max_appearances = {}
+        if num_lineups <= 3:
+            max_appearances = {'QB': 2, 'RB': 2, 'WR': 2, 'TE': 2, 'D': 1}
+        elif num_lineups <= 5:
+            max_appearances = {'QB': 3, 'RB': 3, 'WR': 3, 'TE': 3, 'D': 2}
+        elif num_lineups <= 10:
+            max_appearances = {'QB': 4, 'RB': 5, 'WR': 5, 'TE': 4, 'D': 3}
+        else:
+            max_appearances = {'QB': 6, 'RB': 7, 'WR': 7, 'TE': 5, 'D': 4}
+
+        logger.info(f"Diversity limits: {max_appearances}")
+
+        # Track ALL player usage across lineups
+        player_usage_tracker = {}
+
+        max_attempts = num_lineups * 8  # Increased from 5x
 
         for attempt in range(max_attempts):
             if len(lineups) >= num_lineups:
                 break
 
-            # INCREASED randomization for better diversity
+            # AGGRESSIVE randomization based on contest type
             randomized_players: List[Player] = []
             for player in players:
                 new_player = Player(
@@ -726,7 +793,7 @@ class EnhancedDFSOptimizer:
                     locked=player.locked,
                 )
 
-                # Copy Monte Carlo data
+                # Copy Monte Carlo data if available
                 if player.monte_carlo_analyzed:
                     new_player.floor_10 = player.floor_10
                     new_player.ceiling_90 = player.ceiling_90
@@ -735,56 +802,78 @@ class EnhancedDFSOptimizer:
                     new_player.bust_rate = player.bust_rate
                     new_player.monte_carlo_analyzed = True
 
-                # INCREASED randomization ranges
+                # CONTEST-SPECIFIC randomization
                 if not player.locked:
-                    if contest_type == 'gpp':
-                        random_factor = random.uniform(0.75, 1.25)  # INCREASED from 0.85-1.15
+                    if contest_type in ['friends_league', 'gpp']:
+                        # AGGRESSIVE randomization for tournament modes
+                        random_factor = random.uniform(0.70, 1.30)
                     elif contest_type == 'cash':
-                        random_factor = random.uniform(0.92, 1.08)  # INCREASED from 0.95-1.05
-                    else:
-                        random_factor = random.uniform(0.65, 1.35)  # INCREASED from 0.75-1.25
+                        # Conservative for cash
+                        random_factor = random.uniform(0.92, 1.08)
+                    else:  # contrarian
+                        # Extreme for contrarian
+                        random_factor = random.uniform(0.60, 1.40)
 
                     new_player.projection *= random_factor
                     new_player.value = new_player.projection / (new_player.salary / 1000) if new_player.salary else 0.0
 
                 randomized_players.append(new_player)
 
+            # Generate lineup
             lineup = await self.optimize_lineup(randomized_players, contest_type, single_game_teams)
-            if lineup:
-                # RELAXED diversity check
-                if len(lineups) > 0:
-                    player_usage: Dict[str, int] = {}
-                    for existing_lineup in lineups:
-                        for player in existing_lineup.players:
-                            player_usage[player.id] = player_usage.get(player.id, 0) + 1
 
-                    overused_players = 0
-                    # RELAXED: Allow more reuse based on num_lineups
-                    if num_lineups <= 3:
-                        max_usage = 2
-                    elif num_lineups <= 5:
-                        max_usage = 3  # Allow players 3 times in 5 lineups
-                    elif num_lineups <= 10:
-                        max_usage = 5  # Allow players 5 times in 10 lineups
-                    else:
-                        max_usage = 7  # Allow players 7 times in 15 lineups
+            if not lineup:
+                continue
 
-                    for player in lineup.players:
-                        usage_count = player_usage.get(player.id, 0)
-                        if usage_count >= max_usage and not player.locked:
-                            overused_players += 1
+            # STRICT diversity check using tracker
+            passes_diversity = True
+            overused_players = []
 
-                    # RELAXED: Scale threshold with num_lineups
-                    max_overused = min(5, max(3, num_lineups // 2))
-                    if overused_players > max_overused:
-                        continue
+            for player in lineup.players:
+                position = player.position
+                player_key = f"{player.id}_{position}"
 
-                # Check core uniqueness (only high-salary players)
-                core_players = tuple(sorted([p.id for p in lineup.players if p.salary > 7000]))  # INCREASED from 6500
-                if core_players not in used_combinations:
-                    lineups.append(lineup)
-                    used_combinations.add(core_players)
-                    logger.info(f"✅ Lineup {len(lineups)}/{num_lineups} generated")
+                current_usage = player_usage_tracker.get(player_key, 0)
+                max_allowed = max_appearances.get(position, 5)
+
+                if current_usage >= max_allowed and not player.locked:
+                    overused_players.append(f"{player.name}({current_usage}/{max_allowed})")
+                    passes_diversity = False
+
+            # Reject if too many overused players
+            if not passes_diversity:
+                logger.debug(f"Rejected lineup - overused: {overused_players}")
+                continue
+
+            # Check core uniqueness (only expensive players matter)
+            expensive_core = tuple(sorted([
+                p.id for p in lineup.players
+                if p.salary > 7000
+            ]))
+
+            if expensive_core in used_combinations:
+                logger.debug(f"Rejected lineup - duplicate expensive core")
+                continue
+
+            # ACCEPT LINEUP - Update tracker
+            for player in lineup.players:
+                player_key = f"{player.id}_{player.position}"
+                player_usage_tracker[player_key] = player_usage_tracker.get(player_key, 0) + 1
+
+            lineups.append(lineup)
+            used_combinations.add(expensive_core)
+
+            logger.info(f"✅ Lineup {len(lineups)}/{num_lineups} generated (attempt {attempt + 1})")
+
+        # Log final usage stats
+        logger.info("=" * 60)
+        logger.info("FINAL PLAYER USAGE ACROSS LINEUPS:")
+        for player_key, count in sorted(player_usage_tracker.items(), key=lambda x: x[1], reverse=True)[:15]:
+            player_id, position = player_key.rsplit('_', 1)
+            # Find player name
+            player_name = next((p.name for p in players if p.id == player_id), player_id)
+            logger.info(f"  {player_name} ({position}): {count}/{num_lineups} lineups")
+        logger.info("=" * 60)
 
         # Sort by appropriate metric
         if contest_type == 'cash':
@@ -792,16 +881,16 @@ class EnhancedDFSOptimizer:
                 lineups.sort(key=lambda x: x.floor_25, reverse=True)
             else:
                 lineups.sort(key=lambda x: x.projected_points - (x.variance_score * 0.5), reverse=True)
-        else:
+        else:  # friends_league, gpp, contrarian
             if lineups and lineups[0].ceiling_90 > 0:
-                lineups.sort(key=lambda x: x.ceiling_90 - (x.ownership_total * 0.3), reverse=True)
+                lineups.sort(key=lambda x: x.ceiling_90 - (x.ownership_total * 0.2), reverse=True)
             else:
-                lineups.sort(key=lambda x: x.projected_points + (x.variance_score * 0.8), reverse=True)
+                lineups.sort(key=lambda x: x.projected_points + (x.variance_score * 1.0), reverse=True)
 
         if len(lineups) < num_lineups:
-            logger.warning(f"⚠️ Only generated {len(lineups)}/{num_lineups} lineups (diversity constraints)")
+            logger.warning(f"⚠️ Only generated {len(lineups)}/{num_lineups} lineups")
         else:
-            logger.info(f"✅ Generated {len(lineups)} {contest_type} lineups with Monte Carlo enhancement")
+            logger.info(f"✅ Generated {len(lineups)} diverse {contest_type} lineups")
 
         return lineups
 
