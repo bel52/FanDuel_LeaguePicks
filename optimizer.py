@@ -811,6 +811,7 @@ class EnhancedDFSOptimizer:
                 break
 
             # AGGRESSIVE randomization based on contest type
+            # AGGRESSIVE randomization based on contest type
             randomized_players: List[Player] = []
             for player in players:
                 new_player = Player(
@@ -837,16 +838,15 @@ class EnhancedDFSOptimizer:
                     new_player.bust_rate = player.bust_rate
                     new_player.monte_carlo_analyzed = True
 
-                # CONTEST-SPECIFIC randomization
+                # Contest-specific randomization
+                random_factor = 1.0
                 if not player.locked:
                     if contest_type == 'friends_league':
                         # ULTRA AGGRESSIVE for beating 11 people
-                        random_factor = random.uniform(0.50, 1.50)  # Was 0.70-1.30
-
-                        # Extra chaos for non-QB positions to force diversity
+                        random_factor = random.uniform(0.50, 1.50)
+                        # Extra chaos for TE/D to force diversity
                         if player.position in ['TE', 'D']:
                             random_factor *= random.uniform(0.80, 1.20)
-
                     elif contest_type == 'gpp':
                         random_factor = random.uniform(0.70, 1.30)
                     elif contest_type == 'cash':
@@ -854,9 +854,17 @@ class EnhancedDFSOptimizer:
                     else:  # contrarian
                         random_factor = random.uniform(0.60, 1.40)
 
-            # Generate lineup
-            lineup = await self.optimize_lineup(randomized_players, contest_type, single_game_teams)
+                # Apply factor and recompute value/variance
+                new_player.projection *= random_factor
+                new_player.value = (new_player.projection / (new_player.salary / 1000.0)
+                                    if new_player.salary > 0 else 0.0)
+                variance_multipliers = {'QB': 0.28, 'RB': 0.35, 'WR': 0.45, 'TE': 0.38, 'D': 0.42}
+                new_player.variance = new_player.projection * variance_multipliers.get(new_player.position, 0.35)
 
+                randomized_players.append(new_player)
+
+            # Generate lineup using the randomized pool
+            lineup = await self.optimize_lineup(randomized_players, contest_type, single_game_teams)
             if not lineup:
                 continue
 

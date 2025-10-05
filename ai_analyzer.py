@@ -717,6 +717,7 @@ Focus on actionable lineup changes only."""
                 if avg_salary > 5500:
                     high_total_teams.append(team)
 
+        # inside _prepare_slate_data return value
         return {
             'contest_type': contest_type,
             'top_players': top_players_by_pos,
@@ -724,7 +725,8 @@ Focus on actionable lineup changes only."""
             'weather_impacts': significant_weather,
             'stack_candidates': high_total_teams[:4],
             'slate_size': len(player_data),
-            'avg_salary': sum(p.get('salary', 0) for p in player_data) / len(player_data) if player_data else 0
+            'avg_salary': sum(p.get('salary', 0) for p in player_data) / len(player_data) if player_data else 0,
+            'vegas_high_total_games': vegas_data.get('high_total_games', [])  # <-- add this line
         }
 
     def _get_openai_insights(self, data: Dict, contest_type: str) -> str:
@@ -738,7 +740,7 @@ SLATE OVERVIEW:
 - Average salary: ${data['avg_salary']:.0f}
 
 HIGH-TOTAL GAMES (47+ points - DFS GOLD):
-{[(g['game_id'], f"{g['total']}pts") for g in vegas_data.get('high_total_games', [])[:6]]}
+{[(g.get('game_id'), f"{g.get('total')}pts") for g in data.get('vegas_high_total_games', [])[:6]]}
 
 CRITICAL: Players from these high-scoring games should be prioritized heavily in friends league format.
 In a 12-person league, you need ceiling plays from games expected to produce 24+ points per team.
@@ -787,7 +789,7 @@ Total Players: {data['slate_size']}
 Average Salary: ${data['avg_salary']:.0f}
 
 HIGH-TOTAL GAMES (47+ points - DFS GOLD):
-{[(g['game_id'], f"{g['total']}pts") for g in vegas_data.get('high_total_games', [])[:6]]}
+{[(g.get('game_id'), f"{g.get('total')}pts") for g in data.get('vegas_high_total_games', [])[:6]]}
 
 CRITICAL: Players from these high-scoring games should be prioritized heavily in friends league format.
 In a 12-person league, you need ceiling plays from games expected to produce 24+ points per team.
