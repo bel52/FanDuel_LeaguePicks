@@ -802,31 +802,20 @@ class EnhancedDFSOptimizer:
         lineups: List[LineupResult] = []
         used_combinations = set()
 
-        # CRITICAL: Calculate max appearances BEFORE loop
-        # CRITICAL: Calculate max appearances BEFORE loop
-        max_appearances = {}
-        if contest_type == 'friends_league':
-            # RELAXED for friends league - need more lineup diversity
-            if num_lineups <= 3:
-                max_appearances = {'QB': 2, 'RB': 3, 'WR': 3, 'TE': 2, 'D': 2}
-            elif num_lineups <= 5:
-                max_appearances = {'QB': 3, 'RB': 4, 'WR': 4, 'TE': 3, 'D': 3}
-            elif num_lineups <= 10:
-                max_appearances = {'QB': 5, 'RB': 6, 'WR': 6, 'TE': 5, 'D': 4}  # Was 4,5,5,4,3
-            else:
-                max_appearances = {'QB': 7, 'RB': 8, 'WR': 8, 'TE': 6, 'D': 5}
-        else:
-            # Original logic for other contest types
-            if num_lineups <= 3:
-                max_appearances = {'QB': 2, 'RB': 2, 'WR': 2, 'TE': 2, 'D': 1}
-            elif num_lineups <= 5:
-                max_appearances = {'QB': 3, 'RB': 3, 'WR': 3, 'TE': 3, 'D': 2}
-            elif num_lineups <= 10:
-                max_appearances = {'QB': 4, 'RB': 5, 'WR': 5, 'TE': 4, 'D': 3}
-            else:
-                max_appearances = {'QB': 6, 'RB': 7, 'WR': 7, 'TE': 5, 'D': 4}
+        # Calculate scalable diversity limits using exposure percentages
+        max_appearances = {
+            pos: calculate_max_exposure(num_lineups, pos)
+            for pos in ['QB', 'RB', 'WR', 'TE', 'D']
+        }
+
+        # For single game slates, tighten exposure by 10% to force more variety
+        if single_game_teams:
+            for pos in max_appearances:
+                max_appearances[pos] = max(1, int(max_appearances[pos] * 0.90))
 
         logger.info(f"Diversity limits: {max_appearances}")
+        exposure_pcts = {pos: f"{(max_appearances[pos] / num_lineups) * 100:.0f}%" for pos in max_appearances}
+        logger.info(f"Exposure rates: {exposure_pcts}")
 
         # Track ALL player usage across lineups
         player_usage_tracker = {}
