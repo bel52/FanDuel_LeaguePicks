@@ -5,6 +5,7 @@ NOW INCLUDES: Injury opportunity detection BEFORE filtering
 """
 import asyncio
 import aiohttp
+import os
 import pandas as pd
 import nfl_data_py as nfl
 from datetime import datetime, timedelta, timezone
@@ -688,9 +689,17 @@ class EnhancedDataCollector:
             # ========================================================================
             # AI EDGE CASE ANALYSIS - Evaluate small sample, injury opp, value plays
             # ========================================================================
-            logger.info("=" * 60)
-            logger.info("APPLYING AI EDGE CASE ANALYSIS")
-            logger.info("=" * 60)
+                # Check if AI is enabled
+                ai_enabled = os.getenv('AI_ENABLED', 'true').lower() == 'true'
+
+                if not ai_enabled:
+                    logger.info("🚫 AI edge case analysis skipped (AI disabled)")
+                    logger.info("=" * 60)
+                    return winning_players
+
+                logger.info("=" * 60)
+                logger.info("APPLYING AI EDGE CASE ANALYSIS")
+                logger.info("=" * 60)
 
             try:
                 from ai_analyzer import DualAIDFSAnalyzer

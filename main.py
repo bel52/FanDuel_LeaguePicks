@@ -5,6 +5,7 @@ No scheduling - you control when it runs
 """
 import asyncio
 import sys
+import os
 import argparse
 from pathlib import Path
 from datetime import datetime
@@ -61,6 +62,7 @@ async def generate_lineups(contest_type: str = 'gpp', num_lineups: int = 10):
         player_data=data['players'],
         weather_data=data.get('weather', {}),
         vegas_multipliers=data.get('vegas_multipliers', {}),
+        vegas_data=data.get('vegas_odds', {}),
         num_lineups=num_lineups,
         contest_type=contest_type
     )
@@ -187,6 +189,8 @@ def main():
                         help='Contest type or special mode')
     parser.add_argument('-n', '--num-lineups', type=int, default=10,
                         help='Number of lineups to generate (default: 10)')
+    parser.add_argument('--no-ai', action='store_true',
+                        help='Disable AI analysis to save API costs')
 
     args = parser.parse_args()
 
@@ -217,6 +221,11 @@ Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}
             success = asyncio.run(test_system())
         else:
             # Generate lineups for contest type
+            # Set AI flag as environment variable so all modules see it
+            if args.no_ai:
+                os.environ['AI_ENABLED'] = 'false'
+                print("🚫 AI analysis disabled (--no-ai flag)")
+
             lineups = asyncio.run(generate_lineups(args.mode, args.num_lineups))
             success = lineups is not None
 

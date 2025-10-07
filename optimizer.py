@@ -5,6 +5,7 @@ Fixed async issues for tournament wins - FIXED LOCKED PLAYER HANDLING
 """
 import asyncio
 import json
+import os
 import random
 from dataclasses import dataclass
 from datetime import datetime
@@ -107,6 +108,28 @@ class LineupResult:
 # -----------------------------
 # Optimizer
 # -----------------------------
+def calculate_max_exposure(num_lineups: int, position: str) -> int:
+    """
+    Calculate max player appearances based on position and total lineups
+
+    Target exposure rates:
+    - QB/DEF: 50% max (concentrated positions)
+    - RB: 60% max (moderate scarcity)
+    - WR: 65% max (deepest position)
+    - TE: 55% max (shallow but need variety)
+    """
+    target_pct = {
+        'QB': 0.50,
+        'RB': 0.60,
+        'WR': 0.65,
+        'TE': 0.55,
+        'D': 0.50,
+    }.get(position, 0.60)
+
+    # Calculate max appearances, minimum 1
+    max_uses = max(1, int(num_lineups * target_pct))
+
+    return max_uses
 class EnhancedDFSOptimizer:
     """Enhanced DFS optimization with Monte Carlo variance modeling"""
 
@@ -560,9 +583,13 @@ class EnhancedDFSOptimizer:
     def _add_friends_league_constraints(self, prob, players: List[Player], player_vars: Dict, contest_type: str):
         """Friends league constraints with MANDATORY stacking"""
 
-        # CRITICAL: Get Vegas data to identify high-total games
-        vegas_multipliers = getattr(self, 'vegas_multipliers', {})
-        high_total_teams = [team for team, mult in vegas_multipliers.items() if mult >= 1.25]
+        # CRITICAL: Get teams from ACTUAL high-total games (47+), not multipliers
+        vegas_data = getattr(self, 'vegas_data', {})
+        high_total_games = vegas_data.get('high_total_games', [])
+
+        high_total_teams = []
+        for game in high_total_games:
+            high_total_teams.extend(game.get('teams', []))
 
         if high_total_teams and contest_type == 'friends_league':
             # FORCE at least 4 players from high-total games
@@ -573,7 +600,7 @@ class EnhancedDFSOptimizer:
 
             if high_total_player_indices:
                 prob += pulp.lpSum([player_vars[i] for i in high_total_player_indices]) >= 4
-                logger.info(f"🎯 FORCING 4+ players from high-total games: {high_total_teams[:6]}")
+                logger.info(f"🎯 FORCING 4+ players from 47+ games: {high_total_teams}")
 
         # Original logic below...
         if contest_type == 'gpp':
@@ -982,6 +1009,7 @@ def optimize_dfs_lineups(
         player_data: List[Dict],
         weather_data: Dict = None,
         vegas_multipliers: Dict = None,
+        vegas_data: Dict = None,  # ADD THIS LINE
         num_lineups: int = 10,
         contest_type: str = 'gpp',
         single_game_teams: List[str] = None,
@@ -996,7 +1024,9 @@ def optimize_dfs_lineups(
                 f"Lineups: {num_lineups} | Monte Carlo: {'ON' if use_monte_carlo and MONTE_CARLO_AVAILABLE else 'OFF'}")
 
     # --- Optional: AI pre-processing for ownership/strategy ---
-    if AI_AVAILABLE:
+    ai_enabled = os.getenv('AI_ENABLED', 'true').lower() == 'true'
+
+    if AI_AVAILABLE and ai_enabled:
         try:
             analyzer = DualAIDFSAnalyzer()
             ai_analysis = analyzer.analyze_slate_for_optimization(
@@ -1034,7 +1064,7 @@ def optimize_dfs_lineups(
 
     # Stash vegas multipliers on the instance for potential downstream use
     setattr(optimizer, "vegas_multipliers", vegas_multipliers or {})
-
+    setattr(optimizer, "vegas_data", vegas_data or {})
     # --- Prepare players (async -> sync) ---
     players: List[Player] = _run_coro_sync(
         optimizer.prepare_players(player_data, weather_data or {}, vegas_multipliers or {})
