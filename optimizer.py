@@ -188,10 +188,54 @@ def identify_core_plays(players: List[Player], vegas_multipliers: Dict, num_line
     return players
 
 
-class EnhancedDFSOptimizer:
-    """Enhanced DFS optimization with Monte Carlo variance modeling"""
+def calculate_max_exposure(num_lineups: int, position: str) -> int:
+    """
+    Calculate max player appearances based on position and total lineups
 
-    def __init__(self, use_monte_carlo: bool
+    Philosophy: Let good players appear often in small sets.
+    Diversity increases as lineup count grows.
+
+    Target exposure rates:
+    - Small sets (3-5): 60-100% exposure for studs
+    - Medium sets (6-15): 50-70% exposure
+    - Large sets (16+): 40-60% exposure
+    """
+
+    # For small lineup sets, allow high exposure of good players
+    if num_lineups <= 5:
+        target_pct = {
+            'QB': 0.80,  # 4 of 5 lineups max
+            'RB': 1.00,  # Elite RBs can be in ALL lineups (scarcest position)
+            'WR': 0.60,  # More WR depth, spread it out
+            'TE': 0.80,  # Shallow position, use the good ones
+            'D': 0.60,  # Decent variety available
+        }.get(position, 0.70)
+
+    # For medium sets, moderate exposure
+    elif num_lineups <= 15:
+        target_pct = {
+            'QB': 0.60,
+            'RB': 0.65,
+            'WR': 0.55,
+            'TE': 0.60,
+            'D': 0.50,
+        }.get(position, 0.60)
+
+    # For large sets, lower exposure to maximize field coverage
+    else:
+        target_pct = {
+            'QB': 0.50,
+            'RB': 0.55,
+            'WR': 0.50,
+            'TE': 0.50,
+            'D': 0.45,
+        }.get(position, 0.50)
+
+    # Calculate max appearances, minimum 1
+    max_uses = max(1, int(num_lineups * target_pct))
+    return max_uses
+
+
 class EnhancedDFSOptimizer:
     """Enhanced DFS optimization with Monte Carlo variance modeling"""
 
