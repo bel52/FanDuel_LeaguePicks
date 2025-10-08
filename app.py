@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import asyncio
+import os
 from pathlib import Path
 import json
 from datetime import datetime
@@ -54,6 +55,7 @@ class OptimizationRequest(BaseModel):
     avoid_high_ownership: bool = True
     force_stacks: bool = True
     max_salary: int = 60000
+    use_ai: bool = True  # NEW: AI toggle
 
 
 class LineupResponse(BaseModel):
@@ -174,6 +176,7 @@ async def read_root():
                             <div class="control-group">
                                 <label>Contest Type</label>
                                 <select id="contestType">
+                                    <option value="friends_league" selected>Friends League (12-Person)</option><div class="control-group">
                                     <option value="gpp">Tournament/GPP</option>
                                     <option value="cash">Cash Game</option>
                                     <option value="contrarian">Contrarian</option>
@@ -185,7 +188,15 @@ async def read_root():
                                 <label>Lineups</label>
                                 <input type="number" id="numLineups" value="3" min="1" max="10">
                             </div>
-
+                            <div class="control-group">
+    <label style="display: flex; align-items: center; gap: 5px;">
+        <input type="checkbox" id="useAI" checked style="width: auto; margin: 0;">
+        <span>Use AI Analysis</span>
+    </label>
+    <div style="font-size: 11px; color: #6c757d; margin-top: 3px;">
+        (~$0.10-0.15 per run)
+    </div>
+</div>
                             <button class="button" onclick="generateLineups()" id="generateBtn">Generate</button>
                             <button class="button" onclick="refreshData()" id="refreshBtn">Refresh</button>
                             <button class="button" onclick="checkBreakingNews()" id="newsBtn">📰 News</button>
@@ -483,14 +494,19 @@ function searchPlayers() {
 
                     log(`🧠 Generating ${numLineups} ${contestType.toUpperCase()} lineups...`, 'loading');
 
-                    const requestBody = {
+      const useAI = document.getElementById('useAI').checked;
+
+const requestBody = {
     contest_type: contestType,
     num_lineups: parseInt(document.getElementById('numLineups').value),
     locked_players: Array.from(lockedPlayers),
     excluded_players: Array.from(excludedPlayers),
     avoid_high_ownership: contestType === 'gpp' || contestType === 'contrarian',
-    force_stacks: contestType !== 'cash'
+    force_stacks: contestType !== 'cash',
+    use_ai: useAI
 };
+
+log(`🧠 AI Analysis: ${useAI ? 'ENABLED' : 'DISABLED'}`, useAI ? 'success' : 'loading');
 
                     const response = await fetch('/optimize', {
                         method: 'POST',
@@ -927,6 +943,11 @@ async def optimize_lineups(request: OptimizationRequest):
     global current_player_data
 
     try:
+        # Set AI flag from request
+        os.environ['AI_ENABLED'] = 'true' if request.use_ai else 'false'
+        ai_status = '✅ ENABLED' if request.use_ai else '❌ DISABLED'
+        logger.info(f"🤖 AI Analysis: {ai_status}")
+
         logger.info(f"🧠 Starting {request.contest_type} optimization with locks/exclusions...")
 
         # AUTO-REFRESH if no data available
