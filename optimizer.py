@@ -231,14 +231,12 @@ def calculate_max_exposure(num_lineups: int, position: str) -> int:
             'D': 0.45,
         }.get(position, 0.50)
 
-        # Calculate max appearances, minimum 1
-        max_uses = max(1, int(num_lineups * target_pct))
+    # Calculate max appearances, minimum 1
+    max_uses = max(1, int(num_lineups * target_pct))
 
-        return max_uses
-class EnhancedDFSOptimizer:
-    """Enhanced DFS optimization with Monte Carlo variance modeling"""
+    return max_uses
 
-    def __init__(self, use_monte_carlo: bool
+
 class EnhancedDFSOptimizer:
     """Enhanced DFS optimization with Monte Carlo variance modeling"""
 
@@ -249,7 +247,6 @@ class EnhancedDFSOptimizer:
 
         if use_monte_carlo and not MONTE_CARLO_AVAILABLE:
             logger.warning("Monte Carlo requested but not available - falling back to basic optimization")
-
     async def prepare_players(
             self,
             player_data: List[Dict],
