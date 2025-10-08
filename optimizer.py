@@ -231,11 +231,14 @@ def calculate_max_exposure(num_lineups: int, position: str) -> int:
             'D': 0.45,
         }.get(position, 0.50)
 
-    # Calculate max appearances, minimum 1
-    max_uses = max(1, int(num_lineups * target_pct))
-    return max_uses
+        # Calculate max appearances, minimum 1
+        max_uses = max(1, int(num_lineups * target_pct))
 
+        return max_uses
+class EnhancedDFSOptimizer:
+    """Enhanced DFS optimization with Monte Carlo variance modeling"""
 
+    def __init__(self, use_monte_carlo: bool
 class EnhancedDFSOptimizer:
     """Enhanced DFS optimization with Monte Carlo variance modeling"""
 
@@ -423,34 +426,108 @@ class EnhancedDFSOptimizer:
         # FRIENDS LEAGUE: Beat 11 people weekly
         # ============================================================
         if contest_type == 'friends_league':
-            # CRITICAL: Check if player is in high-total game (47+ points)
+            # Get vegas multipliers for game environment
             vegas_multipliers = getattr(self, 'vegas_multipliers', {})
             vegas_boost = vegas_multipliers.get(player.team, 1.0)
 
-            # MASSIVE boost for high-total games (where tournaments are won)
-            if vegas_boost >= 1.25:  # 47+ point games
-                base_value *= 1.40  # 40% boost - GAME CHANGER
-            elif vegas_boost >= 1.15:  # 44+ point games
-                base_value *= 1.20  # 20% boost
+            # POSITION-SPECIFIC TOURNAMENT STRATEGY
+            if player.position == 'QB':
+                # QBs: NEVER go cheap in tournaments - ceiling is everything
+                if vegas_boost >= 1.40:  # 47+ point game
+                    base_value *= 2.80  # MASSIVE boost for game environment QBs
+                elif vegas_boost >= 1.25:  # 45+ point game
+                    base_value *= 2.20
+                elif vegas_boost >= 1.15:
+                    base_value *= 1.60
 
-            # MASSIVE ceiling emphasis (need top score)
-            ceiling_bonus = (player.ceiling_90 - player.projection) * 10.0
-            ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 6.0
+                # QB ceiling is KING - need 30+ point games to win
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 30.0
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 18.0
+                boom_bonus = player.boom_rate * 60.0
 
-            # Boom rate is critical
-            boom_bonus = player.boom_rate * 45.0
+                # Salary strategy: ALWAYS pay up for QBs
+                if player.salary >= 8000:
+                    salary_bonus = 35.0  # Elite QBs
+                elif player.salary >= 7000:
+                    salary_bonus = 20.0  # Good QBs
+                elif player.salary >= 6500:
+                    salary_bonus = -5.0  # Mediocre QBs
+                else:
+                    salary_bonus = -40.0  # MASSIVE penalty for punt QBs
 
-            # Salary strategy: Studs and scrubs
-            if player.salary >= 9000:
-                salary_bonus = 10.0  # Pay up for studs
-            elif player.salary <= 5000 and player.value >= 3.0:
-                salary_bonus = 8.0  # Value plays enable studs
-            elif 6500 <= player.salary <= 7500:
-                salary_bonus = -8.0  # Avoid mid-tier
-            else:
+            elif player.position == 'RB':
+                # RBs: Game script + volume + touchdowns
+                if vegas_boost >= 1.40:
+                    base_value *= 1.80
+                elif vegas_boost >= 1.25:
+                    base_value *= 1.50
+                elif vegas_boost >= 1.15:
+                    base_value *= 1.25
+
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 15.0
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 10.0
+                boom_bonus = player.boom_rate * 50.0
+
+                # RB salary: Elite bell cows or true value
+                if player.salary >= 9000:
+                    salary_bonus = 25.0  # Elite workhorses
+                elif player.salary >= 7500:
+                    salary_bonus = 12.0
+                elif player.salary <= 5500 and player.value >= 2.8:
+                    salary_bonus = 15.0  # Value RBs with projection
+                else:
+                    salary_bonus = -8.0
+
+            elif player.position == 'WR':
+                # WRs: Target share in pace-up games
+                if vegas_boost >= 1.40:
+                    base_value *= 1.65
+                elif vegas_boost >= 1.25:
+                    base_value *= 1.40
+                elif vegas_boost >= 1.15:
+                    base_value *= 1.20
+
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 12.0
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 8.0
+                boom_bonus = player.boom_rate * 48.0
+
+                # WR salary: More flexible, but avoid mid-tier
+                if player.salary >= 8500:
+                    salary_bonus = 18.0
+                elif player.salary >= 7000:
+                    salary_bonus = 10.0
+                elif player.salary <= 6000 and player.value >= 2.5:
+                    salary_bonus = 12.0
+                elif 6000 <= player.salary <= 7000:
+                    salary_bonus = -6.0  # Avoid mid-tier
+                else:
+                    salary_bonus = 0.0
+
+            elif player.position == 'TE':
+                # TEs: Elite or punt, nothing in between
+                if vegas_boost >= 1.40:
+                    base_value *= 1.45
+                elif vegas_boost >= 1.25:
+                    base_value *= 1.25
+
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 10.0
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 6.0
+                boom_bonus = player.boom_rate * 40.0
+
+                if player.salary >= 6500:
+                    salary_bonus = 20.0  # Elite TEs (Kelce tier)
+                elif player.salary <= 4800:
+                    salary_bonus = 10.0  # Punt TEs
+                else:
+                    salary_bonus = -15.0  # AVOID mid-tier TEs
+
+            else:  # Defense
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 6.0
+                ceiling_95_bonus = 0.0
+                boom_bonus = player.boom_rate * 25.0
                 salary_bonus = 0.0
 
-            # Ownership matters less in 12-person league
+            # Ownership (matters less in 12-person league)
             if player.ownership >= 50:
                 ownership_penalty = -5.0
             elif player.ownership <= 15:
@@ -461,7 +538,7 @@ class EnhancedDFSOptimizer:
             # Variance is good for tournaments
             variance_bonus = player.variance * 2.5
 
-            # Bust risk - some is acceptable
+            # Bust risk - acceptable in GPPs
             bust_penalty = player.bust_rate * 8.0
 
             return (base_value + ceiling_bonus + ceiling_95_bonus + boom_bonus +
