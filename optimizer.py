@@ -67,6 +67,7 @@ class Player:
     value: float = 0.0
     variance: float = 0.0
     locked: bool = False  # FIXED: Add locked attribute
+    is_core: bool = False  # NEW: Core play exemption
     # NEW Monte Carlo fields
     floor_10: float = 0.0
     ceiling_90: float = 0.0
@@ -108,28 +109,89 @@ class LineupResult:
 # -----------------------------
 # Optimizer
 # -----------------------------
-def calculate_max_exposure(num_lineups: int, position: str) -> int:
+def calculate_player_confidence(player: Player, vegas_data: Dict) -> float:
     """
-    Calculate max player appearances based on position and total lineups
+    Score a player's "must play" confidence (0-100)
 
-    Target exposure rates:
-    - QB/DEF: 50% max (concentrated positions)
-    - RB: 60% max (moderate scarcity)
-    - WR: 65% max (deepest position)
-    - TE: 55% max (shallow but need variety)
+    High scores = exempt from exposure limits
     """
-    target_pct = {
-        'QB': 0.50,
-        'RB': 0.60,
-        'WR': 0.65,
-        'TE': 0.55,
-        'D': 0.50,
-    }.get(position, 0.60)
+    confidence = 0.0
 
-    # Calculate max appearances, minimum 1
-    max_uses = max(1, int(num_lineups * target_pct))
+    # 1. VALUE (most important)
+    if player.value >= 4.0:
+        confidence += 30  # Elite value
+    elif player.value >= 3.5:
+        confidence += 20
+    elif player.value >= 3.0:
+        confidence += 10
 
-    return max_uses
+    # 2. VEGAS ENVIRONMENT
+    vegas_mult = vegas_data.get('vegas_multipliers', {}).get(player.team, 1.0)
+    if vegas_mult >= 1.40:  # 47+ point game
+        confidence += 25
+    elif vegas_mult >= 1.25:  # 45+ point game
+        confidence += 15
+
+    # 3. MONTE CARLO CEILING
+    if player.monte_carlo_analyzed:
+        ceiling_ratio = player.ceiling_90 / player.projection if player.projection > 0 else 1
+        if ceiling_ratio >= 1.35:  # 35%+ upside
+            confidence += 20
+        elif ceiling_ratio >= 1.25:
+            confidence += 10
+
+    # 4. OWNERSHIP LEVERAGE (low ownership + high projection = gold)
+    if player.ownership <= 15 and player.projection >= 15:
+        confidence += 15  # Tournament winner profile
+
+    # 5. POSITION SCARCITY
+    if player.position in ['RB', 'TE']:
+        confidence += 10  # Scarce positions get bonus
+
+    return min(100, confidence)
+
+
+def identify_core_plays(players: List[Player], vegas_multipliers: Dict, num_lineups: int) -> List[Player]:
+    """
+    Mark players as 'core' if they exceed confidence threshold
+
+    Core players get exemption from exposure limits
+    """
+    CORE_THRESHOLD = 60  # Adjust between 50-70
+    MAX_CORE_PLAYS = 3  # Don't let too many players become core
+
+    # Calculate confidence for all players
+    player_confidence = []
+    for player in players:
+        conf = calculate_player_confidence(player, vegas_multipliers)
+        player_confidence.append((player, conf))
+
+    # Sort by confidence
+    player_confidence.sort(key=lambda x: x[1], reverse=True)
+
+    # Mark top players as core if they exceed threshold
+    core_count = 0
+    for player, conf in player_confidence:
+        if conf >= CORE_THRESHOLD and core_count < MAX_CORE_PLAYS:
+            player.is_core = True
+            core_count += 1
+            logger.info(
+                f"🔥 CORE PLAY: {player.name} ({player.position}) ${player.salary:,} - {conf:.0f} confidence (value={player.value:.2f}x)")
+        else:
+            player.is_core = False
+
+    if core_count == 0:
+        logger.info("📊 No core plays identified this week - normal exposure limits apply")
+    else:
+        logger.info(f"📊 Identified {core_count} core play(s) - will appear in most/all lineups")
+
+    return players
+
+
+class EnhancedDFSOptimizer:
+    """Enhanced DFS optimization with Monte Carlo variance modeling"""
+
+    def __init__(self, use_monte_carlo: bool
 class EnhancedDFSOptimizer:
     """Enhanced DFS optimization with Monte Carlo variance modeling"""
 
@@ -799,6 +861,11 @@ class EnhancedDFSOptimizer:
             single_game_teams: List[str] = None,
     ) -> List[LineupResult]:
         """Generate diverse lineups with AGGRESSIVE diversity enforcement"""
+
+        # Identify core plays that bypass exposure limits
+        vegas_multipliers = getattr(self, 'vegas_multipliers', {})
+        players = identify_core_plays(players, vegas_multipliers, num_lineups)
+
         lineups: List[LineupResult] = []
         used_combinations = set()
 
@@ -895,7 +962,11 @@ class EnhancedDFSOptimizer:
                 current_usage = player_usage_tracker.get(player_key, 0)
                 max_allowed = max_appearances.get(position, 5)
 
-                if current_usage >= max_allowed and not player.locked:
+                # EXEMPTION: Core plays and locked players bypass exposure limits
+                if player.is_core or player.locked:
+                    continue  # Skip diversity check
+
+                if current_usage >= max_allowed:
                     overused_players.append(f"{player.name}({current_usage}/{max_allowed})")
                     passes_diversity = False
 

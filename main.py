@@ -76,7 +76,8 @@ async def generate_lineups(contest_type: str = 'gpp', num_lineups: int = 10):
 
     for i, lineup in enumerate(lineups[:3]):  # Show first 3
         logger.info(
-            f"Lineup {i + 1}: ${lineup.total_salary:,} | {lineup.projected_points:.1f} pts | {lineup.ownership_total:.1f}% owned")
+            f"Lineup {i + 1}: ${lineup.total_salary:,} | {lineup.projected_points:.1f} pts | "
+            f"{(100 - lineup.ownership_total/3.6):.0f}% unique (avg {lineup.ownership_total/9:.1f}% owned)")
 
         # Show players in FanDuel order
         for j, player in enumerate(lineup.players):
@@ -109,7 +110,8 @@ async def generate_lineups(contest_type: str = 'gpp', num_lineups: int = 10):
             'DEF': f"{lineup.players[8].name}",
             'Salary': lineup.total_salary,
             'Projected': round(lineup.projected_points, 1),
-            'Ownership': round(lineup.ownership_total, 1)
+            'Uniqueness': round(max(0, 100 - (lineup.ownership_total / 3.6)), 0),
+            'Avg_Ownership': round(lineup.ownership_total / 9, 1)
         }
         lineup_data.append(lineup_row)
 
