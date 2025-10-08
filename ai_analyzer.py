@@ -293,6 +293,163 @@ class DualAIDFSAnalyzer:
 
         return recommendations
 
+        async def analyze_weekly_role_changes(self, player_data: List[Dict]) -> Dict[str, float]:
+            """AI detects backup RBs becoming starters, target share shifts, TE breakouts
+            Returns: {player_name: boost_factor} where boost is 1.0-1.35
+            """
+
+            # Identify role change candidates
+            role_candidates = []
+
+            for player in player_data:
+                name = player.get('name', '')
+                position = player.get('position', '')
+                salary = player.get('salary', 0)
+                fppg = player.get('projected_points', 0)
+                games_played = player.get('games_played', 0)
+                team = player.get('team', '')
+
+                # CRITERIA: Recent role changes worth AI analysis
+                is_candidate = False
+                reason = ''
+
+                # 1. Low games played but significant salary (new starter?)
+                if 0 < games_played <= 3 and salary >= 5500 and fppg >= 8:
+                    is_candidate = True
+                    reason = f'New starter? {games_played} games, ${salary}, {fppg:.1f} FPPG'
+
+                # 2. Mid-tier RB (backup getting carries)
+                elif position == 'RB' and 5000 <= salary <= 7000 and fppg >= 10:
+                    is_candidate = True
+                    reason = f'Backup RB with volume? ${salary}, {fppg:.1f} FPPG'
+
+                # 3. Cheap WR with targets (slot role?)
+                elif position == 'WR' and salary <= 5500 and fppg >= 10:
+                    is_candidate = True
+                    reason = f'Value WR target share? ${salary}, {fppg:.1f} FPPG'
+
+                # 4. TE breakout candidate
+                elif position == 'TE' and 4500 <= salary <= 6000 and fppg >= 8:
+                    is_candidate = True
+                    reason = f'TE role expansion? ${salary}, {fppg:.1f} FPPG'
+
+                if is_candidate:
+                    role_candidates.append({
+                        'name': name,
+                        'position': position,
+                        'team': team,
+                        'salary': salary,
+                        'fppg': fppg,
+                        'games_played': games_played,
+                        'reason': reason
+                    })
+
+            if not role_candidates:
+                logger.info("No role change candidates for AI analysis")
+                return {}
+
+            logger.info(f"🔍 AI analyzing {len(role_candidates)} role change candidates")
+
+            # AI Prompt
+            prompt = f"""Analyze NFL DFS role changes for a 12-person friends league.
+
+    ROLE CHANGE CANDIDATES:
+    {json.dumps(role_candidates[:15], indent=2)}
+
+    For each player, determine:
+    1. BOOST FACTOR (1.0-1.35): How much to increase their projection
+       - 1.00 = no change
+       - 1.15 = moderate boost (backup getting 50% snaps)
+       - 1.25 = significant boost (new starter)
+       - 1.35 = major boost (featured role)
+
+    2. CONFIDENCE (1-10): How confident in the role change
+
+    Focus on:
+    - Backup RBs getting starter snaps due to injury
+    - WRs with expanded target share
+    - TEs becoming primary receiving option
+    - Recent coaching changes affecting usage
+
+    Output format:
+    PlayerName: boost=1.XX, confidence=X, reason
+
+    Be conservative. Only boost if clear evidence of role expansion."""
+
+            try:
+                if self.claude_client:
+                    response = self.claude_client.messages.create(
+                        model="claude-3-haiku-20240307",
+                        max_tokens=600,
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+
+                    analysis_text = response.content[0].text
+                    self.weekly_spend += 0.08
+                    self._log_cost("role_change_analysis", 0.08)
+
+                elif self.openai_client:
+                    response = self.openai_client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=600,
+                        temperature=0.2
+                    )
+
+                    analysis_text = response.choices[0].message.content
+                    self.weekly_spend += 0.05
+                    self._log_cost("role_change_analysis", 0.05)
+
+                else:
+                    logger.warning("No AI available for role analysis")
+                    return {}
+
+                # Parse AI response
+                boost_dict = self._parse_role_boosts(analysis_text, role_candidates)
+
+                logger.info(f"✅ AI identified {len(boost_dict)} role changes")
+                return boost_dict
+
+            except Exception as e:
+                logger.error(f"Role change AI analysis failed: {e}")
+                return {}
+
+        def _parse_role_boosts(self, analysis_text: str, candidates: List[Dict]) -> Dict[str, float]:
+            """Parse AI analysis into {player_name: boost_factor}"""
+
+            boost_dict = {}
+            analysis_lower = analysis_text.lower()
+
+            for candidate in candidates:
+                player_name = candidate['name']
+                name_lower = player_name.lower()
+
+                if name_lower not in analysis_lower:
+                    continue
+
+                # Find context around player
+                name_pos = analysis_lower.find(name_lower)
+                context_start = max(0, name_pos - 100)
+                context_end = min(len(analysis_text), name_pos + 200)
+                context = analysis_lower[context_start:context_end]
+
+                # Extract boost factor
+                import re
+                boost_match = re.search(r'boost[=:\s]+(1\.\d+)', context)
+                if boost_match:
+                    boost = float(boost_match.group(1))
+                    boost = max(1.0, min(1.35, boost))  # Clamp 1.0-1.35
+
+                    # Extract confidence
+                    conf_match = re.search(r'confidence[=:\s]+(\d+)', context)
+                    confidence = int(conf_match.group(1)) if conf_match else 5
+
+                    # Only apply if confidence >= 6
+                    if confidence >= 6:
+                        boost_dict[player_name] = boost
+                        logger.info(f"🤖 ROLE BOOST: {player_name} = {boost:.2f}x (confidence {confidence}/10)")
+
+            return boost_dict
     def _validate_openai_key(self, key: str) -> bool:
         """Validate OpenAI API key format"""
         if not key:

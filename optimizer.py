@@ -2,6 +2,7 @@
 """
 Enhanced DFS lineup optimization with Monte Carlo variance analysis
 Fixed async issues for tournament wins - FIXED LOCKED PLAYER HANDLING
+PHASE 1: Added Smart Vegas Exposure constraints
 """
 import asyncio
 import json
@@ -66,8 +67,8 @@ class Player:
     injury_risk: float = 0.0
     value: float = 0.0
     variance: float = 0.0
-    locked: bool = False  # FIXED: Add locked attribute
-    is_core: bool = False  # NEW: Core play exemption
+    locked: bool = False
+    is_core: bool = False
     # NEW Monte Carlo fields
     floor_10: float = 0.0
     ceiling_90: float = 0.0
@@ -119,7 +120,7 @@ def calculate_player_confidence(player: Player, vegas_data: Dict) -> float:
 
     # 1. VALUE (most important)
     if player.value >= 4.0:
-        confidence += 30  # Elite value
+        confidence += 30
     elif player.value >= 3.5:
         confidence += 20
     elif player.value >= 3.0:
@@ -127,26 +128,26 @@ def calculate_player_confidence(player: Player, vegas_data: Dict) -> float:
 
     # 2. VEGAS ENVIRONMENT
     vegas_mult = vegas_data.get('vegas_multipliers', {}).get(player.team, 1.0)
-    if vegas_mult >= 1.40:  # 47+ point game
+    if vegas_mult >= 1.40:
         confidence += 25
-    elif vegas_mult >= 1.25:  # 45+ point game
+    elif vegas_mult >= 1.25:
         confidence += 15
 
     # 3. MONTE CARLO CEILING
     if player.monte_carlo_analyzed:
         ceiling_ratio = player.ceiling_90 / player.projection if player.projection > 0 else 1
-        if ceiling_ratio >= 1.35:  # 35%+ upside
+        if ceiling_ratio >= 1.35:
             confidence += 20
         elif ceiling_ratio >= 1.25:
             confidence += 10
 
-    # 4. OWNERSHIP LEVERAGE (low ownership + high projection = gold)
+    # 4. OWNERSHIP LEVERAGE
     if player.ownership <= 15 and player.projection >= 15:
-        confidence += 15  # Tournament winner profile
+        confidence += 15
 
     # 5. POSITION SCARCITY
     if player.position in ['RB', 'TE']:
-        confidence += 10  # Scarce positions get bonus
+        confidence += 10
 
     return min(100, confidence)
 
@@ -157,19 +158,16 @@ def identify_core_plays(players: List[Player], vegas_multipliers: Dict, num_line
 
     Core players get exemption from exposure limits
     """
-    CORE_THRESHOLD = 60  # Adjust between 50-70
-    MAX_CORE_PLAYS = 3  # Don't let too many players become core
+    CORE_THRESHOLD = 60
+    MAX_CORE_PLAYS = 3
 
-    # Calculate confidence for all players
     player_confidence = []
     for player in players:
         conf = calculate_player_confidence(player, vegas_multipliers)
         player_confidence.append((player, conf))
 
-    # Sort by confidence
     player_confidence.sort(key=lambda x: x[1], reverse=True)
 
-    # Mark top players as core if they exceed threshold
     core_count = 0
     for player, conf in player_confidence:
         if conf >= CORE_THRESHOLD and core_count < MAX_CORE_PLAYS:
@@ -194,24 +192,17 @@ def calculate_max_exposure(num_lineups: int, position: str) -> int:
 
     Philosophy: Let good players appear often in small sets.
     Diversity increases as lineup count grows.
-
-    Target exposure rates:
-    - Small sets (3-5): 60-100% exposure for studs
-    - Medium sets (6-15): 50-70% exposure
-    - Large sets (16+): 40-60% exposure
     """
 
-    # For small lineup sets, allow high exposure of good players
     if num_lineups <= 5:
         target_pct = {
-            'QB': 0.80,  # 4 of 5 lineups max
-            'RB': 1.00,  # Elite RBs can be in ALL lineups (scarcest position)
-            'WR': 0.60,  # More WR depth, spread it out
-            'TE': 0.80,  # Shallow position, use the good ones
-            'D': 0.60,  # Decent variety available
+            'QB': 0.80,
+            'RB': 1.00,
+            'WR': 0.60,
+            'TE': 0.80,
+            'D': 0.60,
         }.get(position, 0.70)
 
-    # For medium sets, moderate exposure
     elif num_lineups <= 15:
         target_pct = {
             'QB': 0.60,
@@ -221,7 +212,6 @@ def calculate_max_exposure(num_lineups: int, position: str) -> int:
             'D': 0.50,
         }.get(position, 0.60)
 
-    # For large sets, lower exposure to maximize field coverage
     else:
         target_pct = {
             'QB': 0.50,
@@ -231,7 +221,6 @@ def calculate_max_exposure(num_lineups: int, position: str) -> int:
             'D': 0.45,
         }.get(position, 0.50)
 
-    # Calculate max appearances, minimum 1
     max_uses = max(1, int(num_lineups * target_pct))
 
     return max_uses
@@ -247,6 +236,7 @@ class EnhancedDFSOptimizer:
 
         if use_monte_carlo and not MONTE_CARLO_AVAILABLE:
             logger.warning("Monte Carlo requested but not available - falling back to basic optimization")
+
     async def prepare_players(
             self,
             player_data: List[Dict],
@@ -264,18 +254,14 @@ class EnhancedDFSOptimizer:
                 salary = int(data.get('salary', 5000))
                 projection = float(data.get('projection', data.get('projected_points', 0)))
 
-                # Basic filtering
                 if not player_name or len(player_name.strip()) < 2 or projection < 0:
                     continue
 
-                # Normalize defense position
                 if position in ['DST', 'DEF', 'D/ST']:
                     position = 'D'
 
-                # FIXED: Handle locked status from UI
                 is_locked = data.get('locked', False)
 
-                # Create base player
                 player = Player(
                     id=str(data.get('player_id', data.get('id', player_name))),
                     name=player_name,
@@ -283,10 +269,9 @@ class EnhancedDFSOptimizer:
                     team=team,
                     salary=salary,
                     projection=projection,
-                    locked=is_locked,  # FIXED: Set locked status
+                    locked=is_locked,
                 )
 
-                # Apply weather adjustments
                 if weather_data and team in weather_data:
                     weather_factor = weather_data[team].get('factor', 1.0)
                     player.weather_factor = weather_factor
@@ -298,7 +283,6 @@ class EnhancedDFSOptimizer:
                 logger.error(f"Error processing player {data}: {e}")
                 continue
 
-        # ENHANCE with Monte Carlo analysis
         if self.use_monte_carlo and players:
             logger.info(f"Running Monte Carlo analysis on {len(players)} players...")
             players = await self._enhance_players_with_monte_carlo(players, weather_data, vegas_data)
@@ -326,7 +310,6 @@ class EnhancedDFSOptimizer:
 
         enhanced_players: List[Player] = []
 
-        # Batch for throughput
         batch_size = 20
         for i in range(0, len(players), batch_size):
             batch_players = players[i:i + batch_size]
@@ -334,7 +317,6 @@ class EnhancedDFSOptimizer:
 
             sim_tasks = []
             for sim_player in batch_sims:
-                # keep per-player sims moderate, full lineup sims later
                 task = self.monte_carlo_engine.simulate_player_performance(sim_player, num_sims=1000)
                 sim_tasks.append(task)
 
@@ -361,25 +343,21 @@ class EnhancedDFSOptimizer:
     ) -> Optional[LineupResult]:
         """Optimize with Monte Carlo-enhanced objective function"""
         try:
-            # Filter for single game
             if single_game_teams:
                 players = [p for p in players if p.team in single_game_teams]
                 if len(players) < 6:
                     logger.error(f"Not enough players for single game: {len(players)}")
                     return None
 
-            # Project ownership using friends league psychology
             for player in players:
                 player.ownership = self._predict_friends_league_ownership(player, contest_type)
 
-            # Create optimization problem
             prob = pulp.LpProblem("DFS_Optimization", pulp.LpMaximize)
 
             player_vars: Dict[int, pulp.LpVariable] = {}
             for i, _ in enumerate(players):
                 player_vars[i] = pulp.LpVariable(f"player_{i}", cat='Binary')
 
-            # ENHANCED objective function using Monte Carlo data
             objective_terms = []
             for i, player in enumerate(players):
                 if self.use_monte_carlo and player.monte_carlo_analyzed:
@@ -390,19 +368,16 @@ class EnhancedDFSOptimizer:
 
             prob += pulp.lpSum(objective_terms)
 
-            # Add constraints
             self._add_fanduel_constraints(prob, players, player_vars, contest_type, single_game_teams)
 
             if not single_game_teams:
                 self._add_friends_league_constraints(prob, players, player_vars, contest_type)
 
-            # Solve
             prob.solve(pulp.PULP_CBC_CMD(msg=0))
 
             if prob.status == pulp.LpStatusOptimal:
                 result = self._extract_result(prob, players, player_vars, contest_type)
 
-                # Enhance result with Monte Carlo analysis
                 if self.use_monte_carlo:
                     result = await self._enhance_lineup_result_with_monte_carlo(result)
 
@@ -419,41 +394,32 @@ class EnhancedDFSOptimizer:
         """Enhanced value calculation with proper friends_league strategy"""
         base_value = player.projection
 
-        # ============================================================
-        # FRIENDS LEAGUE: Beat 11 people weekly
-        # ============================================================
         if contest_type == 'friends_league':
-            # Get vegas multipliers for game environment
             vegas_multipliers = getattr(self, 'vegas_multipliers', {})
             vegas_boost = vegas_multipliers.get(player.team, 1.0)
 
-            # POSITION-SPECIFIC TOURNAMENT STRATEGY
             if player.position == 'QB':
-                # QBs: NEVER go cheap in tournaments - ceiling is everything
-                if vegas_boost >= 1.40:  # 47+ point game
-                    base_value *= 2.80  # MASSIVE boost for game environment QBs
-                elif vegas_boost >= 1.25:  # 45+ point game
+                if vegas_boost >= 1.40:
+                    base_value *= 2.80
+                elif vegas_boost >= 1.25:
                     base_value *= 2.20
                 elif vegas_boost >= 1.15:
                     base_value *= 1.60
 
-                # QB ceiling is KING - need 30+ point games to win
                 ceiling_bonus = (player.ceiling_90 - player.projection) * 30.0
                 ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 18.0
                 boom_bonus = player.boom_rate * 60.0
 
-                # Salary strategy: ALWAYS pay up for QBs
                 if player.salary >= 8000:
-                    salary_bonus = 35.0  # Elite QBs
+                    salary_bonus = 35.0
                 elif player.salary >= 7000:
-                    salary_bonus = 20.0  # Good QBs
+                    salary_bonus = 20.0
                 elif player.salary >= 6500:
-                    salary_bonus = -5.0  # Mediocre QBs
+                    salary_bonus = -5.0
                 else:
-                    salary_bonus = -40.0  # MASSIVE penalty for punt QBs
+                    salary_bonus = -40.0
 
             elif player.position == 'RB':
-                # RBs: Game script + volume + touchdowns
                 if vegas_boost >= 1.40:
                     base_value *= 1.80
                 elif vegas_boost >= 1.25:
@@ -465,18 +431,16 @@ class EnhancedDFSOptimizer:
                 ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 10.0
                 boom_bonus = player.boom_rate * 50.0
 
-                # RB salary: Elite bell cows or true value
                 if player.salary >= 9000:
-                    salary_bonus = 25.0  # Elite workhorses
+                    salary_bonus = 25.0
                 elif player.salary >= 7500:
                     salary_bonus = 12.0
                 elif player.salary <= 5500 and player.value >= 2.8:
-                    salary_bonus = 15.0  # Value RBs with projection
+                    salary_bonus = 15.0
                 else:
                     salary_bonus = -8.0
 
             elif player.position == 'WR':
-                # WRs: Target share in pace-up games
                 if vegas_boost >= 1.40:
                     base_value *= 1.65
                 elif vegas_boost >= 1.25:
@@ -488,7 +452,6 @@ class EnhancedDFSOptimizer:
                 ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 8.0
                 boom_bonus = player.boom_rate * 48.0
 
-                # WR salary: More flexible, but avoid mid-tier
                 if player.salary >= 8500:
                     salary_bonus = 18.0
                 elif player.salary >= 7000:
@@ -496,12 +459,11 @@ class EnhancedDFSOptimizer:
                 elif player.salary <= 6000 and player.value >= 2.5:
                     salary_bonus = 12.0
                 elif 6000 <= player.salary <= 7000:
-                    salary_bonus = -6.0  # Avoid mid-tier
+                    salary_bonus = -6.0
                 else:
                     salary_bonus = 0.0
 
             elif player.position == 'TE':
-                # TEs: Elite or punt, nothing in between
                 if vegas_boost >= 1.40:
                     base_value *= 1.45
                 elif vegas_boost >= 1.25:
@@ -512,19 +474,18 @@ class EnhancedDFSOptimizer:
                 boom_bonus = player.boom_rate * 40.0
 
                 if player.salary >= 6500:
-                    salary_bonus = 20.0  # Elite TEs (Kelce tier)
+                    salary_bonus = 20.0
                 elif player.salary <= 4800:
-                    salary_bonus = 10.0  # Punt TEs
+                    salary_bonus = 10.0
                 else:
-                    salary_bonus = -15.0  # AVOID mid-tier TEs
+                    salary_bonus = -15.0
 
-            else:  # Defense
+            else:
                 ceiling_bonus = (player.ceiling_90 - player.projection) * 6.0
                 ceiling_95_bonus = 0.0
                 boom_bonus = player.boom_rate * 25.0
                 salary_bonus = 0.0
 
-            # Ownership (matters less in 12-person league)
             if player.ownership >= 50:
                 ownership_penalty = -5.0
             elif player.ownership <= 15:
@@ -532,18 +493,12 @@ class EnhancedDFSOptimizer:
             else:
                 ownership_penalty = 0.0
 
-            # Variance is good for tournaments
             variance_bonus = player.variance * 2.5
-
-            # Bust risk - acceptable in GPPs
             bust_penalty = player.bust_rate * 8.0
 
             return (base_value + ceiling_bonus + ceiling_95_bonus + boom_bonus +
                     salary_bonus + ownership_penalty + variance_bonus - bust_penalty)
 
-        # ============================================================
-        # GPP: Standard tournament
-        # ============================================================
         elif contest_type == 'gpp':
             ceiling_bonus = (player.ceiling_90 - player.projection) * 8.0
             ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 5.0
@@ -562,18 +517,12 @@ class EnhancedDFSOptimizer:
 
             return base_value + ceiling_bonus + ceiling_95_bonus + boom_bonus + ownership_penalty - bust_penalty
 
-        # ============================================================
-        # CASH: Floor focus
-        # ============================================================
         elif contest_type == 'cash':
             floor_bonus = player.floor_10 * 2.0
             consistency_bonus = 5.0 if player.bust_rate < 0.15 else 0.0
             variance_penalty = player.variance * 0.5
             return base_value + floor_bonus + consistency_bonus - variance_penalty
 
-        # ============================================================
-        # CONTRARIAN: Ownership fade
-        # ============================================================
         elif contest_type == 'contrarian':
             ceiling_bonus = (player.ceiling_95 - player.projection) * 10.0
 
@@ -620,7 +569,6 @@ class EnhancedDFSOptimizer:
             ceiling_distance = (lineup_result.ceiling_90 - mean_score) / mean_score if mean_score > 0 else 0
 
             if lineup_result.contest_type == 'gpp':
-                # ULTRA AGGRESSIVE thresholds for GPP
                 if ceiling_distance > 0.30:
                     lineup_result.risk_level = "Tournament Winner"
                 elif ceiling_distance > 0.25:
@@ -652,7 +600,6 @@ class EnhancedDFSOptimizer:
         ceiling_distance_90 = (ceiling_90 - mean_score) / mean_score if mean_score > 0 else 0
         ceiling_distance_95 = (ceiling_95 - mean_score) / mean_score if mean_score > 0 else 0
 
-        # Lower thresholds = higher boom rates
         if ceiling_distance_95 > 0.35:
             return 0.25
         elif ceiling_distance_90 > 0.30:
@@ -666,13 +613,13 @@ class EnhancedDFSOptimizer:
 
     def _calculate_bust_probability(self, lineup_sim: Dict, mean_score: float) -> float:
         """Calculate probability of bust performance (bottom 25%)"""
-        bust_threshold = mean_score * 0.75  # 25% below projection
+        bust_threshold = mean_score * 0.75
         floor_25 = lineup_sim.get('floor_25', mean_score)
 
         if floor_25 < bust_threshold:
-            return 0.3  # 30% bust rate indicates risk
+            return 0.3
         else:
-            return 0.15  # 15% for safer lineups
+            return 0.15
 
     def _add_fanduel_constraints(
             self,
@@ -683,16 +630,13 @@ class EnhancedDFSOptimizer:
             single_game_teams: List[str],
     ):
         """EXACT FanDuel constraints with FIXED locked player validation"""
-        # Salary cap
         prob += pulp.lpSum([players[i].salary * player_vars[i] for i in range(len(players))]) <= FANDUEL_SALARY_CAP
 
-        # FIXED: Handle locked players with proper validation
         locked_players_indices = []
         locked_salary = 0
         locked_positions = {'QB': 0, 'RB': 0, 'WR': 0, 'TE': 0, 'D': 0}
 
         for i, player in enumerate(players):
-            # FIXED: Check the locked attribute properly
             if player.locked:
                 prob += player_vars[i] == 1
                 locked_players_indices.append(i)
@@ -700,7 +644,6 @@ class EnhancedDFSOptimizer:
                 locked_positions[player.position] += 1
                 logger.info(f"🔒 LOCKED: {player.name} ({player.position}) ${player.salary}")
 
-        # Validate locked constraints don't break FanDuel rules
         if locked_salary > FANDUEL_SALARY_CAP:
             raise ValueError(f"Locked players exceed salary cap: ${locked_salary:,}")
 
@@ -714,14 +657,12 @@ class EnhancedDFSOptimizer:
             prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == 6
             return
 
-        # Position requirements
         qb_indices = [i for i, p in enumerate(players) if p.position == 'QB']
         rb_indices = [i for i, p in enumerate(players) if p.position == 'RB']
         wr_indices = [i for i, p in enumerate(players) if p.position == 'WR']
         te_indices = [i for i, p in enumerate(players) if p.position == 'TE']
         d_indices = [i for i, p in enumerate(players) if p.position == 'D']
 
-        # Exact FanDuel requirements
         if qb_indices:
             prob += pulp.lpSum([player_vars[i] for i in qb_indices]) == 1
         if d_indices:
@@ -738,7 +679,6 @@ class EnhancedDFSOptimizer:
 
         prob += pulp.lpSum([player_vars[i] for i in flex_indices]) == 7
 
-        # Position maximums
         if rb_indices:
             prob += pulp.lpSum([player_vars[i] for i in rb_indices]) <= 3
         if wr_indices:
@@ -748,7 +688,6 @@ class EnhancedDFSOptimizer:
 
         prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == 9
 
-        # Team diversity
         team_counts: Dict[str, List[int]] = {}
         for i, player in enumerate(players):
             team_counts.setdefault(player.team, []).append(i)
@@ -761,28 +700,13 @@ class EnhancedDFSOptimizer:
             self._add_stacking_incentive(prob, players, player_vars, qb_indices, wr_indices)
 
     def _add_friends_league_constraints(self, prob, players: List[Player], player_vars: Dict, contest_type: str):
-        """Friends league constraints with MANDATORY stacking"""
+        """Friends league constraints with SMART Vegas exposure"""
 
-        # CRITICAL: Get teams from ACTUAL high-total games (47+), not multipliers
         vegas_data = getattr(self, 'vegas_data', {})
-        high_total_games = vegas_data.get('high_total_games', [])
 
-        high_total_teams = []
-        for game in high_total_games:
-            high_total_teams.extend(game.get('teams', []))
+        if contest_type == 'friends_league':
+            self._add_smart_vegas_exposure(prob, players, player_vars, vegas_data)
 
-        if high_total_teams and contest_type == 'friends_league':
-            # FORCE at least 4 players from high-total games
-            high_total_player_indices = [
-                i for i, p in enumerate(players)
-                if p.team in high_total_teams
-            ]
-
-            if high_total_player_indices:
-                prob += pulp.lpSum([player_vars[i] for i in high_total_player_indices]) >= 4
-                logger.info(f"🎯 FORCING 4+ players from 47+ games: {high_total_teams}")
-
-        # Original logic below...
         if contest_type == 'gpp':
             expensive_players = [i for i, p in enumerate(players) if p.salary >= 9000]
             if expensive_players:
@@ -813,6 +737,75 @@ class EnhancedDFSOptimizer:
 
                 if qb_vars and wr_vars:
                     prob += pulp.lpSum(wr_vars) >= 0.5 * pulp.lpSum(qb_vars)
+
+    def _add_smart_vegas_exposure(
+            self,
+            prob,
+            players: List[Player],
+            player_vars: Dict,
+            vegas_data: Dict
+    ):
+        """SMART Vegas exposure: Force 3-4 from #1 game, enforce QB+WR stacks, cap at 4/game"""
+
+        high_total_games = vegas_data.get('high_total_games', [])
+
+        if not high_total_games:
+            logger.warning("No high-total games for smart exposure")
+            return
+
+        # Get #1 highest-total game
+        top_game = high_total_games[0]
+        top_game_teams = top_game.get('teams', [])
+        top_game_total = top_game.get('total', 0)
+
+        if not top_game_teams:
+            logger.warning("Top game has no teams")
+            return
+
+        logger.info(f"🎯 SMART VEGAS: Targeting {top_game['game_id']} ({top_game_total} total)")
+
+        # Find all players from top game
+        top_game_indices = [
+            i for i, p in enumerate(players)
+            if p.team in top_game_teams
+        ]
+
+        if not top_game_indices:
+            logger.warning(f"No players found from {top_game_teams}")
+            return
+
+        # CONSTRAINT 1: Force 3-4 players from top game
+        prob += pulp.lpSum([player_vars[i] for i in top_game_indices]) >= 3
+        prob += pulp.lpSum([player_vars[i] for i in top_game_indices]) <= 4
+
+        logger.info(f"✅ CONSTRAINT: 3-4 players from {top_game_teams}")
+
+        # CONSTRAINT 2: If QB from top game, must roster 1+ WR from same team
+        for team in top_game_teams:
+            qb_indices = [i for i in top_game_indices if players[i].position == 'QB' and players[i].team == team]
+            wr_indices = [i for i in top_game_indices if players[i].position == 'WR' and players[i].team == team]
+
+            if qb_indices and wr_indices:
+                for qb_idx in qb_indices:
+                    prob += pulp.lpSum([player_vars[i] for i in wr_indices]) >= player_vars[qb_idx]
+
+                logger.info(f"✅ CONSTRAINT: {team} QB → must roster {team} WR")
+
+        # CONSTRAINT 3: Cap any single game at 4 players max
+        game_groups = {}
+        for i, player in enumerate(players):
+            player_game = None
+            for game in high_total_games:
+                if player.team in game.get('teams', []):
+                    player_game = game['game_id']
+                    break
+
+            if player_game:
+                game_groups.setdefault(player_game, []).append(i)
+
+        for game_id, player_indices in game_groups.items():
+            prob += pulp.lpSum([player_vars[i] for i in player_indices]) <= 4
+            logger.info(f"✅ CONSTRAINT: Max 4 players from {game_id}")
 
     def _predict_friends_league_ownership(self, player: Player, contest_type: str) -> float:
         """Ultra-conservative ownership for 12-person league"""
@@ -980,20 +973,17 @@ class EnhancedDFSOptimizer:
     ) -> List[LineupResult]:
         """Generate diverse lineups with AGGRESSIVE diversity enforcement"""
 
-        # Identify core plays that bypass exposure limits
         vegas_multipliers = getattr(self, 'vegas_multipliers', {})
         players = identify_core_plays(players, vegas_multipliers, num_lineups)
 
         lineups: List[LineupResult] = []
         used_combinations = set()
 
-        # Calculate scalable diversity limits using exposure percentages
         max_appearances = {
             pos: calculate_max_exposure(num_lineups, pos)
             for pos in ['QB', 'RB', 'WR', 'TE', 'D']
         }
 
-        # For single game slates, tighten exposure by 10% to force more variety
         if single_game_teams:
             for pos in max_appearances:
                 max_appearances[pos] = max(1, int(max_appearances[pos] * 0.90))
@@ -1002,17 +992,14 @@ class EnhancedDFSOptimizer:
         exposure_pcts = {pos: f"{(max_appearances[pos] / num_lineups) * 100:.0f}%" for pos in max_appearances}
         logger.info(f"Exposure rates: {exposure_pcts}")
 
-        # Track ALL player usage across lineups
         player_usage_tracker = {}
 
-        max_attempts = num_lineups * 8  # Increased from 5x
+        max_attempts = num_lineups * 8
 
         for attempt in range(max_attempts):
             if len(lineups) >= num_lineups:
                 break
 
-            # AGGRESSIVE randomization based on contest type
-            # AGGRESSIVE randomization based on contest type
             randomized_players: List[Player] = []
             for player in players:
                 new_player = Player(
@@ -1030,7 +1017,6 @@ class EnhancedDFSOptimizer:
                     locked=player.locked,
                 )
 
-                # Copy Monte Carlo data if available
                 if player.monte_carlo_analyzed:
                     new_player.floor_10 = player.floor_10
                     new_player.ceiling_90 = player.ceiling_90
@@ -1039,23 +1025,19 @@ class EnhancedDFSOptimizer:
                     new_player.bust_rate = player.bust_rate
                     new_player.monte_carlo_analyzed = True
 
-                # Contest-specific randomization
                 random_factor = 1.0
                 if not player.locked:
                     if contest_type == 'friends_league':
-                        # ULTRA AGGRESSIVE for beating 11 people
                         random_factor = random.uniform(0.50, 1.50)
-                        # Extra chaos for TE/D to force diversity
                         if player.position in ['TE', 'D']:
                             random_factor *= random.uniform(0.80, 1.20)
                     elif contest_type == 'gpp':
                         random_factor = random.uniform(0.70, 1.30)
                     elif contest_type == 'cash':
                         random_factor = random.uniform(0.92, 1.08)
-                    else:  # contrarian
+                    else:
                         random_factor = random.uniform(0.60, 1.40)
 
-                # Apply factor and recompute value/variance
                 new_player.projection *= random_factor
                 new_player.value = (new_player.projection / (new_player.salary / 1000.0)
                                     if new_player.salary > 0 else 0.0)
@@ -1064,12 +1046,10 @@ class EnhancedDFSOptimizer:
 
                 randomized_players.append(new_player)
 
-            # Generate lineup using the randomized pool
             lineup = await self.optimize_lineup(randomized_players, contest_type, single_game_teams)
             if not lineup:
                 continue
 
-            # STRICT diversity check using tracker
             passes_diversity = True
             overused_players = []
 
@@ -1080,20 +1060,17 @@ class EnhancedDFSOptimizer:
                 current_usage = player_usage_tracker.get(player_key, 0)
                 max_allowed = max_appearances.get(position, 5)
 
-                # EXEMPTION: Core plays and locked players bypass exposure limits
                 if player.is_core or player.locked:
-                    continue  # Skip diversity check
+                    continue
 
                 if current_usage >= max_allowed:
                     overused_players.append(f"{player.name}({current_usage}/{max_allowed})")
                     passes_diversity = False
 
-            # Reject if too many overused players
             if not passes_diversity:
                 logger.debug(f"Rejected lineup - overused: {overused_players}")
                 continue
 
-            # Check core uniqueness (only expensive players matter)
             expensive_core = tuple(sorted([
                 p.id for p in lineup.players
                 if p.salary > 7000
@@ -1103,7 +1080,6 @@ class EnhancedDFSOptimizer:
                 logger.debug(f"Rejected lineup - duplicate expensive core")
                 continue
 
-            # ACCEPT LINEUP - Update tracker
             for player in lineup.players:
                 player_key = f"{player.id}_{player.position}"
                 player_usage_tracker[player_key] = player_usage_tracker.get(player_key, 0) + 1
@@ -1113,23 +1089,20 @@ class EnhancedDFSOptimizer:
 
             logger.info(f"✅ Lineup {len(lineups)}/{num_lineups} generated (attempt {attempt + 1})")
 
-        # Log final usage stats
         logger.info("=" * 60)
         logger.info("FINAL PLAYER USAGE ACROSS LINEUPS:")
         for player_key, count in sorted(player_usage_tracker.items(), key=lambda x: x[1], reverse=True)[:15]:
             player_id, position = player_key.rsplit('_', 1)
-            # Find player name
             player_name = next((p.name for p in players if p.id == player_id), player_id)
             logger.info(f"  {player_name} ({position}): {count}/{num_lineups} lineups")
         logger.info("=" * 60)
 
-        # Sort by appropriate metric
         if contest_type == 'cash':
             if lineups and lineups[0].floor_25 > 0:
                 lineups.sort(key=lambda x: x.floor_25, reverse=True)
             else:
                 lineups.sort(key=lambda x: x.projected_points - (x.variance_score * 0.5), reverse=True)
-        else:  # friends_league, gpp, contrarian
+        else:
             if lineups and lineups[0].ceiling_90 > 0:
                 lineups.sort(key=lambda x: x.ceiling_90 - (x.ownership_total * 0.2), reverse=True)
             else:
@@ -1141,6 +1114,7 @@ class EnhancedDFSOptimizer:
             logger.info(f"✅ Generated {len(lineups)} diverse {contest_type} lineups")
 
         return lineups
+
 
 # -----------------------------
 # Public API (sync)
@@ -1160,7 +1134,6 @@ def _run_coro_sync(coro):
     if not is_running:
         return asyncio.run(coro)
 
-    # Running inside an event loop (e.g., FastAPI) -> use a thread
     import threading
 
     result_box: Dict[str, Any] = {}
@@ -1182,12 +1155,11 @@ def _run_coro_sync(coro):
     return result_box.get("result")
 
 
-# Enhanced main optimization function with Monte Carlo - FIXED TO NOT USE ASYNC
 def optimize_dfs_lineups(
         player_data: List[Dict],
         weather_data: Dict = None,
         vegas_multipliers: Dict = None,
-        vegas_data: Dict = None,  # ADD THIS LINE
+        vegas_data: Dict = None,
         num_lineups: int = 10,
         contest_type: str = 'gpp',
         single_game_teams: List[str] = None,
@@ -1201,7 +1173,6 @@ def optimize_dfs_lineups(
     logger.info(f"Starting {contest_type.upper()} optimization | "
                 f"Lineups: {num_lineups} | Monte Carlo: {'ON' if use_monte_carlo and MONTE_CARLO_AVAILABLE else 'OFF'}")
 
-    # --- Optional: AI pre-processing for ownership/strategy ---
     ai_enabled = os.getenv('AI_ENABLED', 'true').lower() == 'true'
 
     if AI_AVAILABLE and ai_enabled:
@@ -1212,14 +1183,12 @@ def optimize_dfs_lineups(
             )
 
             if ai_analysis and isinstance(ai_analysis, dict):
-                # Apply ownership adjustments if provided
                 ownership_adj = ai_analysis.get('ownership_adjustments') or {}
                 if ownership_adj:
                     adjusted = 0
                     for rec in player_data:
                         name = rec.get('player_name', rec.get('name', ''))
                         if name in ownership_adj:
-                            # If dataset includes explicit ownership, scale it, otherwise stash hint
                             if 'ownership' in rec and isinstance(rec['ownership'], (int, float)):
                                 rec['ownership'] = max(0.0, float(rec['ownership']) * float(ownership_adj[name]))
                             else:
@@ -1227,7 +1196,6 @@ def optimize_dfs_lineups(
                             adjusted += 1
                     logger.info(f"AI adjusted ownership hints for {adjusted} players")
 
-                # Log cost tracking if available
                 cost_summary = getattr(analyzer, "get_cost_summary", lambda: {})()
                 if cost_summary:
                     logger.info(
@@ -1237,13 +1205,11 @@ def optimize_dfs_lineups(
         except Exception as e:
             logger.warning(f"AI analysis failed, continuing without it: {e}")
 
-    # --- Build optimizer ---
     optimizer = EnhancedDFSOptimizer(use_monte_carlo=use_monte_carlo, mc_simulations=mc_simulations)
 
-    # Stash vegas multipliers on the instance for potential downstream use
     setattr(optimizer, "vegas_multipliers", vegas_multipliers or {})
     setattr(optimizer, "vegas_data", vegas_data or {})
-    # --- Prepare players (async -> sync) ---
+
     players: List[Player] = _run_coro_sync(
         optimizer.prepare_players(player_data, weather_data or {}, vegas_multipliers or {})
     )
@@ -1252,7 +1218,6 @@ def optimize_dfs_lineups(
         logger.error("No valid players after preparation")
         return []
 
-    # Check for locked players
     locked_count = sum(1 for p in players if p.locked)
     if locked_count > 0:
         logger.info(f"🔒 Found {locked_count} locked players in optimizer")
@@ -1263,7 +1228,6 @@ def optimize_dfs_lineups(
 
     logger.info(f"Optimization dataset size: {len(players)} active players")
 
-    # --- Generate lineups (async -> sync) ---
     lineups: List[LineupResult] = _run_coro_sync(
         optimizer.generate_multiple_lineups(
             players=players,
@@ -1277,7 +1241,6 @@ def optimize_dfs_lineups(
         logger.error("No lineups generated")
         return []
 
-    # --- Optional: persist top lineups JSON for UI/export ---
     try:
         export_dir = Path(DATA_DIR) / "lineups"
         export_dir.mkdir(parents=True, exist_ok=True)
@@ -1339,10 +1302,8 @@ def optimize_dfs_lineups(
             )
         logger.info(f"Saved lineups to {out_path}")
     except Exception as e:
-        # Non-fatal; file I/O should never break the flow
         logger.warning(f"Failed to export lineups: {e}")
 
-    # --- Short MC summary in logs ---
     if use_monte_carlo and MONTE_CARLO_AVAILABLE:
         top = lineups[0]
         if top.ceiling_90 or top.floor_10:

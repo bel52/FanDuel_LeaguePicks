@@ -695,7 +695,29 @@ class EnhancedDataCollector:
                 if not ai_enabled:
                     logger.info("🚫 AI edge case analysis skipped (AI disabled)")
                     logger.info("=" * 60)
-                    return winning_players
+
+                    # NEW: AI ROLE DETECTION
+                    logger.info("=" * 60)
+                    logger.info("APPLYING AI ROLE CHANGE DETECTION")
+                    logger.info("=" * 60)
+
+                    role_boosts = await analyzer.analyze_weekly_role_changes(winning_players)
+
+                    if role_boosts:
+                        for player in winning_players:
+                            player_name = player.get('name')
+                            if player_name in role_boosts:
+                                boost_factor = role_boosts[player_name]
+                                original = player.get('projected_points', 0)
+                                player['projected_points'] = original * boost_factor
+                                player['projection'] = original * boost_factor
+                                logger.info(
+                                    f"🤖 ROLE BOOST: {player_name} "
+                                    f"{original:.1f} → {player['projected_points']:.1f} pts "
+                                    f"({boost_factor:.2f}x boost)"
+                                )
+
+                return winning_players
 
                 logger.info("=" * 60)
                 logger.info("APPLYING AI EDGE CASE ANALYSIS")
