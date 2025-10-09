@@ -78,7 +78,7 @@ API_PORT = 8020
 
 # DFS Platform Settings
 PLATFORM = "fanduel"
-CONTEST_TYPES = ["gpp", "cash", "contrarian", "bestball"]
+CONTEST_TYPES = ["gpp", "cash", "contrarian", "bestball", "friends_league", "h2h"]
 
 # AI Configuration with validation
 AI_ENABLED = os.getenv('AI_ENABLED', 'true').lower() == 'true'
@@ -193,7 +193,10 @@ POSITION_LIMITS = {
     'FLEX': {'min': 1, 'max': 1},
     'D': {'min': 1, 'max': 1}
 }
-
+# Head-to-Head Single Game Settings
+H2H_ROSTER_SIZE = 6  # 1 MVP + 5 FLEX
+H2H_MVP_MULTIPLIER = 1.5  # MVP costs 1.5x salary, earns 1.5x points
+H2H_SALARY_CAP = 60000
 # Weather impact thresholds
 WIND_SPEED_THRESHOLD = 15
 PRECIPITATION_THRESHOLD = 0.1
@@ -230,6 +233,14 @@ OPTIMIZATION_CONFIG = {
         'variance_weight': 0.4,
         'ownership_threshold': 15.0,
         'correlation_bonus': 1.3
+    },
+    'h2h': {  # ADD THIS BLOCK
+        'variance_weight': 0.35,
+        'ownership_threshold': 20.0,
+        'correlation_bonus': 1.5,
+        'mvp_multiplier': 1.5,
+        'roster_size': 6,
+        'salary_cap': 60000
     }
 }
 

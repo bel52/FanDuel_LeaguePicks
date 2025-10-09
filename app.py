@@ -56,7 +56,7 @@ class OptimizationRequest(BaseModel):
     force_stacks: bool = True
     max_salary: int = 60000
     use_ai: bool = True  # NEW: AI toggle
-
+    selected_game: Optional[str] = None
 
 class LineupResponse(BaseModel):
     players: List[str]
@@ -175,12 +175,21 @@ async def read_root():
                         <div class="main-controls">
                             <div class="control-group">
                                 <label>Contest Type</label>
-                                <select id="contestType">
-                                    <option value="friends_league" selected>Friends League (12-Person)</option><div class="control-group">
+                                <select id="contestType" onchange="handleContestTypeChange()">
+                                    <option value="friends_league" selected>Friends League (12-Person)</option>
+                                    <option value="h2h">Head-to-Head Single Game</option>
                                     <option value="gpp">Tournament/GPP</option>
                                     <option value="cash">Cash Game</option>
                                     <option value="contrarian">Contrarian</option>
                                     <option value="bestball">Best Ball</option>
+                                </select>
+                            </div>
+
+                            <!-- H2H Game Selector (hidden by default) -->
+                            <div class="control-group" id="gameSelector" style="display: none;">
+                                <label>Select Game</label>
+                                <select id="selectedGame">
+                                    <option value="">-- Select Game --</option>
                                 </select>
                             </div>
 
@@ -267,7 +276,42 @@ async def read_root():
                 output.innerHTML += `<div class="${className}" style="margin: 3px 0; font-size: 13px;">${emoji} [${timestamp}] ${message}</div>`;
                 output.scrollTop = output.scrollHeight;
             }
+            function handleContestTypeChange() {
+                const contestType = document.getElementById('contestType').value;
+                const gameSelector = document.getElementById('gameSelector');
+                
+                if (contestType === 'h2h') {
+                    gameSelector.style.display = 'flex';
+                    loadAvailableGames();
+                } else {
+                    gameSelector.style.display = 'none';
+                }
+            }
 
+            async function loadAvailableGames() {
+                try {
+                    const response = await fetch('/games');
+                    const data = await response.json();
+                    
+                    const gameSelect = document.getElementById('selectedGame');
+                    gameSelect.innerHTML = '<option value="">-- Select Game --</option>';
+                    
+                    if (data.games && data.games.length > 0) {
+                        data.games.forEach(game => {
+                            const option = document.createElement('option');
+                            option.value = game.game_id;
+                            option.textContent = game.display;
+                            gameSelect.appendChild(option);
+                        });
+                        
+                        log(`📋 Loaded ${data.games.length} available games`, 'success');
+                    } else {
+                        log('⚠️ No games found in current data', 'error');
+                    }
+                } catch (error) {
+                    log(`❌ Failed to load games: ${error.message}`, 'error');
+                }
+            }
             async function refreshData() {
                 try {
                     document.getElementById('refreshBtn').disabled = true;
@@ -487,7 +531,16 @@ function searchPlayers() {
 
                     const contestType = document.getElementById('contestType').value;
                     const numLineups = parseInt(document.getElementById('numLineups').value);
-
+                    if (contestType === 'h2h') {
+                const selectedGame = document.getElementById('selectedGame').value;
+                if (!selectedGame) {
+                    log('❌ Please select a game for Head-to-Head mode', 'error');
+                    document.getElementById('generateBtn').disabled = false;
+                    return;
+                }
+                requestBody.selected_game = selectedGame;
+                log(`🎯 Generating H2H lineup for ${selectedGame}`, 'loading');
+            }
                     if (lockedPlayers.size > 8) {
     throw new Error(`Too many locked players (${lockedPlayers.size}). Maximum is 8.`);
 }
@@ -937,19 +990,84 @@ async def get_players():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/games")
+async def get_available_games():
+    """Get list of available games from current slate"""
+    global current_player_data
+
+    try:
+        if not current_player_data or not current_player_data.get('players'):
+            logger.warning("No player data available for games endpoint")
+            raise HTTPException(status_code=400, detail="No player data available. Click 'Refresh' first.")
+
+        # Extract unique games from players
+        games_set = set()
+        for player in current_player_data['players']:
+            game = player.get('game', '')
+            if game and '@' in game:
+                games_set.add(game)
+
+        if not games_set:
+            logger.warning("No games found in player data")
+            raise HTTPException(status_code=400, detail="No games found in current data. Check CSV format.")
+
+        # Sort games alphabetically
+        games_list = sorted(list(games_set))
+
+        # Parse games into structured format
+        games = []
+        for game_str in games_list:
+            parts = game_str.split('@')
+            if len(parts) == 2:
+                away_team = parts[0].strip()
+                home_team = parts[1].strip()
+                games.append({
+                    'game_id': game_str,
+                    'away_team': away_team,
+                    'home_team': home_team,
+                    'display': f"{away_team} @ {home_team}"
+                })
+
+        logger.info(f"📋 Found {len(games)} available games")
+        return {
+            "games": games,
+            "total_games": len(games)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting games: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 @app.post("/optimize")
 async def optimize_lineups(request: OptimizationRequest):
     """Generate optimized lineups using the request data - FIXED WITH AUTO-REFRESH"""
     global current_player_data
 
     try:
+        logger.info(f"🎯 Optimize endpoint called: contest_type={request.contest_type}, selected_game={getattr(request, 'selected_game', None)}")  # ADD THIS LINE
         # Set AI flag from request
         os.environ['AI_ENABLED'] = 'true' if request.use_ai else 'false'
         ai_status = '✅ ENABLED' if request.use_ai else '❌ DISABLED'
         logger.info(f"🤖 AI Analysis: {ai_status}")
 
         logger.info(f"🧠 Starting {request.contest_type} optimization with locks/exclusions...")
+        # H2H: Extract game teams
+        single_game_teams = None
+        if request.contest_type == 'h2h':
+            # Get selected game from request
+            selected_game = getattr(request, 'selected_game', None)
+            if not selected_game:
+                raise HTTPException(status_code=400, detail="H2H requires a selected game")
 
+            # Parse teams from game string (e.g., "KC@LAC")
+            if '@' in selected_game:
+                parts = selected_game.split('@')
+                single_game_teams = [parts[0].strip(), parts[1].strip()]
+                logger.info(f"🎯 H2H Game: {selected_game} (Teams: {single_game_teams})")
+            else:
+                raise HTTPException(status_code=400, detail=f"Invalid game format: {selected_game}")
         # AUTO-REFRESH if no data available
         if not current_player_data or not current_player_data.get('players'):
             logger.info("📡 Auto-refreshing data (no cached data available)...")
@@ -1000,6 +1118,7 @@ async def optimize_lineups(request: OptimizationRequest):
             player_data=filtered_players,
             weather_data=current_player_data.get('weather', {}),
             vegas_multipliers=current_player_data.get('vegas_multipliers', {}),
+            vegas_data=current_player_data.get('vegas_odds', {}),  # ADD THIS LINE
             num_lineups=request.num_lineups,
             contest_type=request.contest_type,
             use_monte_carlo=False  # Disable for speed in UI

@@ -54,6 +54,7 @@ except ImportError as e:
 # Data structures
 # -----------------------------
 @dataclass
+@dataclass
 class Player:
     """Enhanced Player data structure with Monte Carlo variance"""
     id: str
@@ -69,7 +70,10 @@ class Player:
     variance: float = 0.0
     locked: bool = False
     is_core: bool = False
-    # NEW Monte Carlo fields
+    is_mvp: bool = False  # ADD THIS LINE
+    mvp_candidate: bool = False  # ADD THIS LINE
+    mvp_rank: int = 0  # ADD THIS LINE
+    # Monte Carlo fields...
     floor_10: float = 0.0
     ceiling_90: float = 0.0
     ceiling_95: float = 0.0
@@ -351,7 +355,40 @@ class EnhancedDFSOptimizer:
 
             for player in players:
                 player.ownership = self._predict_friends_league_ownership(player, contest_type)
+            if single_game_teams:
+                players = [p for p in players if p.team in single_game_teams]
+                if len(players) < 6:
+                    logger.error(f"Not enough players for single game: {len(players)}")
+                    return None
 
+            for player in players:
+                player.ownership = self._predict_friends_league_ownership(player, contest_type)
+
+                # ========== ADD H2H MVP SELECTION HERE ==========
+                # H2H: Select MVP and apply 1.5x multiplier
+            if contest_type == 'h2h':
+                # Find best MVP candidate (highest ceiling * value)
+                mvp_candidates = []
+                for player in players:
+                    if player.monte_carlo_analyzed:
+                        mvp_score = player.ceiling_90 * player.value * 0.5
+                    else:
+                        mvp_score = player.projection * player.value * 0.5
+                    mvp_candidates.append((player, mvp_score))
+
+                mvp_candidates.sort(key=lambda x: x[1], reverse=True)
+
+                # Mark top 3 candidates for MVP consideration
+                for i, (player, score) in enumerate(mvp_candidates[:3]):
+                    player.mvp_candidate = True
+                    player.mvp_rank = i + 1
+
+                logger.info(f"🏆 H2H MVP Candidates:")
+                for i, (player, score) in enumerate(mvp_candidates[:3]):
+                    logger.info(f"   {i + 1}. {player.name} ({player.position}) ${player.salary} - Score: {score:.1f}")
+                # ========== END H2H MVP SELECTION ==========
+
+            prob = pulp.LpProblem("DFS_Optimization", pulp.LpMaximize)
             prob = pulp.LpProblem("DFS_Optimization", pulp.LpMaximize)
 
             player_vars: Dict[int, pulp.LpVariable] = {}
@@ -386,9 +423,11 @@ class EnhancedDFSOptimizer:
                 logger.warning(f"Optimization failed: {pulp.LpStatus[prob.status]}")
                 return None
 
+
         except Exception as e:
             logger.error(f"Error in optimization: {e}")
-            return None
+            logger.error(f"Full traceback:\n{traceback.format_exc()}")  # CHANGE THIS LINE
+            raise HTTPException(status_code=500, detail=f"Optimization error: {str(e)}")
 
     def _calculate_monte_carlo_value(self, player: Player, contest_type: str) -> float:
         """Enhanced value calculation with proper friends_league strategy"""
@@ -486,19 +525,78 @@ class EnhancedDFSOptimizer:
                 boom_bonus = player.boom_rate * 25.0
                 salary_bonus = 0.0
 
-            if player.ownership >= 50:
-                ownership_penalty = -5.0
-            elif player.ownership <= 15:
-                ownership_penalty = 5.0
-            else:
-                ownership_penalty = 0.0
+            # FRIENDS LEAGUE: Ownership is irrelevant (12 people, 1 lineup each)
+            # We want MAXIMUM POINTS, not differentiation
+            ownership_penalty = 0.0
 
             variance_bonus = player.variance * 2.5
             bust_penalty = player.bust_rate * 8.0
 
+            # FRIENDS LEAGUE SCORING:
+            # Pure points optimization - highest score wins the week
+            # Ownership is meaningless, so we maximize: projection + ceiling + Vegas boost
+            return (base_value + ceiling_bonus + ceiling_95_bonus + boom_bonus +
+                    salary_bonus + variance_bonus - bust_penalty)
+        elif contest_type == 'h2h':
+            # H2H uses friends_league style but MORE aggressive for single game
+            vegas_multipliers = getattr(self, 'vegas_multipliers', {})
+            vegas_boost = vegas_multipliers.get(player.team, 1.0)
+
+            # H2H is all about CEILING - you need the highest score to win
+            if player.position == 'QB':
+                base_value *= 3.20  # QBs dominate single game
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 45.0
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 25.0
+                boom_bonus = player.boom_rate * 80.0
+
+            elif player.position == 'RB':
+                base_value *= 2.00
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 22.0
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 15.0
+                boom_bonus = player.boom_rate * 65.0
+
+            elif player.position == 'WR':
+                base_value *= 1.85
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 18.0
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 12.0
+                boom_bonus = player.boom_rate * 60.0
+
+            elif player.position == 'TE':
+                base_value *= 1.65
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 15.0
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 10.0
+                boom_bonus = player.boom_rate * 50.0
+
+            else:  # DEF
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 10.0
+                ceiling_95_bonus = 0.0
+                boom_bonus = player.boom_rate * 30.0
+
+            # Vegas boost for game environment
+            if vegas_boost >= 1.40:
+                base_value *= 1.50
+            elif vegas_boost >= 1.25:
+                base_value *= 1.25
+
+            # Salary efficiency matters in H2H
+            if player.value >= 3.5:
+                salary_bonus = 25.0
+            elif player.value <= 2.0:
+                salary_bonus = -20.0
+            else:
+                salary_bonus = 0.0
+
+            # Low ownership leverage
+            if player.ownership <= 20:
+                ownership_penalty = 8.0
+            else:
+                ownership_penalty = 0.0
+
+            variance_bonus = player.variance * 3.5  # High variance good for H2H
+            bust_penalty = player.bust_rate * 5.0
+
             return (base_value + ceiling_bonus + ceiling_95_bonus + boom_bonus +
                     salary_bonus + ownership_penalty + variance_bonus - bust_penalty)
-
         elif contest_type == 'gpp':
             ceiling_bonus = (player.ceiling_90 - player.projection) * 8.0
             ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 5.0
@@ -629,7 +727,69 @@ class EnhancedDFSOptimizer:
             contest_type: str,
             single_game_teams: List[str],
     ):
-        """EXACT FanDuel constraints with FIXED locked player validation"""
+        """EXACT FanDuel constraints - handles both main slate and H2H single game"""
+
+        # Handle H2H Single Game Format
+        if contest_type == 'h2h':
+            logger.info(f"🎯 Applying H2H single-game constraints for teams: {single_game_teams}")
+
+            # Filter to only players from the selected game
+            if single_game_teams:
+                game_player_indices = [
+                    i for i, p in enumerate(players)
+                    if p.team in single_game_teams
+                ]
+
+                if len(game_player_indices) < 6:
+                    raise ValueError(
+                        f"Not enough players from {single_game_teams} ({len(game_player_indices)} available, need 6)")
+
+                logger.info(f"✅ {len(game_player_indices)} players available from {single_game_teams}")
+
+            # MVP constraints
+            mvp_var = pulp.LpVariable("mvp_selected", cat='Binary')
+
+            # Salary constraint with MVP multiplier
+            salary_expr = []
+            for i in range(len(players)):
+                # MVP costs 1.5x salary, regular FLEX costs normal salary
+                # We'll handle MVP selection through a separate variable
+                base_salary = players[i].salary * player_vars[i]
+                salary_expr.append(base_salary)
+
+            # Add extra 0.5x salary cost for whichever player is MVP
+            for i in range(len(players)):
+                mvp_bonus_cost = players[i].salary * 0.5 * pulp.LpVariable(f"is_mvp_{i}", cat='Binary')
+                salary_expr.append(mvp_bonus_cost)
+
+                # Link mvp_bonus to actual MVP selection (we'll set this in objective)
+                # For now, just ensure salary cap
+
+            prob += pulp.lpSum(salary_expr) <= H2H_SALARY_CAP
+
+            # Roster size: exactly 6 players (1 MVP + 5 FLEX)
+            prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == H2H_ROSTER_SIZE
+
+            # If locked players exist, enforce them
+            locked_count = sum(1 for p in players if p.locked)
+            if locked_count > H2H_ROSTER_SIZE:
+                raise ValueError(f"Too many locked players ({locked_count}) for H2H format (max {H2H_ROSTER_SIZE})")
+
+            for i, player in enumerate(players):
+                if player.locked:
+                    prob += player_vars[i] == 1
+                    logger.info(f"🔒 H2H LOCKED: {player.name} ({player.position}) ${player.salary}")
+
+            # Team restriction: all players from selected game teams
+            if single_game_teams:
+                for i, player in enumerate(players):
+                    if player.team not in single_game_teams:
+                        prob += player_vars[i] == 0
+
+            logger.info(f"✅ H2H constraints applied: 6 players, ${H2H_SALARY_CAP} cap, MVP 1.5x")
+            return
+
+        # EXISTING MAIN SLATE CODE CONTINUES BELOW...
         prob += pulp.lpSum([players[i].salary * player_vars[i] for i in range(len(players))]) <= FANDUEL_SALARY_CAP
 
         locked_players_indices = []
@@ -808,45 +968,33 @@ class EnhancedDFSOptimizer:
             logger.info(f"✅ CONSTRAINT: Max 4 players from {game_id}")
 
     def _predict_friends_league_ownership(self, player: Player, contest_type: str) -> float:
-        """Ultra-conservative ownership for 12-person league"""
-        ownership = 12.0
+        """
+        FRIENDS LEAGUE: Ownership is IRRELEVANT (12 people, 1 lineup each)
+        We're maximizing points to beat 11 opponents, not differentiating from field
+        """
+        if contest_type == 'friends_league':
+            return 0.0  # Ownership doesn't matter - just score the most points
 
+        # For other contest types (GPP/Cash), use simplified ownership estimate
         if player.salary >= 9500:
-            ownership = 35.0
-        elif player.salary >= 8500:
-            ownership = 25.0
+            return 35.0
         elif player.salary >= 7500:
-            ownership = 20.0
-        elif player.salary >= 6000:
-            ownership = 15.0
-        elif player.salary <= 4500:
-            ownership = 10.0
+            return 20.0
+        elif player.salary <= 5000:
+            return 10.0
         else:
-            ownership = 12.0
-
-        if player.position == 'QB':
-            if player.salary >= 8500:
-                ownership += 5
-            elif player.salary <= 6500:
-                ownership += 3
-        elif player.position == 'RB':
-            ownership += 3
-        elif player.position == 'TE':
-            ownership -= 5
-        elif player.position == 'D':
-            ownership -= 7
-
-        if player.value >= 4.0:
-            ownership += 5
-        elif player.value < 2.5:
-            ownership -= 5
-
-        return max(5.0, min(40.0, ownership))
+            return 15.0
 
     def _calculate_contest_value(self, player: Player, contest_type: str) -> float:
         """Fallback value calculation when Monte Carlo not available"""
         base_value = player.projection
-        if contest_type == 'gpp':
+
+        if contest_type == 'friends_league':
+            # FRIENDS LEAGUE: Pure scoring + value (no ownership considerations)
+            if player.value >= 3.5:
+                base_value += 3.0
+            return base_value + (player.variance * 0.5)
+        elif contest_type == 'gpp':
             if 25 <= player.ownership <= 40:
                 base_value += 2.0
             elif player.ownership >= 45:
@@ -862,15 +1010,11 @@ class EnhancedDFSOptimizer:
             elif player.ownership >= 35:
                 base_value -= 8.0
             return base_value + (player.variance * 2.0)
-        elif contest_type == 'friends_league':
-            if player.value >= 3.5:
-                base_value += 3.0
-            return base_value + (player.variance * 0.5)
         else:
             return base_value + (player.variance * 1.0)
 
     def _extract_result(self, prob, players: List[Player], player_vars: Dict, contest_type: str) -> LineupResult:
-        """Extract lineup results with FanDuel ordering"""
+        """Extract lineup results with FanDuel ordering - handles H2H MVP selection"""
         selected_players: List[Player] = []
         total_salary = 0
         total_ownership = 0
@@ -881,6 +1025,60 @@ class EnhancedDFSOptimizer:
                 total_salary += player.salary
                 total_ownership += player.ownership
 
+        # H2H: Select MVP from the 6 players
+        if contest_type == 'h2h':
+            if len(selected_players) != 6:
+                logger.error(f"H2H lineup has {len(selected_players)} players, expected 6")
+                return None
+
+            # Find best MVP (highest ceiling + value combo)
+            mvp = None
+            best_mvp_score = 0
+
+            for player in selected_players:
+                if player.monte_carlo_analyzed:
+                    mvp_score = player.ceiling_90 * player.value
+                else:
+                    mvp_score = player.projection * player.value * 1.5
+
+                if mvp_score > best_mvp_score:
+                    best_mvp_score = mvp_score
+                    mvp = player
+
+            if not mvp:
+                mvp = max(selected_players, key=lambda p: p.projection)
+
+            # Mark MVP
+            mvp.is_mvp = True
+
+            # Calculate total salary with MVP 1.5x cost
+            mvp_salary_cost = int(mvp.salary * 1.5)
+            other_salary = sum(p.salary for p in selected_players if p != mvp)
+            total_salary = mvp_salary_cost + other_salary
+
+            # Calculate projected points with MVP 1.5x
+            projected_points = (mvp.projection * 1.5) + sum(p.projection for p in selected_players if p != mvp)
+
+            # Order: MVP first, then FLEX by salary
+            flex_players = [p for p in selected_players if p != mvp]
+            flex_players.sort(key=lambda p: p.salary, reverse=True)
+            ordered_players = [mvp] + flex_players
+
+            logger.info(
+                f"🏆 H2H MVP: {mvp.name} ({mvp.position}) ${mvp_salary_cost:,} (1.5x) - {mvp.projection:.1f} → {mvp.projection * 1.5:.1f} pts")
+
+            return LineupResult(
+                players=ordered_players,
+                total_salary=total_salary,
+                projected_points=projected_points,
+                total_value=sum(p.value for p in ordered_players),
+                ownership_total=total_ownership,
+                correlation_score=1.0,  # All same game
+                weather_impact=float(np.mean([p.weather_factor for p in ordered_players])) if ordered_players else 1.0,
+                contest_type=contest_type,
+            )
+
+        # EXISTING CODE for non-H2H contests...
         ordered_players = self._format_lineup_for_fanduel(selected_players)
 
         if contest_type == 'single_game' and len(ordered_players) == 6:
@@ -1097,12 +1295,20 @@ class EnhancedDFSOptimizer:
             logger.info(f"  {player_name} ({position}): {count}/{num_lineups} lineups")
         logger.info("=" * 60)
 
-        if contest_type == 'cash':
+        # Sort lineups based on contest type
+        if contest_type == 'friends_league':
+            # FRIENDS LEAGUE: Pure ceiling/points focus (ownership irrelevant)
+            if lineups and lineups[0].ceiling_90 > 0:
+                lineups.sort(key=lambda x: x.ceiling_90, reverse=True)
+            else:
+                lineups.sort(key=lambda x: x.projected_points + (x.variance_score * 1.5), reverse=True)
+        elif contest_type == 'cash':
             if lineups and lineups[0].floor_25 > 0:
                 lineups.sort(key=lambda x: x.floor_25, reverse=True)
             else:
                 lineups.sort(key=lambda x: x.projected_points - (x.variance_score * 0.5), reverse=True)
         else:
+            # GPP/Contrarian: Use ownership leverage
             if lineups and lineups[0].ceiling_90 > 0:
                 lineups.sort(key=lambda x: x.ceiling_90 - (x.ownership_total * 0.2), reverse=True)
             else:
