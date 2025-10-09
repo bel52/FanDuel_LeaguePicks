@@ -22,6 +22,8 @@ from config import (
     DATA_DIR,
     FANDUEL_POSITIONS,
     FANDUEL_SALARY_CAP,
+    H2H_SALARY_CAP,      # ADD THIS
+    H2H_ROSTER_SIZE,     # ADD THIS
     OPTIMIZATION_CONFIG,
 )
 
