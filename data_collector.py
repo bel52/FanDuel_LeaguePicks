@@ -535,278 +535,100 @@ class EnhancedDataCollector:
         return self._is_position_viable(position, salary, fppg, fppg_source, name, team)
 
     async def collect_players_for_slate(self, games_info: Dict[str, Any], contest_type: str = 'gpp') -> List[Dict]:
-        """Collect players with SMARTER filtering to preserve winning options"""
+        """Collect players - NOW READS CSV DIRECTLY"""
         current_week = games_info['current_week']
 
-        # Get teams playing in the slate
-        if contest_type == 'single_game':
-            playing_teams = set()
-            for game in games_info.get('single_games', []):
-                playing_teams.update(game.get('teams', []))
-        else:
-            playing_teams = set()
-            for game in games_info.get('main_slate', []):
-                playing_teams.update(game.get('teams', []))
+        # Get teams in slate
+        playing_teams = set()
+        for game in games_info.get('main_slate', []):
+            playing_teams.update(game.get('teams', []))
 
-        logger.info(f"Teams in {contest_type} slate: {sorted(playing_teams)} ({len(playing_teams)} teams)")
+        logger.info(f"Teams in slate: {sorted(playing_teams)}")
 
-        # If no teams found, use all teams as fallback
-        if not playing_teams:
-            logger.warning("No teams found in slate, using all available players")
-            playing_teams = None  # Will include all players
-
-        # Get FanDuel salaries with REAL FPPG data
+        # READ CSV DIRECTLY
         try:
-            from fanduel_salary_scraper import get_fanduel_salaries
-            salary_data = await get_fanduel_salaries()
+            csv_path = DATA_DIR / "fanduel_salaries_manual.csv"
 
-            if not salary_data:
-                logger.error("No FanDuel salary data")
+            if not csv_path.exists():
+                logger.error(f"CSV not found: {csv_path}")
                 return []
 
-            # CRITICAL CHANGE: Apply injury opportunity detection BEFORE filtering
-            logger.info("Applying injury opportunity detection BEFORE filtering...")
-            try:
-                from injury_opportunity_detector import enhance_players_with_injury_opportunities
-                enhanced_salary_data = enhance_players_with_injury_opportunities(salary_data)
-                logger.info("Injury opportunity detection completed")
-            except ImportError:
-                logger.warning("Injury opportunity detector not available, skipping enhancement")
-                enhanced_salary_data = salary_data
-            except Exception as e:
-                logger.error(f"Injury opportunity detection failed: {e}")
-                enhanced_salary_data = salary_data
+            import pandas as pd
+            df = pd.read_csv(csv_path)
 
-            # NOW apply filtering to the enhanced data
-            filtered_salary_data = []
-            total_players = len(enhanced_salary_data)
-            filtered_counts = {'QB': [0, 0], 'RB': [0, 0], 'WR': [0, 0], 'TE': [0, 0], 'D': [0, 0]}
+            logger.info(f"CSV loaded: {len(df)} rows, columns: {list(df.columns)}")
 
-            for player_data in enhanced_salary_data:
-                position = player_data.get('position', '')
+            salary_data = []
+            for _, row in df.iterrows():
+                first = str(row.get('First Name', '')).strip()
+                last = str(row.get('Last Name', '')).strip()
+                name = f"{first} {last}".strip()
 
-                if position in filtered_counts:
-                    filtered_counts[position][0] += 1  # Total count
-
-                if self._is_viable_player(player_data):
-                    filtered_salary_data.append(player_data)
-                    if position in filtered_counts:
-                        filtered_counts[position][1] += 1  # Kept count
-
-            # Log filtering results
-            for pos, (total, kept) in filtered_counts.items():
-                if total > 0:
-                    logger.info(f"{pos} FILTERING: Kept {kept} of {total} players ({total - kept} filtered)")
-
-            logger.info(f"TOTAL FILTERING: Kept {len(filtered_salary_data)} of {total_players} players")
-
-            # Now process the filtered data
-            winning_players = []
-            for player_data in filtered_salary_data:
-                name = player_data.get('name', '')
-                position = player_data.get('position', '')
-                team = player_data.get('team', '').upper()
-                salary = int(player_data.get('salary', 5000))
-
-                # Use REAL FPPG from FanDuel data ONLY
-                fppg = player_data.get('projected_points', 0)
-                if fppg > 0:
-                    projection = fppg
-                    logger.debug(f"✅ {name}: Using real FPPG {fppg}")
-                else:
-                    logger.warning(f"⚠️ {name}: No FPPG data, skipping player")
-                    continue  # Skip players with no real data
-
-                # Filter by teams (if applicable)
-                if playing_teams and team not in playing_teams:
+                if not name or name == 'nan nan':
                     continue
 
-                winning_player = {
-                    'player_id': f"fd_{player_data.get('id', name)}",
+                salary_data.append({
+                    'id': str(row.get('Id', '')),
                     'name': name,
-                    'position': position,
-                    'team': team,
-                    'salary': salary,
-                    'projected_points': round(projection, 2),
-                    'projection': round(projection, 2),
+                    'position': str(row.get('Position', '')).strip(),
+                    'team': str(row.get('Team', '')).strip().upper(),
+                    'salary': int(row.get('Salary', 0)),
+                    'projected_points': float(row.get('FPPG', 0)),
                     'fppg_source': 'real',
-                    'ceiling': round(projection * self._get_ceiling_multiplier(position), 2),
-                    'floor': round(projection * 0.6, 2),
-                    'weather_factor': 1.0,
-                    'ownership': np.random.uniform(5.0, 35.0),
-                    'opponent': player_data.get('opponent', ''),
-                    'game': player_data.get('game', ''),  # ADD THIS LINE
-                    'value': round(projection / (salary / 1000), 2) if salary > 0 else 0
-                }
+                    'injury_status': str(row.get('Injury Indicator', '')).strip(),
+                    'game': str(row.get('Game', '')).strip()
+                })
 
-                # Preserve injury opportunity metadata if it exists
-                if player_data.get('injury_opportunity', False):
-                    winning_player['injury_opportunity'] = True
-                    winning_player['opportunity_score'] = player_data.get('opportunity_score', 0)
-                    winning_player['injured_starter'] = player_data.get('injured_starter', '')
-                    winning_player['boost_reason'] = player_data.get('boost_reason', '')
-
-                winning_players.append(winning_player)
-
-            # Apply weather adjustments
-            weather_data = await self.get_weather_for_games(games_info)
-            for player in winning_players:
-                team = player['team']
-                if team in weather_data:
-                    weather = weather_data[team]
-                    factor = weather.get('factor', 1.0)
-                    conditions = weather.get('conditions', '').lower()
-                    # Penalize passing games in rain or snow
-                    if 'rain' in conditions or 'snow' in conditions:
-                        factor *= 0.95
-                    # Penalize high winds (>15 mph)
-                    try:
-                        wind_mph = int(weather.get('wind_speed', '0').split()[0])
-                        if wind_mph > 15:
-                            factor *= 0.97
-                    except Exception:
-                        pass
-                    # Penalize high precipitation chance (>40%)
-                    if weather.get('precipitation_chance', 0) > 40:
-                        factor *= 0.92
-                    player['weather_factor'] = factor
-                    player['projected_points'] *= factor
-                    player['projection'] *= factor
-                    player['ceiling'] *= factor
-                    player['floor'] *= factor
-
-            logger.info(f"Enhanced {len(winning_players)} players with REAL projections")
-
-            # Log projection source breakdown
-            real_count = len(winning_players)  # All are real now
-            logger.info(f"Projection sources: {real_count} real FPPG, 0 estimated")
-
-            # Log injury opportunities applied
-            # Log injury opportunities applied
-            injury_opportunities = sum(1 for p in winning_players if p.get('injury_opportunity', False))
-            if injury_opportunities > 0:
-                logger.info(f"Injury opportunities applied: {injury_opportunities} players boosted")
-
-            # ========================================================================
-            # AI EDGE CASE ANALYSIS - Evaluate small sample, injury opp, value plays
-            # ========================================================================
-                # Check if AI is enabled
-                ai_enabled = os.getenv('AI_ENABLED', 'true').lower() == 'true'
-
-                if not ai_enabled:
-                    logger.info("🚫 AI edge case analysis skipped (AI disabled)")
-                    logger.info("=" * 60)
-
-                    # NEW: AI ROLE DETECTION (only if AI enabled)
-                    logger.info("=" * 60)
-                    ai_enabled = os.getenv('AI_ENABLED', 'true').lower() == 'true'
-
-                    if ai_enabled:
-                        logger.info("APPLYING AI ROLE CHANGE DETECTION")
-                        logger.info("=" * 60)
-
-                        try:
-                            from ai_analyzer import DualAIDFSAnalyzer
-                            analyzer = DualAIDFSAnalyzer()
-                            role_boosts = await analyzer.analyze_weekly_role_changes(winning_players)
-
-                            if role_boosts:
-                                for player in winning_players:
-                                    player_name = player.get('name')
-                                    if player_name in role_boosts:
-                                        boost_factor = role_boosts[player_name]
-                                        original = player.get('projected_points', 0)
-                                        player['projected_points'] = original * boost_factor
-                                        player['projection'] = original * boost_factor
-                                        logger.info(
-                                            f"🤖 ROLE BOOST: {player_name} "
-                                            f"{original:.1f} → {player['projected_points']:.1f} pts "
-                                            f"({boost_factor:.2f}x boost)"
-                                        )
-                            else:
-                                logger.info("No AI role changes detected")
-
-                        except Exception as e:
-                            logger.warning(f"AI role change detection failed: {e}")
-                    else:
-                        logger.info("AI ROLE CHANGE DETECTION: SKIPPED (AI disabled)")
-
-                    logger.info("=" * 60)
-
-                    return winning_players
-
-                logger.info("=" * 60)
-                logger.info("APPLYING AI EDGE CASE ANALYSIS")
-                logger.info("=" * 60)
-
-            try:
-                from ai_analyzer import DualAIDFSAnalyzer
-                analyzer = DualAIDFSAnalyzer()
-
-                # Get AI analysis of edge cases
-                edge_analysis = await analyzer.analyze_edge_case_players(winning_players)
-
-                if edge_analysis.get('edge_case_recommendations'):
-                    logger.info(f"AI evaluated {edge_analysis.get('small_sample_count', 0)} small-sample players")
-                    logger.info(f"AI evaluated {edge_analysis.get('injury_opp_count', 0)} injury opportunities")
-                    logger.info(f"AI evaluated {edge_analysis.get('value_play_count', 0)} value plays")
-
-                    # Apply AI recommendations to projections
-                    for rec in edge_analysis['edge_case_recommendations']:
-                        player_name = rec['player_name']
-                        recommendation = rec['recommendation']
-                        confidence = rec['confidence']
-
-                        # Find player in winning_players list
-                        for player in winning_players:
-                            if player.get('name') == player_name:
-                                # Store AI metadata on player
-                                player['ai_confidence'] = confidence
-                                player['ai_recommendation'] = recommendation
-
-                                # Adjust projection based on AI confidence
-                                if recommendation == 'START' and confidence >= 7:
-                                    # High confidence START = boost projection
-                                    boost_factor = 1.0 + ((confidence - 5) / 20)  # 7=1.10x, 10=1.25x
-                                    original = player.get('projected_points', 0)
-                                    player['projected_points'] = original * boost_factor
-                                    player['projection'] = original * boost_factor
-                                    logger.info(
-                                        f"AI BOOST: {player_name} "
-                                        f"{original:.1f} -> {player['projected_points']:.1f} pts "
-                                        f"(confidence {confidence}/10)"
-                                    )
-
-                                elif recommendation == 'FADE' and confidence >= 7:
-                                    # High confidence FADE = reduce projection
-                                    penalty_factor = 1.0 - ((confidence - 5) / 30)  # 7=0.93x, 10=0.83x
-                                    original = player.get('projected_points', 0)
-                                    player['projected_points'] = original * penalty_factor
-                                    player['projection'] = original * penalty_factor
-                                    logger.info(
-                                        f"AI FADE: {player_name} "
-                                        f"{original:.1f} -> {player['projected_points']:.1f} pts "
-                                        f"(confidence {confidence}/10)"
-                                    )
-
-                                break
-
-                    logger.info("AI edge case analysis complete")
-                else:
-                    logger.info("No edge cases requiring AI evaluation")
-
-            except ImportError:
-                logger.warning("AI analyzer not available for edge case analysis")
-            except Exception as e:
-                logger.error(f"AI edge case analysis failed: {e}")
-
-            logger.info("=" * 60)
-
-            return winning_players
+            logger.info(f"Parsed {len(salary_data)} players")
 
         except Exception as e:
-            logger.error(f"Error collecting players: {e}")
+            logger.error(f"CSV read error: {e}")
             return []
+
+        # Filter viable players
+        winning_players = []
+        for player_data in salary_data:
+            if not self._is_viable_player(player_data):
+                continue
+
+            name = player_data['name']
+            position = player_data['position']
+            team = player_data['team']
+            salary = player_data['salary']
+            fppg = player_data['projected_points']
+
+            if fppg <= 0:
+                continue
+
+            # Safety checks for JSON serialization
+            if salary <= 0 or fppg <= 0:
+                continue
+
+            # Calculate value safely
+            try:
+                value = round(fppg / (salary / 1000), 2)
+                if not (0 <= value <= 100):  # Sanity check
+                    value = 0.0
+            except:
+                value = 0.0
+
+            winning_players.append({
+                'player_id': f"fd_{player_data['id']}",
+                'name': name,
+                'position': position,
+                'team': team,
+                'salary': int(salary),
+                'projected_points': float(round(fppg, 2)),
+                'projection': float(round(fppg, 2)),
+                'ceiling': float(round(fppg * 1.4, 2)),
+                'floor': float(round(fppg * 0.6, 2)),
+                'ownership': 15.0,
+                'game': player_data['game'],
+                'value': float(value)
+            })
+
+        logger.info(f"Final count: {len(winning_players)} players")
+        return winning_players
 
     def _is_definitely_unavailable(self, injury_status: str, name: str) -> bool:
         """Universal availability check - works for all positions"""
