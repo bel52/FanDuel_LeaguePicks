@@ -567,13 +567,32 @@ class EnhancedDataCollector:
                 if not name or name == 'nan nan':
                     continue
 
+                # Safe extraction with NaN handling
+                try:
+                    salary_val = row.get('Salary', 0)
+                    if pd.isna(salary_val):
+                        salary_val = 0
+                    salary_val = int(salary_val)
+
+                    fppg_val = row.get('FPPG', 0)
+                    if pd.isna(fppg_val):
+                        fppg_val = 0.0
+                    fppg_val = float(fppg_val)
+
+                    # Skip if bad data
+                    if salary_val <= 0 or fppg_val <= 0:
+                        continue
+
+                except (ValueError, TypeError):
+                    continue
+
                 salary_data.append({
                     'id': str(row.get('Id', '')),
                     'name': name,
                     'position': str(row.get('Position', '')).strip(),
                     'team': str(row.get('Team', '')).strip().upper(),
-                    'salary': int(row.get('Salary', 0)),
-                    'projected_points': float(row.get('FPPG', 0)),
+                    'salary': salary_val,
+                    'projected_points': fppg_val,
                     'fppg_source': 'real',
                     'injury_status': str(row.get('Injury Indicator', '')).strip(),
                     'game': str(row.get('Game', '')).strip()
@@ -670,30 +689,22 @@ class EnhancedDataCollector:
 
     def _is_viable_qb_adaptive(self, salary: int, fppg: float, fppg_source: str,
                                name: str, team: str) -> bool:
-        """QB filtering based on ADAPTIVE salary/projection patterns"""
+        """QB filtering - ONLY keep starting QBs"""
 
-        # Tier 1: Elite starters (obvious keeps)
+        # HARD FLOOR: Any QB under $6,000 is a backup and won't play
+        if salary < 6000:
+            logger.info(f"FILTERING backup QB: {name} (${salary})")
+            return False
+
+        # Elite starters
         if salary >= 8000:
             return True
 
-        # Tier 2: Solid starters with real data
-        if salary >= 7200 and fppg >= 15.0:
+        # Starting QBs with real production
+        if salary >= 6000 and fppg >= 12.0:
             return True
 
-        # Tier 3: Potential starters with decent metrics
-        if salary >= 6800 and fppg >= 12.0 and fppg_source == 'real':
-            return True
-
-        # Tier 4: Emergency/backup starters with value
-        if salary >= 6500 and fppg >= 10.0:
-            return True
-
-        # Filter out obvious practice squad QBs
-        if salary < 6200 and fppg < 8:
-            logger.debug(f"FILTERING practice squad QB: {name}")
-            return False
-
-        # When in doubt, keep (better safe than sorry for QBs)
+        # When in doubt for QBs $6K+, keep them
         return True
 
     def _is_viable_rb_adaptive(self, salary: int, fppg: float, fppg_source: str,

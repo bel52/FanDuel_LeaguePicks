@@ -531,35 +531,36 @@ function searchPlayers() {
 
                     const contestType = document.getElementById('contestType').value;
                     const numLineups = parseInt(document.getElementById('numLineups').value);
+                    const useAI = document.getElementById('useAI').checked;
+                    
+                    // Create request body FIRST
+                    const requestBody = {
+                        contest_type: contestType,
+                        num_lineups: numLineups,
+                        locked_players: Array.from(lockedPlayers),
+                        excluded_players: Array.from(excludedPlayers),
+                        avoid_high_ownership: contestType === 'gpp' || contestType === 'contrarian',
+                        force_stacks: contestType !== 'cash',
+                        use_ai: useAI
+                    };
+                    
+                    // H2H game selection
                     if (contestType === 'h2h') {
-                const selectedGame = document.getElementById('selectedGame').value;
-                if (!selectedGame) {
-                    log('❌ Please select a game for Head-to-Head mode', 'error');
-                    document.getElementById('generateBtn').disabled = false;
-                    return;
-                }
-                requestBody.selected_game = selectedGame;
-                log(`🎯 Generating H2H lineup for ${selectedGame}`, 'loading');
-            }
-                    if (lockedPlayers.size > 8) {
-    throw new Error(`Too many locked players (${lockedPlayers.size}). Maximum is 8.`);
-}
+                        const selectedGame = document.getElementById('selectedGame').value;
+                        if (!selectedGame) {
+                            log('❌ Please select a game for Head-to-Head mode', 'error');
+                            document.getElementById('generateBtn').disabled = false;
+                            return;
+                        }
+                        requestBody.selected_game = selectedGame;
+                        log(`🎯 Generating H2H lineup for ${selectedGame}`, 'loading');
+                    }
+                                        if (lockedPlayers.size > 8) {
+                        throw new Error(`Too many locked players (${lockedPlayers.size}). Maximum is 8.`);
+                    }
 
                     log(`🧠 Generating ${numLineups} ${contestType.toUpperCase()} lineups...`, 'loading');
-
-      const useAI = document.getElementById('useAI').checked;
-
-const requestBody = {
-    contest_type: contestType,
-    num_lineups: parseInt(document.getElementById('numLineups').value),
-    locked_players: Array.from(lockedPlayers),
-    excluded_players: Array.from(excludedPlayers),
-    avoid_high_ownership: contestType === 'gpp' || contestType === 'contrarian',
-    force_stacks: contestType !== 'cash',
-    use_ai: useAI
-};
-
-log(`🧠 AI Analysis: ${useAI ? 'ENABLED' : 'DISABLED'}`, useAI ? 'success' : 'loading');
+                    log(`🧠 AI Analysis: ${useAI ? 'ENABLED' : 'DISABLED'}`, useAI ? 'success' : 'loading');
 
                     const response = await fetch('/optimize', {
                         method: 'POST',
@@ -620,7 +621,7 @@ log(`🧠 AI Analysis: ${useAI ? 'ENABLED' : 'DISABLED'}`, useAI ? 'success' : '
                                 </div>
                             </div>
                             <div class="position-slots">
-                                ${createPositionSlots(players)}
+                                ${createPositionSlots(players, contestType)}
                             </div>
                         </div>
                     `;
@@ -647,8 +648,17 @@ log(`🧠 AI Analysis: ${useAI ? 'ENABLED' : 'DISABLED'}`, useAI ? 'success' : '
                 });
             }
 
-            function createPositionSlots(players) {
-                const positions = ['QB', 'RB', 'RB', 'WR', 'WR', 'WR', 'TE', 'FLEX', 'DEF'];
+            function createPositionSlots(players, contestType) {
+                let positions;
+                
+                // H2H Single Game: 1 MVP + 5 FLEX
+                if (contestType === 'h2h') {
+                    positions = ['MVP', 'FLEX', 'FLEX', 'FLEX', 'FLEX', 'FLEX'];
+                } else {
+                    // Standard slate: QB + 2RB + 3WR + 1TE + 1FLEX + 1DEF
+                    positions = ['QB', 'RB', 'RB', 'WR', 'WR', 'WR', 'TE', 'FLEX', 'DEF'];
+                }
+                
                 let html = '';
 
                 positions.forEach((posLabel, index) => {
