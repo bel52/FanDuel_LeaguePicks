@@ -992,9 +992,38 @@ class EnhancedDFSOptimizer:
         base_value = player.projection
 
         if contest_type == 'friends_league':
-            # FRIENDS LEAGUE: Pure scoring + value (no ownership considerations)
-            if player.value >= 3.5:
-                base_value += 3.0
+            # FRIENDS LEAGUE: Need 170-180+ to win based on league history
+            vegas_multipliers = getattr(self, 'vegas_multipliers', {})
+            vegas_boost = vegas_multipliers.get(player.team, 1.0)
+
+            # ULTRA-AGGRESSIVE Vegas boost (top games get 5-6x boost)
+            if vegas_boost >= 1.40:
+                base_value *= (vegas_boost * 4.0)  # 1.55x becomes 6.2x value boost
+            elif vegas_boost >= 1.25:
+                base_value *= (vegas_boost * 3.0)  # 1.35x becomes 4.05x
+            elif vegas_boost >= 1.15:
+                base_value *= (vegas_boost * 2.0)  # 1.25x becomes 2.5x
+            elif vegas_boost > 1.0:
+                base_value *= (vegas_boost * 1.5)
+
+            # SALARY TIER BONUSES (favor studs over punts)
+            if player.salary >= 9000:
+                base_value += 25.0  # Elite tier bonus
+            elif player.salary >= 7500:
+                base_value += 15.0  # Stud tier bonus
+            elif player.salary >= 6000:
+                base_value += 5.0  # Solid starter
+            elif player.salary <= 4500:
+                base_value -= 20.0  # PENALTY for punt plays
+
+            # POSITION-SPECIFIC adjustments for ceiling
+            if player.position == 'QB' and player.salary >= 7500:
+                base_value += 10.0  # Premium QB bonus
+            elif player.position == 'RB' and player.salary >= 8000:
+                base_value += 8.0  # Workhorse RB bonus
+            elif player.position == 'WR' and player.salary >= 8000:
+                base_value += 8.0  # WR1 bonus
+
             return base_value + (player.variance * 0.5)
         elif contest_type == 'gpp':
             if 25 <= player.ownership <= 40:
@@ -1230,7 +1259,8 @@ class EnhancedDFSOptimizer:
                 random_factor = 1.0
                 if not player.locked:
                     if contest_type == 'friends_league':
-                        random_factor = random.uniform(0.50, 1.50)
+                        # REDUCE randomization so vegas boost isn't overwhelmed
+                        random_factor = random.uniform(0.85, 1.15)
                         if player.position in ['TE', 'D']:
                             random_factor *= random.uniform(0.80, 1.20)
                     elif contest_type == 'gpp':
@@ -1420,6 +1450,11 @@ def optimize_dfs_lineups(
 
     setattr(optimizer, "vegas_multipliers", vegas_multipliers or {})
     setattr(optimizer, "vegas_data", vegas_data or {})
+
+    # DIAGNOSTIC: Verify vegas multipliers reached optimizer
+    logger.info(f"🎯 OPTIMIZER RECEIVED vegas_multipliers: {vegas_multipliers}")
+    if vegas_multipliers:
+        logger.info(f"   Sample teams: {list(vegas_multipliers.items())[:5]}")
 
     players: List[Player] = _run_coro_sync(
         optimizer.prepare_players(player_data, weather_data or {}, vegas_multipliers or {})
