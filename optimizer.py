@@ -430,14 +430,18 @@ class EnhancedDFSOptimizer:
             if hasattr(self, '_top_game_indices'):
                 selected = sum(1 for i in self._top_game_indices if player_vars[i].varValue == 1)
                 logger.info(f"🔍 VEGAS CHECK: Selected {selected} from top game (constraint: 3-4)")
-
-            if prob.status == pulp.LpStatusOptimal:
+            if selected > 0:
+                selected_names = [players[i].name for i in self._top_game_indices if player_vars[i].varValue == 1]
+                selected_teams = [players[i].team for i in self._top_game_indices if player_vars[i].varValue == 1]
+                logger.info(f"🔍 VEGAS PLAYERS: {list(zip(selected_names, selected_teams))}")
+            if prob.status != pulp.LpStatusOptimal:
                 logger.error(f"❌ SOLVER FAILED: {pulp.LpStatus[prob.status]}")
                 # Log constraint violations
                 logger.error("Checking Vegas constraint...")
                 if hasattr(self, '_top_game_indices'):
                     selected_from_game = sum(player_vars[i].varValue or 0 for i in self._top_game_indices)
                     logger.error(f"   Selected {selected_from_game} players from top game (need 3-4)")
+                return None
 
             if prob.status == pulp.LpStatusOptimal:
                 result = self._extract_result(prob, players, player_vars, contest_type)
@@ -449,7 +453,6 @@ class EnhancedDFSOptimizer:
             else:
                 logger.warning(f"Optimization failed: {pulp.LpStatus[prob.status]}")
                 return None
-
 
         except Exception as e:
             logger.error(f"Error in optimization: {e}")
@@ -465,6 +468,10 @@ class EnhancedDFSOptimizer:
             vegas_boost = vegas_multipliers.get(player.team, 1.0)
 
             if player.position == 'QB':
+                # HARD FLOOR: Friends league needs reliable QB scoring
+                if player.salary < 7000:
+                    return 0.0  # Eliminate backup QBs entirely
+
                 if vegas_boost >= 1.40:
                     base_value *= 2.80
                 elif vegas_boost >= 1.25:
@@ -472,9 +479,9 @@ class EnhancedDFSOptimizer:
                 elif vegas_boost >= 1.15:
                     base_value *= 1.60
 
-                ceiling_bonus = (player.ceiling_90 - player.projection) * 60.0  # Was 30.0
-                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 40.0  # Was 18.0
-                boom_bonus = player.boom_rate * 100.0  # Was 60.0
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 90.0  # Was 60, now 90
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 60.0  # Was 40, now 60
+                boom_bonus = player.boom_rate * 150.0  # Was 100, now 150
 
                 if player.salary >= 8000:
                     salary_bonus = 35.0
@@ -500,11 +507,9 @@ class EnhancedDFSOptimizer:
 
                     base_value *= 1.25
 
-                ceiling_bonus = (player.ceiling_90 - player.projection) * 30.0
-
-                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 20.0
-
-                boom_bonus = player.boom_rate * 100.0
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 45.0  # Change from 30.0
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 30.0  # Change from 20.0
+                boom_bonus = player.boom_rate * 150.0  # Change from 100.0
 
                 if player.salary >= 9000:
                     salary_bonus = 25.0
@@ -530,11 +535,9 @@ class EnhancedDFSOptimizer:
 
                     base_value *= 1.20
 
-                ceiling_bonus = (player.ceiling_90 - player.projection) * 24.0
-
-                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 16.0
-
-                boom_bonus = player.boom_rate * 96.0
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 36.0  # Change from 24.0
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 24.0  # Change from 16.0
+                boom_bonus = player.boom_rate * 144.0  # Change from 96.0
 
                 if player.salary >= 8500:
                     salary_bonus = 18.0
@@ -558,11 +561,9 @@ class EnhancedDFSOptimizer:
 
                     base_value *= 1.25
 
-                ceiling_bonus = (player.ceiling_90 - player.projection) * 20.0
-
-                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 12.0
-
-                boom_bonus = player.boom_rate * 80.0
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 30.0  # Change from 20.0
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 18.0  # Change from 12.0
+                boom_bonus = player.boom_rate * 120.0  # Change from 80.0
 
                 if player.salary >= 6500:
                     salary_bonus = 20.0
@@ -927,7 +928,9 @@ class EnhancedDFSOptimizer:
         vegas_data = getattr(self, 'vegas_data', {})
 
         if contest_type == 'friends_league':
-            self._add_smart_vegas_exposure(prob, players, player_vars, vegas_data)
+            top_game_indices = self._add_smart_vegas_exposure(prob, players, player_vars, vegas_data)
+            if top_game_indices:
+                self._top_game_indices = top_game_indices  # Store for this optimization only
 
         if contest_type == 'gpp':
             expensive_players = [i for i, p in enumerate(players) if p.salary >= 9000]
@@ -1013,7 +1016,7 @@ class EnhancedDFSOptimizer:
         # Find all players from top game
         top_game_indices = [
             i for i, p in enumerate(players)
-            if p.team in top_game_teams
+            if p.team in top_game_teams and p.salary >= 6000  # Only consider $6K+ players
         ]
 
         if not top_game_indices:
@@ -1035,7 +1038,7 @@ class EnhancedDFSOptimizer:
         prob += pulp.lpSum([player_vars[i] for i in top_game_indices]) <= 4
 
         logger.info(f"✅ CONSTRAINT: 3-4 players from {top_game_teams}")
-        self._top_game_indices = top_game_indices
+        return top_game_indices  # Return for immediate checking
         # CONSTRAINT 2: If QB from top game, must roster 1+ WR from same team
         for team in top_game_teams:
             qb_indices = [i for i in top_game_indices if players[i].position == 'QB' and players[i].team == team]
@@ -1097,9 +1100,9 @@ class EnhancedDFSOptimizer:
                 elif vegas_boost >= 1.15:
                     base_value *= 1.60
 
-                ceiling_bonus = (player.ceiling_90 - player.projection) * 60.0
-                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 40.0
-                boom_bonus = player.boom_rate * 100.0
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 180.0  # Was 60.0
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 120.0  # Was 40.0
+                boom_bonus = player.boom_rate * 300.0  # Was 100.0
 
                 if player.salary >= 8000:
                     salary_bonus = 35.0
@@ -1118,9 +1121,9 @@ class EnhancedDFSOptimizer:
                 elif vegas_boost >= 1.15:
                     base_value *= 1.25
 
-                ceiling_bonus = (player.ceiling_90 - player.projection) * 30.0
-                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 20.0
-                boom_bonus = player.boom_rate * 100.0
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 90.0  # Was 30.0
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 60.0  # Was 20.0
+                boom_bonus = player.boom_rate * 300.0  # Was 100.0
 
                 if player.salary >= 9000:
                     salary_bonus = 25.0
@@ -1139,9 +1142,9 @@ class EnhancedDFSOptimizer:
                 elif vegas_boost >= 1.15:
                     base_value *= 1.20
 
-                ceiling_bonus = (player.ceiling_90 - player.projection) * 24.0
-                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 16.0
-                boom_bonus = player.boom_rate * 96.0
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 72.0  # Was 24.0
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 48.0  # Was 16.0
+                boom_bonus = player.boom_rate * 288.0  # Was 96.0
 
                 if player.salary >= 8500:
                     salary_bonus = 18.0
