@@ -1124,14 +1124,19 @@ async def optimize_lineups(request: OptimizationRequest):
                                 detail=f"Too many locked players ({len(request.locked_players)}). Maximum is 8.")
 
         # FIXED: Use the corrected optimize_dfs_lineups function (synchronous)
+        # FIXED: Respect the AI toggle for Monte Carlo (AI analysis uses MC)
+        use_mc = request.use_ai if hasattr(request, 'use_ai') else True
+
         lineups = optimize_dfs_lineups(
             player_data=filtered_players,
             weather_data=current_player_data.get('weather', {}),
             vegas_multipliers=current_player_data.get('vegas_multipliers', {}),
-            vegas_data=current_player_data.get('vegas_odds', {}),  # ADD THIS LINE
+            vegas_data=current_player_data.get('vegas_odds', {}),
             num_lineups=request.num_lineups,
             contest_type=request.contest_type,
-            use_monte_carlo=False  # Disable for speed in UI
+            single_game_teams=single_game_teams,
+            use_monte_carlo=use_mc,  # FIXED: Use MC when AI enabled
+            mc_simulations=5000
         )
 
         if not lineups:

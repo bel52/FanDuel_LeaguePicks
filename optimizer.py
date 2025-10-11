@@ -1083,11 +1083,13 @@ class EnhancedDFSOptimizer:
         # EXISTING CODE for non-H2H contests...
         ordered_players = self._format_lineup_for_fanduel(selected_players)
 
+        # CRITICAL FIX: Use original projections for display, not randomized ones
         if contest_type == 'single_game' and len(ordered_players) == 6:
-            mvp = max(ordered_players, key=lambda p: p.projection)
-            projected_points = mvp.projection * 1.5 + sum(p.projection for p in ordered_players if p != mvp)
+            mvp = max(ordered_players, key=lambda p: getattr(p, '_original_projection', p.projection))
+            projected_points = mvp._original_projection * 1.5 + sum(
+                getattr(p, '_original_projection', p.projection) for p in ordered_players if p != mvp)
         else:
-            projected_points = sum(p.projection for p in ordered_players)
+            projected_points = sum(getattr(p, '_original_projection', p.projection) for p in ordered_players)
 
         return LineupResult(
             players=ordered_players,
@@ -1239,6 +1241,7 @@ class EnhancedDFSOptimizer:
                         random_factor = random.uniform(0.60, 1.40)
 
                 new_player.projection *= random_factor
+                new_player._original_projection = player.projection  # SAVE ORIGINAL
                 new_player.value = (new_player.projection / (new_player.salary / 1000.0)
                                     if new_player.salary > 0 else 0.0)
                 variance_multipliers = {'QB': 0.28, 'RB': 0.35, 'WR': 0.45, 'TE': 0.38, 'D': 0.42}
