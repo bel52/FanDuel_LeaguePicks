@@ -426,6 +426,18 @@ class EnhancedDFSOptimizer:
                 self._add_friends_league_constraints(prob, players, player_vars, contest_type)
 
             prob.solve(pulp.PULP_CBC_CMD(msg=0))
+            logger.info(f"🔍 SOLVER STATUS: {pulp.LpStatus[prob.status]}")
+            if hasattr(self, '_top_game_indices'):
+                selected = sum(1 for i in self._top_game_indices if player_vars[i].varValue == 1)
+                logger.info(f"🔍 VEGAS CHECK: Selected {selected} from top game (constraint: 3-4)")
+
+            if prob.status == pulp.LpStatusOptimal:
+                logger.error(f"❌ SOLVER FAILED: {pulp.LpStatus[prob.status]}")
+                # Log constraint violations
+                logger.error("Checking Vegas constraint...")
+                if hasattr(self, '_top_game_indices'):
+                    selected_from_game = sum(player_vars[i].varValue or 0 for i in self._top_game_indices)
+                    logger.error(f"   Selected {selected_from_game} players from top game (need 3-4)")
 
             if prob.status == pulp.LpStatusOptimal:
                 result = self._extract_result(prob, players, player_vars, contest_type)
@@ -1008,12 +1020,22 @@ class EnhancedDFSOptimizer:
             logger.warning(f"No players found from {top_game_teams}")
             return
 
+        # ADD THIS DEBUG BLOCK
+        logger.info(f"🔍 DEBUG: Found {len(top_game_indices)} players from {top_game_teams}")
+        for idx in top_game_indices[:10]:  # Show first 10
+            p = players[idx]
+            logger.info(f"   Player {idx}: {p.name} ({p.position}) ${p.salary} - {p.projection:.1f}pts")
+
+        # Check if any are locked
+        locked_in_game = sum(1 for i in top_game_indices if players[i].locked)
+        logger.info(f"🔍 DEBUG: {locked_in_game} locked players from top game")
+
         # CONSTRAINT 1: Force 3-4 players from top game
         prob += pulp.lpSum([player_vars[i] for i in top_game_indices]) >= 3
         prob += pulp.lpSum([player_vars[i] for i in top_game_indices]) <= 4
 
         logger.info(f"✅ CONSTRAINT: 3-4 players from {top_game_teams}")
-
+        self._top_game_indices = top_game_indices
         # CONSTRAINT 2: If QB from top game, must roster 1+ WR from same team
         for team in top_game_teams:
             qb_indices = [i for i in top_game_indices if players[i].position == 'QB' and players[i].team == team]
