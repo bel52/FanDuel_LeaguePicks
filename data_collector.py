@@ -647,7 +647,14 @@ class EnhancedDataCollector:
             })
 
         logger.info(f"Final count: {len(winning_players)} players")
-        return winning_players
+
+        # NEW: Apply injury opportunity boosts BEFORE returning
+        from injury_opportunity_detector import enhance_players_with_injury_opportunities
+
+        logger.info(f"🚑 Analyzing injury opportunities for {len(winning_players)} players...")
+        enhanced_players = enhance_players_with_injury_opportunities(winning_players)
+
+        return enhanced_players
 
     def _is_definitely_unavailable(self, injury_status: str, name: str) -> bool:
         """Universal availability check - works for all positions"""
