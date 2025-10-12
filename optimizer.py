@@ -194,20 +194,21 @@ def identify_core_plays(players: List[Player], vegas_multipliers: Dict, num_line
 
 def calculate_max_exposure(num_lineups: int, position: str) -> int:
     """
-    Calculate max player appearances based on position and total lineups
-
-    Philosophy: Let good players appear often in small sets.
-    Diversity increases as lineup count grows.
+    Calculate max player appearances - RELAXED for friends_league small sets
     """
 
-    if num_lineups <= 5:
+    if num_lineups <= 3:
+        # Small sets: Allow 100% exposure (same player in all lineups)
+        target_pct = 1.00
+
+    elif num_lineups <= 5:
         target_pct = {
             'QB': 0.80,
             'RB': 1.00,
-            'WR': 0.60,
+            'WR': 0.80,
             'TE': 0.80,
-            'D': 0.60,
-        }.get(position, 0.70)
+            'D': 0.80,
+        }.get(position, 0.80)
 
     elif num_lineups <= 15:
         target_pct = {
@@ -966,9 +967,9 @@ class EnhancedDFSOptimizer:
                     ceiling_ratio = player.ceiling_90 / player.projection if player.projection > 0 else 1
                     # Realistic threshold - 15%+ ceiling OR high boom rate
                     is_boom = (
-                            (ceiling_ratio >= 1.15 and player.salary >= 7000) or  # Any 15%+ ceiling + $7K+
-                            (player.boom_rate >= 0.20 and player.salary >= 7500) or  # High boom rate
-                            (player.salary >= 9000 and ceiling_ratio >= 1.10)  # Elite salary + decent ceiling
+                            ceiling_90 >= proj * 1.6  # Was 1.5, now 1.6
+                        OR boom_rate >= 30 %  # Was 25%, now 30%
+                        OR salary >= $9500  # Was $9000, now $9500
                     )
                 else:
                     # Fallback: expensive studs only
@@ -1028,13 +1029,13 @@ class EnhancedDFSOptimizer:
             player_vars: Dict,
             vegas_data: Dict
     ):
-        """SMART Vegas exposure: Force 3-4 from #1 game, enforce QB+WR stacks, cap at 4/game"""
+        """SMART Vegas exposure: Force 3-4 from #1 game, STRICT QB+pass-catcher stacks"""
 
         high_total_games = vegas_data.get('high_total_games', [])
 
         if not high_total_games:
             logger.warning("No high-total games for smart exposure")
-            return
+            return None
 
         # Get #1 highest-total game
         top_game = high_total_games[0]
@@ -1043,36 +1044,66 @@ class EnhancedDFSOptimizer:
 
         if not top_game_teams:
             logger.warning("Top game has no teams")
-            return
+            return None
 
         logger.info(f"🎯 SMART VEGAS: Targeting {top_game['game_id']} ({top_game_total} total)")
 
         # Find all players from top game
         top_game_indices = [
             i for i, p in enumerate(players)
-            if p.team in top_game_teams and p.salary >= 6000  # Only consider $6K+ players
+            if p.team in top_game_teams and p.salary >= 6000
         ]
 
         if not top_game_indices:
             logger.warning(f"No players found from {top_game_teams}")
-            return
-
-        # ADD THIS DEBUG BLOCK
-        logger.info(f"🔍 DEBUG: Found {len(top_game_indices)} players from {top_game_teams}")
-        for idx in top_game_indices[:10]:  # Show first 10
-            p = players[idx]
-            logger.info(f"   Player {idx}: {p.name} ({p.position}) ${p.salary} - {p.projection:.1f}pts")
+            return None
 
         # Check if any are locked
         locked_in_game = sum(1 for i in top_game_indices if players[i].locked)
-        logger.info(f"🔍 DEBUG: {locked_in_game} locked players from top game")
+        logger.info(f"🔍 {locked_in_game} locked players from top game")
 
         # CONSTRAINT 1: Force 3-4 players from top game
         prob += pulp.lpSum([player_vars[i] for i in top_game_indices]) >= 3
         prob += pulp.lpSum([player_vars[i] for i in top_game_indices]) <= 4
 
-        logger.info(f"✅ CONSTRAINT: 3-4 players from {top_game_teams}")
-        return top_game_indices  # Return for immediate checking
+        logger.info(f"✅ CONSTRAINT 1: 3-4 players from {top_game_teams}")
+
+        # CONSTRAINT 2: QB + 2+ pass catchers from SAME TEAM (CRITICAL FIX)
+        for team in top_game_teams:
+            qb_indices = [i for i in top_game_indices if players[i].position == 'QB' and players[i].team == team]
+            pass_catcher_indices = [
+                i for i in top_game_indices
+                if players[i].position in ['WR', 'TE'] and players[i].team == team
+            ]
+
+            if qb_indices and len(pass_catcher_indices) >= 2:
+                for qb_idx in qb_indices:
+                    # CRITICAL: If QB selected (=1), force 2+ pass catchers from same team
+                    prob += pulp.lpSum([player_vars[i] for i in pass_catcher_indices]) >= 2 * player_vars[qb_idx]
+
+                logger.info(f"✅ CONSTRAINT 2: {team} QB → must roster 2+ {team} WR/TE")
+
+                # Log available pass catchers for debugging
+                pass_catcher_names = [f"{players[i].name}({players[i].position})" for i in pass_catcher_indices]
+                logger.info(f"   Available: {', '.join(pass_catcher_names)}")
+
+        # CONSTRAINT 3: Cap any single game at 4 players max
+        game_groups = {}
+        for i, player in enumerate(players):
+            player_game = None
+            for game in high_total_games:
+                if player.team in game.get('teams', []):
+                    player_game = game['game_id']
+                    break
+
+            if player_game:
+                game_groups.setdefault(player_game, []).append(i)
+
+        for game_id, player_indices in game_groups.items():
+            prob += pulp.lpSum([player_vars[i] for i in player_indices]) <= 4
+            logger.info(f"✅ CONSTRAINT 3: Max 4 players from {game_id}")
+
+        return top_game_indices
         # CONSTRAINT 2: If QB from top game, must roster 1+ WR from same team
         for team in top_game_teams:
             qb_indices = [i for i in top_game_indices if players[i].position == 'QB' and players[i].team == team]
