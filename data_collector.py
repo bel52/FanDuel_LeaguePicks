@@ -629,9 +629,14 @@ class EnhancedDataCollector:
 
         logger.info(f"Teams in slate: {sorted(playing_teams)}")
 
-        # READ CSV DIRECTLY
+        # READ CSV DIRECTLY - switch based on contest type
         try:
-            csv_path = DATA_DIR / "fanduel_salaries_manual.csv"
+            if contest_type == 'h2h':
+                csv_path = DATA_DIR / "fanduel_h2h_salaries.csv"
+                logger.info("📋 Using H2H single-game CSV")
+            else:
+                csv_path = DATA_DIR / "fanduel_salaries_manual.csv"
+                logger.info("📋 Using main slate CSV")
 
             if not csv_path.exists():
                 logger.error(f"CSV not found: {csv_path}")

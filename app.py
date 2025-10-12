@@ -290,7 +290,9 @@ async def read_root():
 
             async function loadAvailableGames() {
                 try {
-                    const response = await fetch('/games');
+                    // Use H2H-specific endpoint for single-game mode
+                    const endpoint = contestType === 'h2h' ? '/h2h-games' : '/games';
+                    const response = await fetch(endpoint);
                     const data = await response.json();
                     
                     const gameSelect = document.getElementById('selectedGame');
@@ -1050,6 +1052,53 @@ async def get_available_games():
         logger.error(f"Error getting games: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/h2h-games")
+async def get_h2h_games():
+    """Get available games from H2H single-game CSV"""
+    try:
+        h2h_csv = DATA_DIR / "fanduel_h2h_salaries.csv"
+
+        if not h2h_csv.exists():
+            raise HTTPException(status_code=400, detail=f"H2H CSV not found: {h2h_csv}")
+
+        import pandas as pd
+        df = pd.read_csv(h2h_csv)
+
+        # Extract unique games
+        games_set = set()
+        for _, row in df.iterrows():
+            game = str(row.get('Game', '')).strip()
+            if game and '@' in game:
+                games_set.add(game)
+
+        if not games_set:
+            raise HTTPException(status_code=400, detail="No games found in H2H CSV")
+
+        # Parse games
+        games = []
+        for game_str in sorted(games_set):
+            parts = game_str.split('@')
+            if len(parts) == 2:
+                away_team = parts[0].strip()
+                home_team = parts[1].strip()
+                games.append({
+                    'game_id': game_str,
+                    'away_team': away_team,
+                    'home_team': home_team,
+                    'display': f"{away_team} @ {home_team}"
+                })
+
+        logger.info(f"📋 Found {len(games)} H2H games")
+        return {
+            "games": games,
+            "total_games": len(games)
+        }
+
+    except Exception as e:
+        logger.error(f"Error loading H2H games: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 @app.post("/optimize")
 async def optimize_lineups(request: OptimizationRequest):
     """Generate optimized lineups using the request data - FIXED WITH AUTO-REFRESH"""
