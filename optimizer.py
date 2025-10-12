@@ -479,18 +479,24 @@ class EnhancedDFSOptimizer:
                 elif vegas_boost >= 1.15:
                     base_value *= 1.60
 
-                ceiling_bonus = (player.ceiling_90 - player.projection) * 90.0  # Was 60, now 90
-                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 60.0  # Was 40, now 60
-                boom_bonus = player.boom_rate * 150.0  # Was 100, now 150
+                # TRIPLED ceiling bonuses for friends league
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 270.0  # Was 90
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 180.0  # Was 60
+                boom_bonus = player.boom_rate * 450.0  # Was 150
 
-                if player.salary >= 8000:
+                # Salary strategy: HEAVILY favor elite QBs
+                if player.salary >= 9000:
+                    salary_bonus = 80.0  # Was 35
+                elif player.salary >= 8500:
+                    salary_bonus = 60.0  # New tier
+                elif player.salary >= 8000:
                     salary_bonus = 35.0
+                elif player.salary >= 7500:
+                    salary_bonus = 10.0  # Was 20
                 elif player.salary >= 7000:
-                    salary_bonus = 20.0
-                elif player.salary >= 6500:
-                    salary_bonus = -5.0
+                    salary_bonus = -20.0  # Was -5
                 else:
-                    salary_bonus = -40.0
+                    salary_bonus = -100.0  # Was -40
 
 
             elif player.position == 'RB':
@@ -507,18 +513,22 @@ class EnhancedDFSOptimizer:
 
                     base_value *= 1.25
 
-                ceiling_bonus = (player.ceiling_90 - player.projection) * 45.0  # Change from 30.0
-                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 30.0  # Change from 20.0
-                boom_bonus = player.boom_rate * 150.0  # Change from 100.0
+                # DOUBLED ceiling bonuses
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 90.0  # Was 45
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 60.0  # Was 30
+                boom_bonus = player.boom_rate * 300.0  # Was 150
 
+                # Penalize cheap RBs harder
                 if player.salary >= 9000:
-                    salary_bonus = 25.0
+                    salary_bonus = 40.0  # Was 25
                 elif player.salary >= 7500:
-                    salary_bonus = 12.0
-                elif player.salary <= 5500 and player.value >= 2.8:
-                    salary_bonus = 15.0
+                    salary_bonus = 20.0  # Was 12
+                elif player.salary >= 6500:
+                    salary_bonus = 5.0  # New
+                elif player.salary <= 5000:
+                    salary_bonus = -30.0  # Was -8 (HARSH penalty)
                 else:
-                    salary_bonus = -8.0
+                    salary_bonus = -15.0
 
 
             elif player.position == 'WR':
@@ -535,20 +545,24 @@ class EnhancedDFSOptimizer:
 
                     base_value *= 1.20
 
-                ceiling_bonus = (player.ceiling_90 - player.projection) * 36.0  # Change from 24.0
-                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 24.0  # Change from 16.0
-                boom_bonus = player.boom_rate * 144.0  # Change from 96.0
+                # DOUBLED ceiling bonuses
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 72.0  # Was 36
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 48.0  # Was 24
+                boom_bonus = player.boom_rate * 288.0  # Was 144
 
+                # Penalize cheap WRs harder
                 if player.salary >= 8500:
-                    salary_bonus = 18.0
+                    salary_bonus = 30.0  # Was 18
                 elif player.salary >= 7000:
-                    salary_bonus = 10.0
-                elif player.salary <= 6000 and player.value >= 2.5:
-                    salary_bonus = 12.0
-                elif 6000 <= player.salary <= 7000:
-                    salary_bonus = -6.0
+                    salary_bonus = 15.0  # Was 10
+                elif player.salary >= 6000:
+                    salary_bonus = 5.0  # Was 12
+                elif player.salary <= 5000:
+                    salary_bonus = -40.0  # Was 0 (HARSH penalty)
+                elif 5000 < player.salary <= 6000:
+                    salary_bonus = -20.0  # Was -6
                 else:
-                    salary_bonus = 0.0
+                    salary_bonus = -10.0
 
 
             elif player.position == 'TE':
@@ -561,22 +575,32 @@ class EnhancedDFSOptimizer:
 
                     base_value *= 1.25
 
-                ceiling_bonus = (player.ceiling_90 - player.projection) * 30.0  # Change from 20.0
-                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 18.0  # Change from 12.0
-                boom_bonus = player.boom_rate * 120.0  # Change from 80.0
+                # DOUBLED ceiling bonuses
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 60.0  # Was 30
+                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 36.0  # Was 18
+                boom_bonus = player.boom_rate * 240.0  # Was 120
 
+                # Penalize cheap TEs HARSHLY (position killers)
                 if player.salary >= 6500:
-                    salary_bonus = 20.0
-                elif player.salary <= 4800:
-                    salary_bonus = 10.0
+                    salary_bonus = 35.0  # Was 20
+                elif player.salary >= 5500:
+                    salary_bonus = 15.0  # New
+                elif player.salary <= 4500:
+                    salary_bonus = -60.0  # Was 10 (MASSIVE penalty)
                 else:
-                    salary_bonus = -15.0
+                    salary_bonus = -30.0  # Was -15
 
             else:
+                # Defense - keep same, add small cheap penalty
                 ceiling_bonus = (player.ceiling_90 - player.projection) * 6.0
                 ceiling_95_bonus = 0.0
                 boom_bonus = player.boom_rate * 25.0
-                salary_bonus = 0.0
+
+                # Penalize ultra-cheap defenses
+                if player.salary <= 3000:
+                    salary_bonus = -20.0
+                else:
+                    salary_bonus = 0.0
 
             # FRIENDS LEAGUE: Ownership is irrelevant (12 people, 1 lineup each)
             # We want MAXIMUM POINTS, not differentiation
@@ -936,31 +960,33 @@ class EnhancedDFSOptimizer:
             expensive_players = [i for i, p in enumerate(players) if p.salary >= 9000]
             if expensive_players:
                 prob += pulp.lpSum([player_vars[i] for i in expensive_players]) >= 1
-        # NEW: Force at least 3 TRUE boom candidates (top 25% ceiling)
-        if contest_type == 'friends_league':
-            boom_candidates = []
-            for i, player in enumerate(players):
-                is_boom = False
+                # NEW: Force at least 3 TRUE boom candidates (top 25% ceiling)
+                if contest_type == 'friends_league':
+                    boom_candidates = []
+                    for i, player in enumerate(players):
+                        is_boom = False
 
-                if player.monte_carlo_analyzed:
-                    ceiling_ratio = player.ceiling_90 / player.projection if player.projection > 0 else 1
-                    # STRICTER: Must have 50%+ ceiling AND high boom rate AND high salary
-                    is_boom = (ceiling_ratio >= 1.50 and
-                               player.boom_rate >= 0.25 and
-                               player.salary >= 7500)
-                else:
-                    # Fallback: expensive studs only
-                    is_boom = (player.salary >= 8500 and player.projection >= 20)
+                        if player.monte_carlo_analyzed:
+                            ceiling_ratio = player.ceiling_90 / player.projection if player.projection > 0 else 1
+                            # FIXED: Realistic threshold - 15%+ ceiling OR high boom rate
+                            is_boom = (
+                                    (ceiling_ratio >= 1.15 and player.salary >= 7000) or  # Any 15%+ ceiling + $7K+
+                                    (player.boom_rate >= 0.20 and player.salary >= 7500) or  # High boom rate
+                                    (player.salary >= 9000 and ceiling_ratio >= 1.10)  # Elite salary + decent ceiling
+                            )
+                        else:
+                            # Fallback: expensive studs only
+                            is_boom = (player.salary >= 8500 and player.projection >= 18)
 
-                if is_boom:
-                    boom_candidates.append(i)
+                        if is_boom:
+                            boom_candidates.append(i)
 
-            # Constraint: At least 3 boom candidates (not just 2)
-            if boom_candidates and len(boom_candidates) >= 3:
-                prob += pulp.lpSum([player_vars[i] for i in boom_candidates]) >= 3
-                logger.info(f"✅ Boom constraint: {len(boom_candidates)} candidates, forcing 3+")
-            else:
-                logger.warning(f"⚠️ Only {len(boom_candidates)} boom candidates - constraint may be too strict")
+                    # Constraint: At least 3 boom candidates
+                    if boom_candidates and len(boom_candidates) >= 3:
+                        prob += pulp.lpSum([player_vars[i] for i in boom_candidates]) >= 3
+                        logger.info(f"✅ Boom constraint: {len(boom_candidates)} candidates, forcing 3+")
+                    else:
+                        logger.warning(f"⚠️ Only {len(boom_candidates)} boom candidates - constraint may be too strict")
     def _add_stacking_incentive(
             self,
             prob,
