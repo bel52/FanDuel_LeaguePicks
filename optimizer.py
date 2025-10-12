@@ -957,31 +957,25 @@ class EnhancedDFSOptimizer:
             # Constraint 1: Force 3-4 from top Vegas game
             top_game_indices = self._add_smart_vegas_exposure(prob, players, player_vars, vegas_data)
             if top_game_indices:
-                self._top_game_indices = top_game_indices  # Store for this optimization only
+                self._top_game_indices = top_game_indices
 
             # Constraint 2: Force at least 3 boom candidates
-                # Constraint 2: Force at least 3 boom candidates
-                boom_candidates = []
-                for i, player in enumerate(players):
-                    is_boom = False
+            boom_candidates = []
+            for i, player in enumerate(players):
+                is_boom = False
 
-                    if player.monte_carlo_analyzed:
-                        # ULTRA-STRICT boom criteria for friends league
-                        ceiling_ratio = player.ceiling_90 / player.projection if player.projection > 0 else 1
-                        boom_rate = player.boom_rate
-                        salary = player.salary
+                if player.monte_carlo_analyzed and player.ceiling_90 > 0:
+                    # Monte Carlo available - use strict criteria
+                    ceiling_ratio = player.ceiling_90 / player.projection if player.projection > 0 else 1
+                    boom_rate = player.boom_rate
+                    salary = player.salary
 
-                        # Only mark as boom if MULTIPLE criteria met
-                        is_boom = (
-                            # Elite ceiling + high boom rate
-                                (ceiling_ratio >= 1.6 and boom_rate >= 0.25) or
-                                # OR super-elite salary with good ceiling
-                                (salary >= 9500 and ceiling_ratio >= 1.4)
-                        )
-                    else:
-                        # Fallback: only expensive studs with high projections
-                        is_boom = (player.salary >= 9000 and player.projection >= 18)
-                    # Fallback: expensive studs only
+                    is_boom = (
+                            (ceiling_ratio >= 1.5 and boom_rate >= 0.20) or
+                            (salary >= 9000 and ceiling_ratio >= 1.35)
+                    )
+                else:
+                    # Fallback: only expensive studs with high projections
                     is_boom = (player.salary >= 8500 and player.projection >= 18)
 
                 if is_boom:
@@ -999,7 +993,6 @@ class EnhancedDFSOptimizer:
             if expensive_players:
                 prob += pulp.lpSum([player_vars[i] for i in expensive_players]) >= 1
                 logger.info(f"✅ Stud constraint: {len(expensive_players)} players ≥$9k, forcing 1+")
-
         elif contest_type == 'gpp':
             # GPP gets the stud constraint only
             expensive_players = [i for i, p in enumerate(players) if p.salary >= 9000]
@@ -1166,7 +1159,21 @@ class EnhancedDFSOptimizer:
             vegas_multipliers = getattr(self, 'vegas_multipliers', {})
             vegas_boost = vegas_multipliers.get(player.team, 1.0)
 
+            # CRITICAL: Use actual ceiling values if available, otherwise estimate
+            if player.monte_carlo_analyzed and player.ceiling_90 > 0:
+                ceiling_90 = player.ceiling_90
+                boom_rate = player.boom_rate
+            else:
+                # Fallback: estimate ceiling as 1.4x projection
+                ceiling_90 = player.projection * 1.4
+                boom_rate = 0.15
+
             if player.position == 'QB':
+                # Hard floor for backup QBs
+                if player.salary < 7000:
+                    return 0.0
+
+                # Vegas boost
                 if vegas_boost >= 1.40:
                     base_value *= 2.80
                 elif vegas_boost >= 1.25:
@@ -1174,62 +1181,61 @@ class EnhancedDFSOptimizer:
                 elif vegas_boost >= 1.15:
                     base_value *= 1.60
 
-                ceiling_bonus = (player.ceiling_90 - player.projection) * 180.0  # Was 60.0
-                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 120.0  # Was 40.0
-                boom_bonus = player.boom_rate * 300.0  # Was 100.0
+                # Ceiling bonuses (always positive now)
+                ceiling_bonus = (ceiling_90 - player.projection) * 180.0
+                boom_bonus = boom_rate * 300.0
 
-                if player.salary >= 8000:
+                # Salary strategy
+                if player.salary >= 9000:
+                    salary_bonus = 80.0
+                elif player.salary >= 8500:
+                    salary_bonus = 60.0
+                elif player.salary >= 8000:
                     salary_bonus = 35.0
-                elif player.salary >= 7000:
-                    salary_bonus = 20.0
-                elif player.salary >= 6500:
-                    salary_bonus = -5.0
+                elif player.salary >= 7500:
+                    salary_bonus = 10.0
                 else:
-                    salary_bonus = -40.0
+                    salary_bonus = -20.0
 
             elif player.position == 'RB':
                 if vegas_boost >= 1.40:
                     base_value *= 1.80
                 elif vegas_boost >= 1.25:
                     base_value *= 1.50
-                elif vegas_boost >= 1.15:
-                    base_value *= 1.25
 
-                ceiling_bonus = (player.ceiling_90 - player.projection) * 90.0  # Was 30.0
-                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 60.0  # Was 20.0
-                boom_bonus = player.boom_rate * 300.0  # Was 100.0
+                ceiling_bonus = (ceiling_90 - player.projection) * 90.0
+                boom_bonus = boom_rate * 300.0
 
                 if player.salary >= 9000:
-                    salary_bonus = 25.0
+                    salary_bonus = 40.0
                 elif player.salary >= 7500:
-                    salary_bonus = 12.0
-                elif player.salary <= 5500 and player.value >= 2.8:
-                    salary_bonus = 15.0
+                    salary_bonus = 20.0
+                elif player.salary >= 6500:
+                    salary_bonus = 5.0
+                elif player.salary <= 5000:
+                    salary_bonus = -30.0
                 else:
-                    salary_bonus = -8.0
+                    salary_bonus = -15.0
 
             elif player.position == 'WR':
                 if vegas_boost >= 1.40:
                     base_value *= 1.65
                 elif vegas_boost >= 1.25:
                     base_value *= 1.40
-                elif vegas_boost >= 1.15:
-                    base_value *= 1.20
 
-                ceiling_bonus = (player.ceiling_90 - player.projection) * 72.0  # Was 24.0
-                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 48.0  # Was 16.0
-                boom_bonus = player.boom_rate * 288.0  # Was 96.0
+                ceiling_bonus = (ceiling_90 - player.projection) * 72.0
+                boom_bonus = boom_rate * 288.0
 
                 if player.salary >= 8500:
-                    salary_bonus = 18.0
+                    salary_bonus = 30.0
                 elif player.salary >= 7000:
-                    salary_bonus = 10.0
-                elif player.salary <= 6000 and player.value >= 2.5:
-                    salary_bonus = 12.0
-                elif 6000 <= player.salary <= 7000:
-                    salary_bonus = -6.0
+                    salary_bonus = 15.0
+                elif player.salary >= 6000:
+                    salary_bonus = 5.0
+                elif player.salary <= 5000:
+                    salary_bonus = -40.0
                 else:
-                    salary_bonus = 0.0
+                    salary_bonus = -20.0
 
             elif player.position == 'TE':
                 if vegas_boost >= 1.40:
@@ -1237,28 +1243,27 @@ class EnhancedDFSOptimizer:
                 elif vegas_boost >= 1.25:
                     base_value *= 1.25
 
-                ceiling_bonus = (player.ceiling_90 - player.projection) * 20.0
-                ceiling_95_bonus = (player.ceiling_95 - player.ceiling_90) * 12.0
-                boom_bonus = player.boom_rate * 80.0
+                ceiling_bonus = (ceiling_90 - player.projection) * 60.0
+                boom_bonus = boom_rate * 240.0
 
                 if player.salary >= 6500:
-                    salary_bonus = 20.0
-                elif player.salary <= 4800:
-                    salary_bonus = 10.0
+                    salary_bonus = 35.0
+                elif player.salary >= 5500:
+                    salary_bonus = 15.0
+                elif player.salary <= 4500:
+                    salary_bonus = -60.0
                 else:
-                    salary_bonus = -15.0
+                    salary_bonus = -30.0
 
-            else:
-                ceiling_bonus = (player.ceiling_90 - player.projection) * 6.0
-                ceiling_95_bonus = 0.0
-                boom_bonus = player.boom_rate * 25.0
-                salary_bonus = 0.0
+            else:  # Defense
+                ceiling_bonus = (ceiling_90 - player.projection) * 6.0
+                boom_bonus = boom_rate * 25.0
+                salary_bonus = -20.0 if player.salary <= 3000 else 0.0
 
-            ownership_penalty = 0.0
             variance_bonus = player.variance * 2.5
-            bust_penalty = player.bust_rate * 8.0
+            bust_penalty = boom_rate * 8.0  # Use boom_rate as proxy for bust
 
-            total_value = (base_value + ceiling_bonus + ceiling_95_bonus + boom_bonus +
+            total_value = (base_value + ceiling_bonus + boom_bonus +
                            salary_bonus + variance_bonus - bust_penalty)
 
             if player.position == 'QB' and player.salary >= 7000:
@@ -1267,6 +1272,8 @@ class EnhancedDFSOptimizer:
                             f"ceiling_bonus={ceiling_bonus:.1f}, salary_bonus={salary_bonus:.1f})")
 
             return total_value
+
+        # Other contest types
         elif contest_type == 'gpp':
             if 25 <= player.ownership <= 40:
                 base_value += 2.0
@@ -1277,12 +1284,6 @@ class EnhancedDFSOptimizer:
             if player.value >= 3.5:
                 base_value += 5.0
             return base_value - (player.variance * 0.2)
-        elif contest_type == 'contrarian':
-            if player.ownership <= 20:
-                base_value += 5.0
-            elif player.ownership >= 35:
-                base_value -= 8.0
-            return base_value + (player.variance * 2.0)
         else:
             return base_value + (player.variance * 1.0)
 

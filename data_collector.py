@@ -90,44 +90,43 @@ class EnhancedDataCollector:
         self.slate_manager = EnhancedSlateManager()
 
     async def get_breaking_news_impact(self, players: List[Dict]) -> Dict[str, Any]:
-        """Get breaking news and AUTOMATICALLY identify ruled-out players"""
+        """Get breaking news and automatically identify ruled-out players"""
         if not NEWS_AVAILABLE:
             return {'news_events': [], 'impact_analysis': {}, 'ruled_out_players': set()}
 
         try:
-            # Get current breaking news
             news_events = await get_breaking_news()
-
             if not news_events:
                 return {'news_events': [], 'impact_analysis': {}, 'ruled_out_players': set()}
 
             logger.info(f"📰 Found {len(news_events)} breaking news items")
 
-            # EXTRACT ruled-out players from news
+            # Extract ruled-out players from news
             ruled_out_players = set()
-            injury_keywords = ['ruled out', 'out vs', 'out for', 'will not play', 'inactive', 'doubtful']
+            injury_keywords = ['ruled out', 'out vs', 'out for', 'will not play', 'inactive']
 
             for news in news_events:
-                title = news.get('title', '').lower()
-                summary = news.get('summary', '').lower()
-                full_text = f"{title} {summary}"
+                title = news.get('title', '')
+                summary = news.get('summary', '')
+                full_text = f"{title} {summary}".lower()
 
-                # Check if this is an injury/absence news item
+                # Check if this is injury news
                 if any(keyword in full_text for keyword in injury_keywords):
-                    # Extract player names (look for capitalized words that might be names)
-                    import re
-                    # Look for patterns like "CeeDee Lamb" or "Lamar Jackson"
+                    # Extract capitalized names from ORIGINAL title (not lowercased)
                     words = title.split()
                     for i in range(len(words) - 1):
-                        if words[i][0].isupper() and words[i + 1][0].isupper():
-                            potential_name = f"{words[i]} {words[i + 1]}".lower()
-                            ruled_out_players.add(potential_name)
-                            logger.info(f"🚫 DETECTED from news: {potential_name.title()}")
+                        # Look for "FirstName LastName" pattern
+                        if len(words[i]) > 1 and words[i][0].isupper() and len(words[i + 1]) > 1 and words[i + 1][
+                            0].isupper():
+                            # Skip common words that get capitalized
+                            if words[i] not in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
+                                                'Sunday', 'Week']:
+                                potential_name = f"{words[i]} {words[i + 1]}".lower()
+                                ruled_out_players.add(potential_name)
+                                logger.info(f"🚫 DETECTED from news: {potential_name.title()}")
 
-            # Store for use in filtering
             self._ruled_out_players = ruled_out_players
 
-            # Get news specific to our players
             player_names = [p.get('name', '') for p in players]
             player_specific_news = await get_player_news(player_names)
 
@@ -141,6 +140,7 @@ class EnhancedDataCollector:
 
         except Exception as e:
             logger.error(f"Error getting breaking news impact: {e}")
+            self._ruled_out_players = set()
             return {'news_events': [], 'impact_analysis': {}, 'ruled_out_players': set()}
 
     async def __aenter__(self):
@@ -566,6 +566,19 @@ class EnhancedDataCollector:
     async def collect_players_for_slate(self, games_info: Dict[str, Any], contest_type: str = 'gpp') -> List[Dict]:
         """Collect players - NOW READS CSV DIRECTLY"""
         current_week = games_info['current_week']
+
+    async def collect_players_for_slate(self, games_info: Dict[str, Any], contest_type: str = 'gpp') -> List[Dict]:
+        """Collect players - NOW READS CSV DIRECTLY"""
+        current_week = games_info['current_week']
+
+        # ===== CRITICAL: Get breaking news FIRST to identify ruled-out players =====
+        logger.info("🚑 Checking breaking news for injury updates...")
+        temp_players = []  # Empty list for initial news check
+        news_impact = await self.get_breaking_news_impact(temp_players)
+        ruled_out = news_impact.get('ruled_out_players', set())
+        if ruled_out:
+            logger.info(f"🚫 Ruled out from news: {', '.join([p.title() for p in ruled_out])}")
+        # ===== END BREAKING NEWS CHECK =====
 
         # Get teams in slate
         playing_teams = set()
