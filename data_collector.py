@@ -567,10 +567,6 @@ class EnhancedDataCollector:
         """Collect players - NOW READS CSV DIRECTLY"""
         current_week = games_info['current_week']
 
-    async def collect_players_for_slate(self, games_info: Dict[str, Any], contest_type: str = 'gpp') -> List[Dict]:
-        """Collect players - NOW READS CSV DIRECTLY"""
-        current_week = games_info['current_week']
-
         # ===== CRITICAL: Get breaking news FIRST to identify ruled-out players =====
         logger.info("🚑 Checking breaking news for injury updates...")
         temp_players = []  # Empty list for initial news check
