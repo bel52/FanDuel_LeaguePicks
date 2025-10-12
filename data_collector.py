@@ -90,45 +90,58 @@ class EnhancedDataCollector:
         self.slate_manager = EnhancedSlateManager()
 
     async def get_breaking_news_impact(self, players: List[Dict]) -> Dict[str, Any]:
-        """Get breaking news and analyze impact on current players"""
+        """Get breaking news and AUTOMATICALLY identify ruled-out players"""
         if not NEWS_AVAILABLE:
-            return {'news_events': [], 'impact_analysis': {}}
+            return {'news_events': [], 'impact_analysis': {}, 'ruled_out_players': set()}
 
         try:
             # Get current breaking news
             news_events = await get_breaking_news()
 
             if not news_events:
-                return {'news_events': [], 'impact_analysis': {}}
+                return {'news_events': [], 'impact_analysis': {}, 'ruled_out_players': set()}
 
             logger.info(f"📰 Found {len(news_events)} breaking news items")
+
+            # EXTRACT ruled-out players from news
+            ruled_out_players = set()
+            injury_keywords = ['ruled out', 'out vs', 'out for', 'will not play', 'inactive', 'doubtful']
+
+            for news in news_events:
+                title = news.get('title', '').lower()
+                summary = news.get('summary', '').lower()
+                full_text = f"{title} {summary}"
+
+                # Check if this is an injury/absence news item
+                if any(keyword in full_text for keyword in injury_keywords):
+                    # Extract player names (look for capitalized words that might be names)
+                    import re
+                    # Look for patterns like "CeeDee Lamb" or "Lamar Jackson"
+                    words = title.split()
+                    for i in range(len(words) - 1):
+                        if words[i][0].isupper() and words[i + 1][0].isupper():
+                            potential_name = f"{words[i]} {words[i + 1]}".lower()
+                            ruled_out_players.add(potential_name)
+                            logger.info(f"🚫 DETECTED from news: {potential_name.title()}")
+
+            # Store for use in filtering
+            self._ruled_out_players = ruled_out_players
 
             # Get news specific to our players
             player_names = [p.get('name', '') for p in players]
             player_specific_news = await get_player_news(player_names)
 
-            # Analyze impact with AI if available
-            impact_analysis = {}
-            if hasattr(self, 'ai_analyzer'):
-                try:
-                    from ai_analyzer import DualAIDFSAnalyzer
-                    analyzer = DualAIDFSAnalyzer()
-                    impact_analysis = await analyzer.analyze_breaking_news(news_events, players)
-                except Exception as e:
-                    logger.warning(f"AI news analysis failed: {e}")
-                    impact_analysis = {'ai_analysis': 'AI analysis unavailable'}
-
             return {
                 'news_events': news_events,
                 'player_specific_news': player_specific_news,
-                'impact_analysis': impact_analysis,
+                'ruled_out_players': ruled_out_players,
                 'news_count': len(news_events),
                 'player_news_count': len(player_specific_news)
             }
 
         except Exception as e:
             logger.error(f"Error getting breaking news impact: {e}")
-            return {'news_events': [], 'impact_analysis': {}}
+            return {'news_events': [], 'impact_analysis': {}, 'ruled_out_players': set()}
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession(
@@ -341,111 +354,6 @@ class EnhancedDataCollector:
             logger.error(f"Vegas data collection failed: {e}")
             return {'games': {}, 'high_total_games': [], 'data_source': 'error'}
 
-
-    async def filter_vegas_to_csv_games(self, vegas_data: Dict, csv_games: List[str]) -> Dict:
-        """Filter Vegas data to ONLY games that exist in the CSV"""
-        
-        if not csv_games:
-            logger.warning("No CSV games provided for Vegas filtering")
-            return vegas_data
-        
-        # Normalize CSV games (both directions: DAL@CAR and CAR@DAL)
-        normalized_csv_games = set()
-        for game in csv_games:
-            if '@' in game:
-                away, home = game.split('@')
-                normalized_csv_games.add(f"{away}@{home}")
-                normalized_csv_games.add(f"{home}@{away}")  # Reverse too
-        
-        logger.info(f"🎯 CSV has {len(csv_games)} games: {sorted(csv_games)}")
-        
-        # Filter Vegas games
-        filtered_games = {}
-        filtered_high_total = []
-        
-        original_games = vegas_data.get('games', {})
-        original_high_total = vegas_data.get('high_total_games', [])
-        
-        for game_id, game_data in original_games.items():
-            if game_id in normalized_csv_games:
-                filtered_games[game_id] = game_data
-                logger.info(f"✅ Matched Vegas game: {game_id}")
-        
-        for high_game in original_high_total:
-            game_id = high_game.get('game_id', '')
-            if game_id in normalized_csv_games:
-                filtered_high_total.append(high_game)
-                logger.info(f"🔥 Matched high-total game: {game_id} ({high_game.get('total')} pts)")
-        
-        # If NO matches, create estimates from CSV games
-        if not filtered_games:
-            logger.warning("⚠️ No Vegas games matched CSV - creating estimates")
-            return self._create_estimated_vegas_from_csv(csv_games)
-        
-        # Sort high-total games by total (highest first)
-        filtered_high_total.sort(key=lambda x: x.get('total', 0), reverse=True)
-        
-        logger.info(f"✅ Filtered to {len(filtered_games)} Vegas games matching CSV")
-        logger.info(f"🔥 {len(filtered_high_total)} high-total games (47+)")
-        
-        return {
-            'games': filtered_games,
-            'high_total_games': filtered_high_total,
-            'avg_total': sum(g.get('total_points', 45) for g in filtered_games.values()) / len(filtered_games) if filtered_games else 45.0,
-            'total_games': len(filtered_games),
-            'data_source': 'filtered_to_csv'
-        }
-
-    def _create_estimated_vegas_from_csv(self, csv_games: List[str]) -> Dict:
-        """Create estimated Vegas lines when API doesn't match CSV games"""
-        
-        logger.info("📊 Creating estimated Vegas lines for CSV games")
-        
-        estimated_games = {}
-        high_total_games = []
-        
-        # Reasonable defaults based on typical NFL scoring
-        for game in csv_games:
-            if '@' not in game:
-                continue
-            
-            away, home = game.split('@')
-            
-            # Default: 45 total, -3 home favorite
-            estimated_games[game] = {
-                'game_id': game,
-                'home_team': home,
-                'away_team': away,
-                'total_points': 45.0,
-                'spread': -3.0,
-                'home_implied_score': 24.0,
-                'away_implied_score': 21.0
-            }
-            
-            # Mark high-scoring teams with higher totals
-            high_scoring_teams = ['KC', 'BUF', 'DAL', 'DET', 'SF', 'MIA', 'LAR', 'CIN']
-            if home in high_scoring_teams or away in high_scoring_teams:
-                estimated_games[game]['total_points'] = 48.0
-                estimated_games[game]['home_implied_score'] = 25.5
-                estimated_games[game]['away_implied_score'] = 22.5
-                
-                high_total_games.append({
-                    'game_id': game,
-                    'total': 48.0,
-                    'teams': [away, home]
-                })
-                logger.info(f"🔥 Estimated high-total: {game} (48.0 pts)")
-        
-        # Sort high-total by total
-        high_total_games.sort(key=lambda x: x['total'], reverse=True)
-        
-        return {
-            'games': estimated_games,
-            'high_total_games': high_total_games,
-            'avg_total': 45.0,
-            'total_games': len(estimated_games),
-            'data_source': 'csv_estimated'
-        }
     def calculate_vegas_multipliers(self, vegas_data: Dict) -> Dict[str, float]:
         """Calculate team multipliers based on IMPLIED TEAM TOTALS - STEP 3 COMPLETE"""
 
@@ -649,7 +557,7 @@ class EnhancedDataCollector:
         fppg_source = player_data.get('fppg_source', 'unknown')
 
         # UNIVERSAL RULE 1: Remove definitively unavailable players
-        if self._is_definitely_unavailable(injury_status, name):
+        if self._is_definitely_unavailable(player_data):
             return False
 
         # UNIVERSAL RULE 2: Position-specific intelligent filtering
@@ -726,9 +634,20 @@ class EnhancedDataCollector:
             return []
 
         # Filter viable players
+        filtered_injury = 0
+        filtered_backup = 0
+        filtered_other = 0
+
         winning_players = []
         for player_data in salary_data:
             if not self._is_viable_player(player_data):
+                # Track why filtered
+                if player_data.get('injury_status', '').strip():
+                    filtered_injury += 1
+                elif player_data.get('salary', 0) < 5000:
+                    filtered_backup += 1
+                else:
+                    filtered_other += 1
                 continue
 
             name = player_data['name']
@@ -739,7 +658,6 @@ class EnhancedDataCollector:
 
             if fppg <= 0:
                 continue
-
             # Safety checks for JSON serialization
             if salary <= 0 or fppg <= 0:
                 continue
@@ -768,6 +686,7 @@ class EnhancedDataCollector:
             })
 
         logger.info(f"Final count: {len(winning_players)} players")
+        logger.info(f"📊 Filtered {len(salary_data) - len(winning_players)} players (injuries/backups/bad data)")
 
         # NEW: Apply injury opportunity boosts BEFORE returning
         from injury_opportunity_detector import enhance_players_with_injury_opportunities
@@ -777,22 +696,29 @@ class EnhancedDataCollector:
 
         return enhanced_players
 
-    def _is_definitely_unavailable(self, injury_status: str, name: str) -> bool:
-        """Universal availability check - works for all positions"""
+    def _is_definitely_unavailable(self, player_data: Dict) -> bool:
+        """Universal availability check with AUTOMATIC news-based filtering"""
 
-        # Remove players on Injured Reserve (definitely won't play)
-        if 'IR' in injury_status.upper():
-            logger.info(f"FILTERING IR player: {name}")
+        name = player_data.get('name', '').lower()
+        injury_status = str(player_data.get('injury_status', '')).strip().upper()
+
+        # Priority 1: Check breaking news for ruled-out players
+        ruled_out_from_news = getattr(self, '_ruled_out_players', set())
+        if any(out_name in name for out_name in ruled_out_from_news):
+            logger.info(f"🚫 NEWS FILTER: {player_data.get('name')} (ruled out via breaking news)")
             return True
 
-        # Remove players marked as OUT, SUSPENDED, DOUBTFUL
-        upper_status = injury_status.upper()
+        # Priority 2: CSV injury designations
+        if 'IR' in injury_status:
+            logger.info(f"FILTERING IR player: {player_data.get('name')}")
+            return True
+
         unavailable_flags = ['OUT', 'SUSP', 'DOUBTFUL']
-        if any(flag in upper_status for flag in unavailable_flags):
-            logger.info(f"FILTERING unavailable: {name} ({injury_status})")
+        if any(flag in injury_status for flag in unavailable_flags):
+            logger.info(f"FILTERING unavailable: {player_data.get('name')} ({injury_status})")
             return True
 
-        # Remove obviously broken entries
+        # Priority 3: Broken entries
         if not name or len(name.strip()) < 2:
             return True
 
@@ -955,18 +881,7 @@ async def get_fresh_data() -> Dict[str, Any]:
 
         # Get other data
         weather_data = await collector.get_weather_for_games(games_info)
-        
-        # Get Vegas data and filter to CSV games
         vegas_data = await collector.get_vegas_odds_data()
-        
-        # Extract unique games from CSV players
-        csv_games = list(set(p.get('game', '') for p in players if p.get('game')))
-        logger.info(f"📋 CSV games from players: {sorted(csv_games)}")
-        
-        # Filter Vegas data to match CSV games
-        vegas_data = await collector.filter_vegas_to_csv_games(vegas_data, csv_games)
-        
-        # Calculate multipliers from filtered data
         vegas_multipliers = collector.calculate_vegas_multipliers(vegas_data)
 
         # NEW: Get breaking news impact

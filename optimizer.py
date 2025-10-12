@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import random
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -959,19 +960,27 @@ class EnhancedDFSOptimizer:
                 self._top_game_indices = top_game_indices  # Store for this optimization only
 
             # Constraint 2: Force at least 3 boom candidates
-            boom_candidates = []
-            for i, player in enumerate(players):
-                is_boom = False
+                # Constraint 2: Force at least 3 boom candidates
+                boom_candidates = []
+                for i, player in enumerate(players):
+                    is_boom = False
 
-                if player.monte_carlo_analyzed:
-                    ceiling_ratio = player.ceiling_90 / player.projection if player.projection > 0 else 1
-                    # Realistic threshold - 15%+ ceiling OR high boom rate
-                    is_boom = (
-                            ceiling_90 >= proj * 1.6  # Was 1.5, now 1.6
-                        OR boom_rate >= 30 %  # Was 25%, now 30%
-                        OR salary >= $9500  # Was $9000, now $9500
-                    )
-                else:
+                    if player.monte_carlo_analyzed:
+                        # ULTRA-STRICT boom criteria for friends league
+                        ceiling_ratio = player.ceiling_90 / player.projection if player.projection > 0 else 1
+                        boom_rate = player.boom_rate
+                        salary = player.salary
+
+                        # Only mark as boom if MULTIPLE criteria met
+                        is_boom = (
+                            # Elite ceiling + high boom rate
+                                (ceiling_ratio >= 1.6 and boom_rate >= 0.25) or
+                                # OR super-elite salary with good ceiling
+                                (salary >= 9500 and ceiling_ratio >= 1.4)
+                        )
+                    else:
+                        # Fallback: only expensive studs with high projections
+                        is_boom = (player.salary >= 9000 and player.projection >= 18)
                     # Fallback: expensive studs only
                     is_boom = (player.salary >= 8500 and player.projection >= 18)
 
