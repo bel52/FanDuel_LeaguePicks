@@ -12,12 +12,13 @@ import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
 import pulp
 from loguru import logger
+from fastapi import HTTPException
 
 from config import (
     DATA_DIR,
@@ -56,7 +57,6 @@ except ImportError as e:
 # -----------------------------
 # Data structures
 # -----------------------------
-@dataclass
 @dataclass
 class Player:
     """Enhanced Player data structure with Monte Carlo variance"""
@@ -237,13 +237,64 @@ def calculate_max_exposure(num_lineups: int, position: str) -> int:
 class EnhancedDFSOptimizer:
     """Enhanced DFS optimization with Monte Carlo variance modeling"""
 
-    def __init__(self, use_monte_carlo: bool = True, mc_simulations: int = 10000):  # Changed from 5000
-        self.use_monte_carlo = use_monte_carlo and MONTE_CARLO_AVAILABLE
-        self.mc_simulations = mc_simulations
-        self.monte_carlo_engine = MonteCarloEngine(num_simulations=mc_simulations) if self.use_monte_carlo else None
+        # ======= INJURY GATE (blocks OUT/IR/Inactive/Suspended/PUP/NFI) =======
+        @staticmethod
+        def _injury_gate(players: List[Dict], logger=None) -> Tuple[List[Dict], Set[str]]:
+            """
+            Hard-exclude clearly unavailable players using CSV/status fields.
+            No names; status-based only. Safe for all contest types.
+            """
+            HARD_STATUSES = {"OUT", "IR", "INACTIVE", "SUSPENDED", "PUP", "NFI"}
+            TEXT_FLAGS = (
+                "ruled out",
+                "inactive",
+                "season-ending",
+                "season ending",
+                "placed on ir",
+                "on injured reserve",
+            )
 
-        if use_monte_carlo and not MONTE_CARLO_AVAILABLE:
-            logger.warning("Monte Carlo requested but not available - falling back to basic optimization")
+            def _status_fields(p: Dict) -> Tuple[str, str]:
+                indicator = (
+                        p.get("injury_indicator")
+                        or p.get("injuryIndicator")
+                        or p.get("Injury Indicator")
+                        or ""
+                )
+                details = (
+                        p.get("injury_details")
+                        or p.get("injuryDetails")
+                        or p.get("Injury Details")
+                        or ""
+                )
+                return str(indicator).strip().upper(), str(details).strip().lower()
+
+            original_count = len(players)
+            kept, blocked = [], []
+            for p in players:
+                ind, det = _status_fields(p)
+                if ind in HARD_STATUSES:
+                    blocked.append((p, f"CSV:{ind}"))
+                    continue
+                if any(flag in det for flag in TEXT_FLAGS):
+                    blocked.append((p, "CSV:DETAILS"))
+                    continue
+                kept.append(p)
+
+            if logger:
+                logger.info(
+                    f"🧱 Injury gate: scanned {original_count}, kept {len(kept)}, removed {len(blocked)}"
+                )
+                if blocked:
+                    try:
+                        for p, why in blocked[:25]:
+                            name = p.get("name") or f"{p.get('first', '')} {p.get('last', '')}".strip()
+                            logger.info(f"   - EXCLUDED: {name} (id={p.get('id')}) via {why}")
+                    except Exception:
+                        pass
+
+            return kept, {str(p.get("id")) for p, _ in blocked}
+        # ======= /INJURY GATE =======
 
     async def prepare_players(
             self,
@@ -252,6 +303,8 @@ class EnhancedDFSOptimizer:
             vegas_data: Dict = None,
     ) -> List[Player]:
         """Convert player data with optional Monte Carlo enhancement"""
+        # >>> INJURY GATE: prune unavailable players BEFORE building Player objects
+        player_data, _excluded_ids = self._injury_gate(player_data, logger)
         players: List[Player] = []
 
         for data in player_data:
@@ -405,7 +458,6 @@ class EnhancedDFSOptimizer:
                     logger.info(f"   {i + 1}. {player.name} ({player.position}) ${player.salary} - Score: {score:.1f}")
                 # ========== END H2H MVP SELECTION ==========
 
-            prob = pulp.LpProblem("DFS_Optimization", pulp.LpMaximize)
             prob = pulp.LpProblem("DFS_Optimization", pulp.LpMaximize)
 
             player_vars: Dict[int, pulp.LpVariable] = {}
@@ -1665,9 +1717,13 @@ def optimize_dfs_lineups(
     AI-Enhanced optimization with Monte Carlo variance modeling (synchronous wrapper).
     Safe to call from CLI, scripts, and FastAPI handlers.
     """
-    logger.info(f"Starting {contest_type.upper()} optimization | "
-                f"Lineups: {num_lineups} | Monte Carlo: {'ON' if use_monte_carlo and MONTE_CARLO_AVAILABLE else 'OFF'}")
+    # Gate RAW dicts first, before building Player objects
+    player_data, _excluded_ids = EnhancedDFSOptimizer._injury_gate(player_data, logger)
 
+    logger.info(
+        f"Starting {contest_type.upper()} optimization | "
+        f"Lineups: {num_lineups} | Monte Carlo: {'ON' if use_monte_carlo and MONTE_CARLO_AVAILABLE else 'OFF'}"
+    )
     ai_enabled = os.getenv('AI_ENABLED', 'true').lower() == 'true'
 
     if AI_AVAILABLE and ai_enabled:
@@ -1713,8 +1769,9 @@ def optimize_dfs_lineups(
 
                     if projection_boosts or projection_fades:
                         logger.info(
-                            f"✅ STEP 5: AI projection adjustments: {projection_boosts} boosts, {projection_fades} fades")
-
+                            f"✅ STEP 5: AI projection adjustments: {projection_boosts} boosts, {projection_fades} fades"
+                        )
+                        player_data, _ = EnhancedDFSOptimizer._injury_gate(player_data, logger)
                 else:
                     # GPP/Cash/Contrarian: Use ownership adjustments (existing logic)
                     ownership_adj = ai_analysis.get('ownership_adjustments') or {}
@@ -1769,7 +1826,7 @@ def optimize_dfs_lineups(
 
                 if boost_count > 0:
                     logger.info(f"✅ Applied {boost_count} AI edge case boosts")
-
+                    player_data, _ = EnhancedDFSOptimizer._injury_gate(player_data, logger)
             except Exception as e:
                 logger.warning(f"AI edge case analysis failed: {e}")
     optimizer = EnhancedDFSOptimizer(use_monte_carlo=use_monte_carlo, mc_simulations=mc_simulations)

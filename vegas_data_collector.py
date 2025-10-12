@@ -24,46 +24,28 @@ class VegasDataCollector:
         if not self.api_key:
             logger.warning("⚠️ No ODDS_API_KEY found - using enhanced fallback data")
 
-    async def get_nfl_odds_data(self) -> Dict[str, Any]:
-        """Get current NFL Vegas lines with totals (the key to DFS success)"""
-
-        if not self.api_key:
-            return self._get_enhanced_fallback_odds()
+    async def get_nfl_odds_data(week: int) -> Dict:
+        from aiohttp import ClientSession, ClientTimeout
+        api_key = os.getenv("ODDS_API_KEY", "")
+        url = "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds"
+        params = {
+            "apiKey": api_key,
+            "regions": "us",
+            "markets": "h2h,totals",
+            "oddsFormat": "american",
+        }
 
         try:
-            # Request NFL odds with totals (game totals are CRITICAL for DFS)
-            url = f"{self.base_url}/sports/americanfootball_nfl/odds"
-            params = {
-                'apiKey': self.api_key,
-                'regions': 'us',
-                'markets': 'totals,spreads,h2h',  # totals = game totals (47+ = DFS gold)
-                'oddsFormat': 'american',
-                'dateFormat': 'iso'
-            }
-
-            async with aiohttp.ClientSession() as session:
+            timeout = ClientTimeout(total=5)
+            async with ClientSession(timeout=timeout) as session:
                 async with session.get(url, params=params) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        processed_odds = self._process_vegas_data(data)
-
-                        logger.info(f"✅ REAL Vegas data: {len(processed_odds)} games with totals")
-                        return processed_odds
-                    else:
-                        logger.error(f"Odds API error: {response.status}")
-                        return self._get_enhanced_fallback_odds()
-
-
-
+                    response.raise_for_status()
+                    data = await response.json()
+                    return _process_odds_payload(data)
         except Exception as e:
-
-            import traceback
-
-            logger.error(f"Vegas data collection failed: {e}")
-
-            logger.error(f"Full traceback:\n{traceback.format_exc()}")
-
-            return self._get_enhanced_fallback_odds()
+            # Keep it calm, use fallback without stack spam.
+            logger.warning(f"Vegas API unavailable — using fallback: {e}")
+            return _get_enhanced_fallback_odds(week)
 
     def _process_vegas_data(self, raw_data: List[Dict]) -> Dict[str, Any]:
         """Process raw Vegas data into DFS-optimized format"""
