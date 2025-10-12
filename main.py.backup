@@ -286,22 +286,16 @@ def main():
                         help='Number of lineups to generate (default: 10)')
     parser.add_argument('--no-ai', action='store_true',
                         help='Disable AI analysis to save API costs')
+
     args = parser.parse_args()
-    
+
     # Setup logging
     setup_logging()
-    
+
     # Ensure directories exist
     Path('data/lineups').mkdir(parents=True, exist_ok=True)
     Path('logs').mkdir(exist_ok=True)
-    
-    # ⚡ SET AI FLAG FIRST - BEFORE ANY MODE LOGIC
-    if args.no_ai:
-        os.environ['AI_ENABLED'] = 'false'
-        print("🚫 AI analysis disabled (--no-ai flag)")
-    else:
-        os.environ['AI_ENABLED'] = 'true'
-    
+
     print(f"""
 🏈 FanDuel Friends League Optimizer
 ====================================
@@ -314,7 +308,7 @@ Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}
 3. Run: python main.py {args.mode}
 4. Use generated lineups manually or export CSV
 """)
-    
+
     try:
         if args.mode == 'web':
             success = run_web_interface()
@@ -322,9 +316,14 @@ Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}
             success = asyncio.run(test_system())
         else:
             # Generate lineups for contest type
+            # Set AI flag as environment variable so all modules see it
+            if args.no_ai:
+                os.environ['AI_ENABLED'] = 'false'
+                print("🚫 AI analysis disabled (--no-ai flag)")
+
             lineups = asyncio.run(generate_lineups(args.mode, args.num_lineups))
             success = lineups is not None
-        
+
         if success:
             logger.info("✅ Operation completed successfully!")
             print("\n🎯 Next steps:")
