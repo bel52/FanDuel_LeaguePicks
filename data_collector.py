@@ -112,18 +112,22 @@ class EnhancedDataCollector:
 
                 # Check if this is injury news
                 if any(keyword in full_text for keyword in injury_keywords):
-                    # Extract capitalized names from ORIGINAL title (not lowercased)
+                    # Extract player names - IMPROVED DETECTION
                     words = title.split()
                     for i in range(len(words) - 1):
-                        # Look for "FirstName LastName" pattern
-                        if len(words[i]) > 1 and words[i][0].isupper() and len(words[i + 1]) > 1 and words[i + 1][
-                            0].isupper():
-                            # Skip common words that get capitalized
-                            if words[i] not in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
-                                                'Sunday', 'Week']:
-                                potential_name = f"{words[i]} {words[i + 1]}".lower()
-                                ruled_out_players.add(potential_name)
-                                logger.info(f"🚫 DETECTED from news: {potential_name.title()}")
+                        word1 = words[i].strip(',:;.!?')
+                        word2 = words[i + 1].strip(',:;.!?')
+
+                        # Skip common words
+                        skip_words = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday',
+                                      'Saturday', 'Sunday', 'Week', 'NFL', 'Game', 'Coach', 'Sources']
+
+                        if (len(word1) > 1 and word1[0].isupper() and
+                                len(word2) > 1 and word2[0].isupper() and
+                                word1 not in skip_words):
+                            potential_name = f"{word1} {word2}".lower()
+                            ruled_out_players.add(potential_name)
+                            logger.info(f"🚫 NEWS DETECTED: {potential_name.title()}")
 
             self._ruled_out_players = ruled_out_players
 
@@ -326,6 +330,37 @@ class EnhancedDataCollector:
             'main_slate': example_games,
             'single_games': example_games,
         }
+
+    async def get_espn_injury_report(self) -> set:
+        """Get injured players from ESPN API - AUTOMATIC"""
+        try:
+            url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries"
+
+            async with self.session.get(url) as response:
+                if response.status != 200:
+                    logger.warning(f"ESPN injury API returned {response.status}")
+                    return set()
+
+                data = await response.json()
+                ruled_out = set()
+
+                # Parse injuries from ESPN
+                teams = data.get('teams', [])
+                for team in teams:
+                    athletes = team.get('athletes', [])
+                    for athlete in athletes:
+                        status = athlete.get('status', '').upper()
+                        player_name = athlete.get('displayName', '').lower()
+
+                        if status in ['OUT', 'DOUBTFUL'] and player_name:
+                            ruled_out.add(player_name)
+                            logger.info(f"🚫 ESPN INJURY: {player_name.title()} - {status}")
+
+                return ruled_out
+
+        except Exception as e:
+            logger.error(f"ESPN injury API error: {e}")
+            return set()
 
     async def get_vegas_odds_data(self) -> Dict[str, Any]:
         """Get REAL Vegas odds data (GAME-CHANGING for tournament success)"""
@@ -567,14 +602,25 @@ class EnhancedDataCollector:
         """Collect players - NOW READS CSV DIRECTLY"""
         current_week = games_info['current_week']
 
-        # ===== CRITICAL: Get breaking news FIRST to identify ruled-out players =====
-        logger.info("🚑 Checking breaking news for injury updates...")
-        temp_players = []  # Empty list for initial news check
-        news_impact = await self.get_breaking_news_impact(temp_players)
-        ruled_out = news_impact.get('ruled_out_players', set())
-        if ruled_out:
-            logger.info(f"🚫 Ruled out from news: {', '.join([p.title() for p in ruled_out])}")
-        # ===== END BREAKING NEWS CHECK =====
+        # ===== MULTI-SOURCE INJURY CHECK =====
+        logger.info("🚑 Checking ESPN + RSS for injuries...")
+
+        # Source 1: ESPN Official Injury Report
+        espn_injured = await self.get_espn_injury_report()
+
+        # Source 2: Breaking News RSS
+        news_impact = await self.get_breaking_news_impact([])
+        rss_injured = news_impact.get('ruled_out_players', set())
+
+        # Combine both sources
+        all_ruled_out = espn_injured | rss_injured
+        self._ruled_out_players = all_ruled_out
+
+        if all_ruled_out:
+            logger.info(f"🚫 TOTAL INJURIES FOUND: {len(all_ruled_out)}")
+            for name in sorted(all_ruled_out):
+                logger.info(f"   ❌ {name.title()}")
+        # ===== END INJURY CHECK =====
 
         # Get teams in slate
         playing_teams = set()
