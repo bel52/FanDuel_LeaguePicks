@@ -134,7 +134,11 @@ def calculate_player_confidence(player: Player, vegas_data: Dict) -> float:
         confidence += 10
 
     # 2. VEGAS ENVIRONMENT
-    vegas_mult = vegas_data.get('vegas_multipliers', {}).get(player.team, 1.0)
+    if isinstance(vegas_data, dict):
+        # Accept either plain team->mult dict or nested under 'vegas_multipliers'
+        vegas_mult = vegas_data.get(player.team, vegas_data.get('vegas_multipliers', {}).get(player.team, 1.0))
+    else:
+        vegas_mult = 1.0
     if vegas_mult >= 1.40:
         confidence += 25
     elif vegas_mult >= 1.25:
@@ -233,69 +237,74 @@ def calculate_max_exposure(num_lineups: int, position: str) -> int:
 
     return max_uses
 
-
 class EnhancedDFSOptimizer:
     """Enhanced DFS optimization with Monte Carlo variance modeling"""
 
-        # ======= INJURY GATE (blocks OUT/IR/Inactive/Suspended/PUP/NFI) =======
-        @staticmethod
-        def _injury_gate(players: List[Dict], logger=None) -> Tuple[List[Dict], Set[str]]:
-            """
-            Hard-exclude clearly unavailable players using CSV/status fields.
-            No names; status-based only. Safe for all contest types.
-            """
-            HARD_STATUSES = {"OUT", "IR", "INACTIVE", "SUSPENDED", "PUP", "NFI"}
-            TEXT_FLAGS = (
-                "ruled out",
-                "inactive",
-                "season-ending",
-                "season ending",
-                "placed on ir",
-                "on injured reserve",
+    # ======= INJURY GATE (blocks OUT/IR/Inactive/Suspended/PUP/NFI) =======
+    @staticmethod
+    def _injury_gate(players: List[Dict], logger=None) -> Tuple[List[Dict], Set[str]]:
+        """
+        Hard-exclude clearly unavailable players using CSV/status fields.
+        No names; status-based only. Safe for all contest types.
+        """
+        HARD_STATUSES = {"OUT", "IR", "INACTIVE", "SUSPENDED", "PUP", "NFI"}
+        TEXT_FLAGS = (
+            "ruled out",
+            "inactive",
+            "season-ending",
+            "season ending",
+            "placed on ir",
+            "on injured reserve",
+        )
+
+        def _status_fields(p: Dict) -> Tuple[str, str]:
+            indicator = (
+                p.get("injury_indicator")
+                or p.get("injuryIndicator")
+                or p.get("Injury Indicator")
+                or ""
             )
+            details = (
+                p.get("injury_details")
+                or p.get("injuryDetails")
+                or p.get("Injury Details")
+                or ""
+            )
+            return str(indicator).strip().upper(), str(details).strip().lower()
 
-            def _status_fields(p: Dict) -> Tuple[str, str]:
-                indicator = (
-                        p.get("injury_indicator")
-                        or p.get("injuryIndicator")
-                        or p.get("Injury Indicator")
-                        or ""
-                )
-                details = (
-                        p.get("injury_details")
-                        or p.get("injuryDetails")
-                        or p.get("Injury Details")
-                        or ""
-                )
-                return str(indicator).strip().upper(), str(details).strip().lower()
+        original_count = len(players)
+        kept, blocked = [], []
+        for p in players:
+            ind, det = _status_fields(p)
+            if ind in HARD_STATUSES:
+                blocked.append((p, f"CSV:{ind}"))
+                continue
+            if any(flag in det for flag in TEXT_FLAGS):
+                blocked.append((p, "CSV:DETAILS"))
+                continue
+            kept.append(p)
 
-            original_count = len(players)
-            kept, blocked = [], []
-            for p in players:
-                ind, det = _status_fields(p)
-                if ind in HARD_STATUSES:
-                    blocked.append((p, f"CSV:{ind}"))
-                    continue
-                if any(flag in det for flag in TEXT_FLAGS):
-                    blocked.append((p, "CSV:DETAILS"))
-                    continue
-                kept.append(p)
+        if logger:
+            logger.info(f"🧱 Injury gate: scanned {original_count}, kept {len(kept)}, removed {len(blocked)}")
+            if blocked:
+                try:
+                    for p, why in blocked[:25]:
+                        name = p.get("name") or f"{p.get('first','')} {p.get('last','')}".strip()
+                        logger.info(f"   - EXCLUDED: {name} (id={p.get('id')}) via {why}")
+                except Exception:
+                    pass
 
-            if logger:
-                logger.info(
-                    f"🧱 Injury gate: scanned {original_count}, kept {len(kept)}, removed {len(blocked)}"
-                )
-                if blocked:
-                    try:
-                        for p, why in blocked[:25]:
-                            name = p.get("name") or f"{p.get('first', '')} {p.get('last', '')}".strip()
-                            logger.info(f"   - EXCLUDED: {name} (id={p.get('id')}) via {why}")
-                    except Exception:
-                        pass
+        return kept, {str(p.get("id")) for p, _ in blocked}
+    # ======= /INJURY GATE =======
 
-            return kept, {str(p.get("id")) for p, _ in blocked}
-        # ======= /INJURY GATE =======
-
+    def __init__(self, use_monte_carlo: bool = True, mc_simulations: int = 10000):
+        self.use_monte_carlo = use_monte_carlo and MONTE_CARLO_AVAILABLE
+        self.mc_simulations = mc_simulations
+        self.monte_carlo_engine = (
+            MonteCarloEngine(num_simulations=mc_simulations) if self.use_monte_carlo else None
+        )
+        if use_monte_carlo and not MONTE_CARLO_AVAILABLE:
+            logger.warning("Monte Carlo requested but not available - falling back to basic optimization")
     async def prepare_players(
             self,
             player_data: List[Dict],
@@ -481,13 +490,16 @@ class EnhancedDFSOptimizer:
 
             prob.solve(pulp.PULP_CBC_CMD(msg=0))
             logger.info(f"🔍 SOLVER STATUS: {pulp.LpStatus[prob.status]}")
+
+            selected = 0
             if hasattr(self, '_top_game_indices'):
                 selected = sum(1 for i in self._top_game_indices if player_vars[i].varValue == 1)
                 logger.info(f"🔍 VEGAS CHECK: Selected {selected} from top game (constraint: 3-4)")
-            if selected > 0:
-                selected_names = [players[i].name for i in self._top_game_indices if player_vars[i].varValue == 1]
-                selected_teams = [players[i].team for i in self._top_game_indices if player_vars[i].varValue == 1]
-                logger.info(f"🔍 VEGAS PLAYERS: {list(zip(selected_names, selected_teams))}")
+                if selected > 0:
+                    selected_names = [players[i].name for i in self._top_game_indices if player_vars[i].varValue == 1]
+                    selected_teams = [players[i].team for i in self._top_game_indices if player_vars[i].varValue == 1]
+                    logger.info(f"🔍 VEGAS PLAYERS: {list(zip(selected_names, selected_teams))}")
+
             if prob.status != pulp.LpStatusOptimal:
                 logger.error(f"❌ SOLVER FAILED: {pulp.LpStatus[prob.status]}")
                 # Log constraint violations
@@ -886,28 +898,20 @@ class EnhancedDFSOptimizer:
                         f"Not enough players from {single_game_teams} ({len(game_player_indices)} available, need 6)")
 
                 logger.info(f"✅ {len(game_player_indices)} players available from {single_game_teams}")
+            # === MVP linking + salary cap with 1.5x MVP cost ===
+            # Binary: is_mvp_i
+            mvp_vars = [pulp.LpVariable(f"is_mvp_{i}", cat='Binary') for i in range(len(players))]
 
-            # MVP constraints
-            mvp_var = pulp.LpVariable("mvp_selected", cat='Binary')
-
-            # Salary constraint with MVP multiplier
-            salary_expr = []
+            # Exactly one MVP, and MVP must be among selected players
             for i in range(len(players)):
-                # MVP costs 1.5x salary, regular FLEX costs normal salary
-                # We'll handle MVP selection through a separate variable
-                base_salary = players[i].salary * player_vars[i]
-                salary_expr.append(base_salary)
+                prob += mvp_vars[i] <= player_vars[i]
+            prob += pulp.lpSum(mvp_vars) == 1
 
-            # Add extra 0.5x salary cost for whichever player is MVP
-            for i in range(len(players)):
-                mvp_bonus_cost = players[i].salary * 0.5 * pulp.LpVariable(f"is_mvp_{i}", cat='Binary')
-                salary_expr.append(mvp_bonus_cost)
-
-                # Link mvp_bonus to actual MVP selection (we'll set this in objective)
-                # For now, just ensure salary cap
-
-            prob += pulp.lpSum(salary_expr) <= H2H_SALARY_CAP
-
+            # Salary cap = base salaries + 0.5x bonus for the MVP
+            base_salary_expr = pulp.lpSum(players[i].salary * player_vars[i] for i in range(len(players)))
+            mvp_bonus_expr = pulp.lpSum(players[i].salary * 0.5 * mvp_vars[i] for i in range(len(players)))
+            prob += base_salary_expr + mvp_bonus_expr <= H2H_SALARY_CAP
+            # === end MVP block ===
             # Roster size: exactly 6 players (1 MVP + 5 FLEX)
             prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == H2H_ROSTER_SIZE
 
@@ -1083,15 +1087,14 @@ class EnhancedDFSOptimizer:
             player_vars: Dict,
             vegas_data: Dict
     ):
-        """SMART Vegas exposure: Force 3-4 from #1 game, STRICT QB+pass-catcher stacks"""
-
+        """SMART Vegas exposure: Force 3–4 from #1 game, STRICT QB + 2 pass-catchers from same team."""
         high_total_games = vegas_data.get('high_total_games', [])
 
         if not high_total_games:
             logger.warning("No high-total games for smart exposure")
             return None
 
-        # Get #1 highest-total game
+        # #1 highest-total game
         top_game = high_total_games[0]
         top_game_teams = top_game.get('teams', [])
         top_game_total = top_game.get('total', 0)
@@ -1102,7 +1105,7 @@ class EnhancedDFSOptimizer:
 
         logger.info(f"🎯 SMART VEGAS: Targeting {top_game['game_id']} ({top_game_total} total)")
 
-        # Find all players from top game
+        # Players from the top game (filter out punts)
         top_game_indices = [
             i for i, p in enumerate(players)
             if p.team in top_game_teams and p.salary >= 6000
@@ -1112,17 +1115,15 @@ class EnhancedDFSOptimizer:
             logger.warning(f"No players found from {top_game_teams}")
             return None
 
-        # Check if any are locked
         locked_in_game = sum(1 for i in top_game_indices if players[i].locked)
         logger.info(f"🔍 {locked_in_game} locked players from top game")
 
-        # CONSTRAINT 1: Force 3-4 players from top game
+        # CONSTRAINT 1: Force 3–4 players from the top game
         prob += pulp.lpSum([player_vars[i] for i in top_game_indices]) >= 3
         prob += pulp.lpSum([player_vars[i] for i in top_game_indices]) <= 4
+        logger.info(f"✅ CONSTRAINT 1: 3–4 players from {top_game_teams}")
 
-        logger.info(f"✅ CONSTRAINT 1: 3-4 players from {top_game_teams}")
-
-        # CONSTRAINT 2: QB + 2+ pass catchers from SAME TEAM (CRITICAL FIX)
+        # CONSTRAINT 2: If QB from a team is selected, force 2+ same-team WR/TE
         for team in top_game_teams:
             qb_indices = [i for i in top_game_indices if players[i].position == 'QB' and players[i].team == team]
             pass_catcher_indices = [
@@ -1132,16 +1133,12 @@ class EnhancedDFSOptimizer:
 
             if qb_indices and len(pass_catcher_indices) >= 2:
                 for qb_idx in qb_indices:
-                    # CRITICAL: If QB selected (=1), force 2+ pass catchers from same team
                     prob += pulp.lpSum([player_vars[i] for i in pass_catcher_indices]) >= 2 * player_vars[qb_idx]
-
                 logger.info(f"✅ CONSTRAINT 2: {team} QB → must roster 2+ {team} WR/TE")
-
-                # Log available pass catchers for debugging
                 pass_catcher_names = [f"{players[i].name}({players[i].position})" for i in pass_catcher_indices]
                 logger.info(f"   Available: {', '.join(pass_catcher_names)}")
 
-        # CONSTRAINT 3: Cap any single game at 4 players max
+        # CONSTRAINT 3: Any single game max 4 players
         game_groups = {}
         for i, player in enumerate(players):
             player_game = None
@@ -1149,7 +1146,6 @@ class EnhancedDFSOptimizer:
                 if player.team in game.get('teams', []):
                     player_game = game['game_id']
                     break
-
             if player_game:
                 game_groups.setdefault(player_game, []).append(i)
 
@@ -1157,33 +1153,6 @@ class EnhancedDFSOptimizer:
             prob += pulp.lpSum([player_vars[i] for i in player_indices]) <= 4
             logger.info(f"✅ CONSTRAINT 3: Max 4 players from {game_id}")
 
-        return top_game_indices
-        # CONSTRAINT 2: If QB from top game, must roster 1+ WR from same team
-        for team in top_game_teams:
-            qb_indices = [i for i in top_game_indices if players[i].position == 'QB' and players[i].team == team]
-            wr_indices = [i for i in top_game_indices if players[i].position == 'WR' and players[i].team == team]
-
-            if qb_indices and wr_indices:
-                for qb_idx in qb_indices:
-                    prob += pulp.lpSum([player_vars[i] for i in wr_indices]) >= player_vars[qb_idx]
-
-                logger.info(f"✅ CONSTRAINT: {team} QB → must roster {team} WR")
-
-        # CONSTRAINT 3: Cap any single game at 4 players max
-        game_groups = {}
-        for i, player in enumerate(players):
-            player_game = None
-            for game in high_total_games:
-                if player.team in game.get('teams', []):
-                    player_game = game['game_id']
-                    break
-
-            if player_game:
-                game_groups.setdefault(player_game, []).append(i)
-
-        for game_id, player_indices in game_groups.items():
-            prob += pulp.lpSum([player_vars[i] for i in player_indices]) <= 4
-            logger.info(f"✅ CONSTRAINT: Max 4 players from {game_id}")
 
     def _predict_friends_league_ownership(self, player: Player, contest_type: str) -> float:
         """
