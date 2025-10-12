@@ -235,7 +235,7 @@ def calculate_max_exposure(num_lineups: int, position: str) -> int:
 class EnhancedDFSOptimizer:
     """Enhanced DFS optimization with Monte Carlo variance modeling"""
 
-    def __init__(self, use_monte_carlo: bool = True, mc_simulations: int = 5000):
+    def __init__(self, use_monte_carlo: bool = True, mc_simulations: int = 10000):  # Changed from 5000
         self.use_monte_carlo = use_monte_carlo and MONTE_CARLO_AVAILABLE
         self.mc_simulations = mc_simulations
         self.monte_carlo_engine = MonteCarloEngine(num_simulations=mc_simulations) if self.use_monte_carlo else None
@@ -952,41 +952,49 @@ class EnhancedDFSOptimizer:
         vegas_data = getattr(self, 'vegas_data', {})
 
         if contest_type == 'friends_league':
+            # Constraint 1: Force 3-4 from top Vegas game
             top_game_indices = self._add_smart_vegas_exposure(prob, players, player_vars, vegas_data)
             if top_game_indices:
                 self._top_game_indices = top_game_indices  # Store for this optimization only
 
-        if contest_type == 'gpp':
+            # Constraint 2: Force at least 3 boom candidates
+            boom_candidates = []
+            for i, player in enumerate(players):
+                is_boom = False
+
+                if player.monte_carlo_analyzed:
+                    ceiling_ratio = player.ceiling_90 / player.projection if player.projection > 0 else 1
+                    # Realistic threshold - 15%+ ceiling OR high boom rate
+                    is_boom = (
+                            (ceiling_ratio >= 1.15 and player.salary >= 7000) or  # Any 15%+ ceiling + $7K+
+                            (player.boom_rate >= 0.20 and player.salary >= 7500) or  # High boom rate
+                            (player.salary >= 9000 and ceiling_ratio >= 1.10)  # Elite salary + decent ceiling
+                    )
+                else:
+                    # Fallback: expensive studs only
+                    is_boom = (player.salary >= 8500 and player.projection >= 18)
+
+                if is_boom:
+                    boom_candidates.append(i)
+
+            # Apply constraint: At least 3 boom candidates
+            if boom_candidates and len(boom_candidates) >= 3:
+                prob += pulp.lpSum([player_vars[i] for i in boom_candidates]) >= 3
+                logger.info(f"✅ Boom constraint: {len(boom_candidates)} candidates, forcing 3+")
+            else:
+                logger.warning(f"⚠️ Only {len(boom_candidates)} boom candidates - constraint may be too strict")
+
+            # Constraint 3: Force at least 1 stud ($9k+) if available
             expensive_players = [i for i, p in enumerate(players) if p.salary >= 9000]
             if expensive_players:
                 prob += pulp.lpSum([player_vars[i] for i in expensive_players]) >= 1
-                # NEW: Force at least 3 TRUE boom candidates (top 25% ceiling)
-                if contest_type == 'friends_league':
-                    boom_candidates = []
-                    for i, player in enumerate(players):
-                        is_boom = False
+                logger.info(f"✅ Stud constraint: {len(expensive_players)} players ≥$9k, forcing 1+")
 
-                        if player.monte_carlo_analyzed:
-                            ceiling_ratio = player.ceiling_90 / player.projection if player.projection > 0 else 1
-                            # FIXED: Realistic threshold - 15%+ ceiling OR high boom rate
-                            is_boom = (
-                                    (ceiling_ratio >= 1.15 and player.salary >= 7000) or  # Any 15%+ ceiling + $7K+
-                                    (player.boom_rate >= 0.20 and player.salary >= 7500) or  # High boom rate
-                                    (player.salary >= 9000 and ceiling_ratio >= 1.10)  # Elite salary + decent ceiling
-                            )
-                        else:
-                            # Fallback: expensive studs only
-                            is_boom = (player.salary >= 8500 and player.projection >= 18)
-
-                        if is_boom:
-                            boom_candidates.append(i)
-
-                    # Constraint: At least 3 boom candidates
-                    if boom_candidates and len(boom_candidates) >= 3:
-                        prob += pulp.lpSum([player_vars[i] for i in boom_candidates]) >= 3
-                        logger.info(f"✅ Boom constraint: {len(boom_candidates)} candidates, forcing 3+")
-                    else:
-                        logger.warning(f"⚠️ Only {len(boom_candidates)} boom candidates - constraint may be too strict")
+        elif contest_type == 'gpp':
+            # GPP gets the stud constraint only
+            expensive_players = [i for i, p in enumerate(players) if p.salary >= 9000]
+            if expensive_players:
+                prob += pulp.lpSum([player_vars[i] for i in expensive_players]) >= 1
     def _add_stacking_incentive(
             self,
             prob,
@@ -1602,15 +1610,15 @@ def _run_coro_sync(coro):
 
 
 def optimize_dfs_lineups(
-        player_data: List[Dict],
-        weather_data: Dict = None,
-        vegas_multipliers: Dict = None,
-        vegas_data: Dict = None,
-        num_lineups: int = 10,
-        contest_type: str = 'gpp',
-        single_game_teams: List[str] = None,
-        use_monte_carlo: bool = True,
-        mc_simulations: int = 5000,
+    player_data: List[Dict],
+    weather_data: Dict = None,
+    vegas_multipliers: Dict = None,
+    vegas_data: Dict = None,
+    num_lineups: int = 10,
+    contest_type: str = 'gpp',
+    single_game_teams: List[str] = None,
+    use_monte_carlo: bool = True,
+    mc_simulations: int = 10000,  # Changed from 5000
 ) -> List[LineupResult]:
     """
     AI-Enhanced optimization with Monte Carlo variance modeling (synchronous wrapper).
@@ -1623,24 +1631,63 @@ def optimize_dfs_lineups(
 
     if AI_AVAILABLE and ai_enabled:
         try:
+            from ai_analyzer import DualAIDFSAnalyzer  # <-- Add this import
             analyzer = DualAIDFSAnalyzer()
             ai_analysis = analyzer.analyze_slate_for_optimization(
                 player_data, weather_data or {}, vegas_multipliers or {}, contest_type
             )
 
             if ai_analysis and isinstance(ai_analysis, dict):
-                ownership_adj = ai_analysis.get('ownership_adjustments') or {}
-                if ownership_adj:
-                    adjusted = 0
+                # STEP 5: Friends league uses PROJECTION boosts, not ownership
+                if contest_type == 'friends_league':
+                    # Convert AI recommendations to projection adjustments
+                    leverage_players = ai_analysis.get('leverage_players', [])
+                    avoid_players = ai_analysis.get('avoid_players', [])
+
+                    projection_boosts = 0
+                    projection_fades = 0
+
                     for rec in player_data:
                         name = rec.get('player_name', rec.get('name', ''))
-                        if name in ownership_adj:
-                            if 'ownership' in rec and isinstance(rec['ownership'], (int, float)):
-                                rec['ownership'] = max(0.0, float(rec['ownership']) * float(ownership_adj[name]))
-                            else:
-                                rec['ownership_hint'] = float(ownership_adj[name])
-                            adjusted += 1
-                    logger.info(f"AI adjusted ownership hints for {adjusted} players")
+
+                        # AI says START → boost projection
+                        if name in leverage_players:
+                            original_proj = rec.get('projected_points', 0)
+                            boost_factor = 1.08  # +8% boost for AI endorsement
+                            rec['projected_points'] = original_proj * boost_factor
+                            rec['projection'] = rec['projected_points']
+                            projection_boosts += 1
+                            logger.info(
+                                f"🤖 AI BOOST: {name} {original_proj:.1f} → {rec['projected_points']:.1f} pts (+8%)")
+
+                        # AI says FADE → reduce projection
+                        elif name in avoid_players:
+                            original_proj = rec.get('projected_points', 0)
+                            fade_factor = 0.92  # -8% reduction for AI fade
+                            rec['projected_points'] = original_proj * fade_factor
+                            rec['projection'] = rec['projected_points']
+                            projection_fades += 1
+                            logger.info(
+                                f"🤖 AI FADE: {name} {original_proj:.1f} → {rec['projected_points']:.1f} pts (-8%)")
+
+                    if projection_boosts or projection_fades:
+                        logger.info(
+                            f"✅ STEP 5: AI projection adjustments: {projection_boosts} boosts, {projection_fades} fades")
+
+                else:
+                    # GPP/Cash/Contrarian: Use ownership adjustments (existing logic)
+                    ownership_adj = ai_analysis.get('ownership_adjustments') or {}
+                    if ownership_adj:
+                        adjusted = 0
+                        for rec in player_data:
+                            name = rec.get('player_name', rec.get('name', ''))
+                            if name in ownership_adj:
+                                if 'ownership' in rec and isinstance(rec['ownership'], (int, float)):
+                                    rec['ownership'] = max(0.0, float(rec['ownership']) * float(ownership_adj[name]))
+                                else:
+                                    rec['ownership_hint'] = float(ownership_adj[name])
+                                adjusted += 1
+                        logger.info(f"AI adjusted ownership hints for {adjusted} players")
 
                 cost_summary = getattr(analyzer, "get_cost_summary", lambda: {})()
                 if cost_summary:

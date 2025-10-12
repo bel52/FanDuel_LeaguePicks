@@ -138,9 +138,9 @@ WEATHER_API = {
 
 # Rate Limits
 RATE_LIMITS = {
-    'espn_api': 60,  # requests per minute
-    'weather_api': 30,  # requests per minute
-    'odds_api': 500  # requests per day
+    'espn_api': 60,
+    'weather_api': 30,
+    'odds_api': 500
 }
 
 # Validation Thresholds
@@ -193,10 +193,12 @@ POSITION_LIMITS = {
     'FLEX': {'min': 1, 'max': 1},
     'D': {'min': 1, 'max': 1}
 }
+
 # Head-to-Head Single Game Settings
-H2H_ROSTER_SIZE = 6  # 1 MVP + 5 FLEX
-H2H_MVP_MULTIPLIER = 1.5  # MVP costs 1.5x salary, earns 1.5x points
+H2H_ROSTER_SIZE = 6
+H2H_MVP_MULTIPLIER = 1.5
 H2H_SALARY_CAP = 60000
+
 # Weather impact thresholds
 WIND_SPEED_THRESHOLD = 15
 PRECIPITATION_THRESHOLD = 0.1
@@ -234,7 +236,7 @@ OPTIMIZATION_CONFIG = {
         'ownership_threshold': 15.0,
         'correlation_bonus': 1.3
     },
-    'h2h': {  # ADD THIS BLOCK
+    'h2h': {
         'variance_weight': 0.35,
         'ownership_threshold': 20.0,
         'correlation_bonus': 1.5,
@@ -244,6 +246,28 @@ OPTIMIZATION_CONFIG = {
     }
 }
 
+# NFL Defensive Rankings (Week 6 2025 - Update weekly)
+# Based on DVOA, yards/game, and points allowed
+DEFENSIVE_RANKINGS = {
+    'pass_defense': {
+        'top_5': ['SF', 'BAL', 'PIT', 'BUF', 'NYJ'],        # Elite pass D (penalty for WR/TE/QB)
+        'bottom_5': ['LAC', 'WAS', 'NO', 'NYG', 'CAR']      # Weak pass D (boost for WR/TE/QB)
+    },
+    'run_defense': {
+        'top_5': ['BAL', 'SF', 'CLE', 'DET', 'PHI'],        # Elite run D (penalty for RB)
+        'bottom_5': ['CAR', 'NYG', 'TEN', 'IND', 'DEN']     # Weak run D (boost for RB)
+    }
+}
+
+# Matchup adjustment factors
+MATCHUP_ADJUSTMENTS = {
+    'elite_matchup': 1.10,      # +10% vs bottom-5 defense
+    'good_matchup': 1.05,       # +5% vs below-average defense
+    'poor_matchup': 0.95,       # -5% vs above-average defense  
+    'terrible_matchup': 0.90    # -10% vs top-5 defense
+}
+
 # Print loaded config summary on import
 print(f"Config loaded - AI: {AI_ENABLED}, OpenAI: {'✅' if OPENAI_API_KEY else '❌'}, Anthropic: {'✅' if ANTHROPIC_API_KEY else '❌'}")
 print("✅ Enhanced config loaded with improved environment handling")
+print("✅ Defensive rankings loaded for matchup adjustments")

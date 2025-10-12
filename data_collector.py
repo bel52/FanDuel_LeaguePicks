@@ -342,54 +342,70 @@ class EnhancedDataCollector:
             return {'games': {}, 'high_total_games': [], 'data_source': 'error'}
 
     def calculate_vegas_multipliers(self, vegas_data: Dict) -> Dict[str, float]:
-        """Calculate team multipliers based on game totals - GAME CHANGING"""
+        """Calculate team multipliers based on IMPLIED TEAM TOTALS - STEP 3 COMPLETE"""
 
         multipliers = {}
         games = vegas_data.get('games', {})
-        avg_total = vegas_data.get('avg_total', 45.0)
 
         if not games:
             logger.warning("No Vegas games data for multipliers")
             return {}
 
+        # Calculate league average implied score (typically ~24 points)
+        all_implied_scores = []
+        for game_data in games.values():
+            home_implied = game_data.get('home_implied_score')
+            away_implied = game_data.get('away_implied_score')
+            if home_implied:
+                all_implied_scores.append(home_implied)
+            if away_implied:
+                all_implied_scores.append(away_implied)
+
+        league_avg_implied = sum(all_implied_scores) / len(all_implied_scores) if all_implied_scores else 24.0
+        logger.info(f"📊 League avg implied score: {league_avg_implied:.1f} points")
+
         for game_id, game_data in games.items():
-            total = game_data.get('total_points', avg_total)
-            spread = abs(game_data.get('spread') or 0)
             home_team = game_data.get('home_team')
             away_team = game_data.get('away_team')
+            home_implied = game_data.get('home_implied_score', league_avg_implied)
+            away_implied = game_data.get('away_implied_score', league_avg_implied)
 
-            # TOTAL MULTIPLIER: Higher totals = higher DFS scoring
-            if total >= 50:
-                total_mult = 1.35  # MAJOR boost for 50+ games
-            elif total >= 47:
-                total_mult = 1.25  # Significant boost for 47+ games
-            elif total >= 44:
-                total_mult = 1.10  # Moderate boost
-            elif total <= 40:
-                total_mult = 0.85  # Penalty for low totals
-            else:
-                total_mult = 1.0
+            # STEP 3: Per-team multipliers based on IMPLIED TOTALS
+            # Higher implied score = higher DFS scoring expectation
 
-            # SPREAD MULTIPLIER: Close games = more passing
-            if spread <= 3:
-                spread_mult = 1.15  # Close games = shootouts
-            elif spread >= 10:
-                spread_mult = 0.90  # Blowouts = fewer points
-            else:
-                spread_mult = 1.0
+            # Normalize around league average (24 pts)
+            home_multiplier = home_implied / league_avg_implied
+            away_multiplier = away_implied / league_avg_implied
 
-            # COMBINED MULTIPLIER
-            final_mult = total_mult * spread_mult
+            # Apply tiered boosts for high-scoring environments
+            def apply_tiers(base_mult: float, implied: float) -> float:
+                """Apply stepped multipliers for different scoring tiers"""
+                if implied >= 29.0:
+                    return base_mult * 1.20  # Elite offense (29+ implied)
+                elif implied >= 26.5:
+                    return base_mult * 1.15  # Strong offense (26.5-29)
+                elif implied >= 24.5:
+                    return base_mult * 1.08  # Above average (24.5-26.5)
+                elif implied >= 22.0:
+                    return base_mult * 1.00  # Average (22-24.5)
+                elif implied >= 20.0:
+                    return base_mult * 0.95  # Below average (20-22)
+                else:
+                    return base_mult * 0.88  # Low scoring (under 20)
 
-            # Apply to both teams
+            home_final = apply_tiers(home_multiplier, home_implied)
+            away_final = apply_tiers(away_multiplier, away_implied)
+
+            # Store multipliers
             if home_team:
-                multipliers[home_team] = final_mult
+                multipliers[home_team] = home_final
+                logger.info(f"VEGAS WEIGHT: {home_team} implied {home_implied:.1f} → {home_final:.2f}x")
+
             if away_team:
-                multipliers[away_team] = final_mult
+                multipliers[away_team] = away_final
+                logger.info(f"VEGAS WEIGHT: {away_team} implied {away_implied:.1f} → {away_final:.2f}x")
 
-            logger.info(f"VEGAS WEIGHT: {game_id} ({total} total, {spread} spread) = {final_mult:.2f}x")
-
-        logger.info(f"Applied Vegas multipliers to {len(multipliers)} teams")
+        logger.info(f"✅ STEP 3 COMPLETE: Applied per-team implied multipliers to {len(multipliers)} teams")
         return multipliers
 
     async def get_nfl_projections(self) -> Dict[str, float]:
