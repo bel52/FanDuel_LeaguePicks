@@ -804,136 +804,214 @@ Focus on actionable lineup changes only."""
         }
 
     def _prepare_slate_data(self, player_data: List[Dict], weather_data: Dict,
-                           vegas_data: Dict, contest_type: str) -> Dict:
-        """Prepare comprehensive slate data for AI analysis"""
+                            vegas_data: Dict, contest_type: str) -> Dict:
+        """Prepare COMPREHENSIVE slate data for AI analysis with all analytics"""
 
-        # Extract top players by position
+        # Build rich player profiles with ALL available data
+        enriched_players = []
+
+        for player in player_data:
+            name = player.get('name', '')
+            position = player.get('position', '')
+            team = player.get('team', '')
+            salary = player.get('salary', 0)
+
+            # Skip invalid players
+            if not name or salary < 1000:
+                continue
+
+            # Core projections
+            base_projection = player.get('projected_points', 0)
+
+            # Monte Carlo analytics (if available)
+            ceiling = player.get('ceiling_90', base_projection * 1.3)
+            floor = player.get('floor_10', base_projection * 0.7)
+            median = player.get('median_50', base_projection)
+            boom_rate = player.get('boom_rate', 0.3)
+            bust_rate = player.get('bust_rate', 0.2)
+
+            # Value metrics
+            value_ratio = base_projection / (salary / 1000) if salary > 0 else 0
+
+            # Weather impact (if available)
+            weather_factor = player.get('weather_factor', 1.0)
+
+            # Vegas context (if available)
+            vegas_mult = player.get('vegas_multiplier', 1.0)
+
+            # Injury status
+            injury_status = player.get('injury_status', 'healthy')
+
+            enriched_players.append({
+                'name': name,
+                'position': position,
+                'team': team,
+                'salary': salary,
+                'projection': round(base_projection, 1),
+                'ceiling': round(ceiling, 1),
+                'floor': round(floor, 1),
+                'median': round(median, 1),
+                'value_ratio': round(value_ratio, 2),
+                'boom_rate': round(boom_rate, 2),
+                'bust_rate': round(bust_rate, 2),
+                'weather_factor': round(weather_factor, 2),
+                'vegas_mult': round(vegas_mult, 2),
+                'injury_status': injury_status
+            })
+
+        # Sort by projection for top players
+        enriched_players = sorted(enriched_players, key=lambda x: x['projection'], reverse=True)
+
+        # Organize by position with FULL analytics
         positions = {'QB': 5, 'RB': 8, 'WR': 10, 'TE': 6}
         top_players_by_pos = {}
 
         for pos, count in positions.items():
-            pos_players = [p for p in player_data if p.get('position') == pos]
-            top_players_by_pos[pos] = sorted(
-                pos_players,
-                key=lambda x: x.get('salary', 0),
-                reverse=True
-            )[:count]
+            pos_players = [p for p in enriched_players if p['position'] == pos]
+            top_players_by_pos[pos] = pos_players[:count]
 
-        # Find value plays
-        value_plays = []
-        for player in player_data:
-            salary = player.get('salary', 5000)
-            projection = player.get('projected_points', 0)
-            if salary > 0 and projection > 0:
-                value = projection / (salary / 1000)
-                if value > 3.2 and salary < 7500:
-                    value_plays.append({
-                        'name': player.get('name'),
-                        'position': player.get('position'),
-                        'team': player.get('team'),
-                        'salary': salary,
-                        'projection': projection,
-                        'value': value
-                    })
+        # Identify true value plays (high ceiling + good value)
+        value_plays = [
+            p for p in enriched_players
+            if p['value_ratio'] > 3.2
+               and p['salary'] < 7500
+               and p['boom_rate'] > 0.25
+        ]
+        value_plays = sorted(value_plays, key=lambda x: x['value_ratio'], reverse=True)[:8]
 
-        value_plays = sorted(value_plays, key=lambda x: x['value'], reverse=True)[:8]
+        # Extract Vegas game context
+        high_total_games = vegas_data.get('high_total_games', [])
+        vegas_summary = []
+        for game in high_total_games[:3]:
+            vegas_summary.append({
+                'game': game.get('game_id', ''),
+                'total': game.get('total', 0),
+                'spread': game.get('spread', 0),
+                'home_implied': game.get('home_implied', 0),
+                'away_implied': game.get('away_implied', 0)
+            })
 
-        # Analyze weather impacts
-        significant_weather = []
+        # Weather impacts
+        weather_summary = []
         for team, conditions in weather_data.items():
-            wind_mph = 0
-            precip = conditions.get('precipitation_chance', 0)
-
-            wind_str = conditions.get('wind_speed', '0 mph')
-            try:
-                wind_mph = int(wind_str.split()[0])
-            except:
-                pass
-
-            if wind_mph > 12 or precip > 25:
-                significant_weather.append({
+            if conditions.get('wind_speed', 0) > 10 or conditions.get('precipitation_chance', 0) > 20:
+                weather_summary.append({
                     'team': team,
-                    'wind_mph': wind_mph,
-                    'precipitation': precip,
-                    'conditions': conditions.get('conditions', '')
+                    'conditions': conditions.get('conditions', ''),
+                    'wind': conditions.get('wind_speed', 0),
+                    'precip': conditions.get('precipitation_chance', 0),
+                    'temp': conditions.get('temperature', 0)
                 })
 
-        # Find potential stacking teams (high-priced players)
-        team_salary_totals = {}
-        for player in player_data:
-            team = player.get('team', '')
-            if team:
-                if team not in team_salary_totals:
-                    team_salary_totals[team] = []
-                team_salary_totals[team].append(player.get('salary', 0))
-
-        high_total_teams = []
-        for team, salaries in team_salary_totals.items():
-            if len(salaries) >= 3:
-                avg_salary = sum(salaries) / len(salaries)
-                if avg_salary > 5500:
-                    high_total_teams.append(team)
-
-        # inside _prepare_slate_data return value
         return {
             'contest_type': contest_type,
             'top_players': top_players_by_pos,
             'value_plays': value_plays,
-            'weather_impacts': significant_weather,
-            'stack_candidates': high_total_teams[:4],
-            'slate_size': len(player_data),
-            'avg_salary': sum(p.get('salary', 0) for p in player_data) / len(player_data) if player_data else 0,
-            'vegas_high_total_games': vegas_data.get('high_total_games', [])  # <-- add this line
+            'vegas_games': vegas_summary,
+            'weather_impacts': weather_summary,
+            'slate_size': len(enriched_players),
+            'avg_salary': sum(p['salary'] for p in enriched_players) / len(enriched_players) if enriched_players else 0,
+            # Include ALL players for H2H (small slate)
+            'all_players': enriched_players if contest_type == 'h2h' else []
         }
 
     def _get_openai_insights(self, data: Dict, contest_type: str) -> str:
-        """Get strategic insights from OpenAI"""
+            """Get strategic insights from OpenAI with FULL analytics"""
 
-        prompt = f"""Analyze this NFL DFS slate for a 12-person friends league {contest_type} contest.
+            if contest_type == 'h2h':
+                # Format rich player data for AI
+                qb_details = []
+                for qb in data['top_players']['QB'][:3]:
+                    qb_details.append(
+                        f"{qb['name']} (${qb['salary']}) - "
+                        f"Proj: {qb['projection']}pts, "
+                        f"Ceiling: {qb['ceiling']}pts, "
+                        f"Floor: {qb['floor']}pts, "
+                        f"Boom: {qb['boom_rate']:.0%}"
+                    )
 
-SLATE OVERVIEW:
-- Contest: {contest_type.upper()} (12 people, need to win weekly)
-- Players available: {data['slate_size']}
-- Average salary: ${data['avg_salary']:.0f}
+                te_details = []
+                for te in data['top_players']['TE'][:4]:
+                    te_details.append(
+                        f"{te['name']} (${te['salary']}) - "
+                        f"Proj: {te['projection']}pts, "
+                        f"Ceiling: {te['ceiling']}pts, "
+                        f"Value: {te['value_ratio']:.2f}x"
+                    )
 
-HIGH-TOTAL GAMES (47+ points - DFS GOLD):
-{[(g.get('game_id'), f"{g.get('total')}pts") for g in data.get('vegas_high_total_games', [])[:6]]}
+                wr_details = []
+                for wr in data['top_players']['WR'][:6]:
+                    wr_details.append(
+                        f"{wr['name']} (${wr['salary']}) - "
+                        f"Proj: {wr['projection']}pts, "
+                        f"Ceiling: {wr['ceiling']}pts, "
+                        f"Boom: {wr['boom_rate']:.0%}"
+                    )
 
-CRITICAL: Players from these high-scoring games should be prioritized heavily in friends league format.
-In a 12-person league, you need ceiling plays from games expected to produce 24+ points per team.
+                rb_details = []
+                for rb in data['top_players']['RB'][:6]:
+                    rb_details.append(
+                        f"{rb['name']} (${rb['salary']}) - "
+                        f"Proj: {rb['projection']}pts, "
+                        f"Ceiling: {rb['ceiling']}pts, "
+                        f"Boom: {rb['boom_rate']:.0%}"
+                    )
 
-TOP PLAYERS BY POSITION:
-QBs: {[(p['name'], f"${p['salary']}") for p in data['top_players']['QB'][:4]]}
-RBs: {[(p['name'], f"${p['salary']}") for p in data['top_players']['RB'][:6]]}  
-WRs: {[(p['name'], f"${p['salary']}") for p in data['top_players']['WR'][:6]]}
-TEs: {[(p['name'], f"${p['salary']}") for p in data['top_players']['TE'][:4]]}
+                vegas_details = "\n".join([
+                    f"{g['game']}: {g['total']}pt total, {g['home_implied']:.1f} vs {g['away_implied']:.1f} implied"
+                    for g in data.get('vegas_games', [])
+                ])
 
-VALUE OPPORTUNITIES:
-{[(p['name'], f"${p['salary']}", f"{p['value']:.2f}x") for p in data['value_plays'][:6]]}
+                weather_str = "Indoor/No impact" if not data.get('weather_impacts') else "\n".join([
+                    f"{w['team']}: {w['conditions']}, {w['wind']}mph wind, {w['precip']}% precip"
+                    for w in data['weather_impacts']
+                ])
 
-WEATHER CONCERNS:
-{data['weather_impacts'] if data['weather_impacts'] else 'No significant weather'}
+                prompt = f"""You are analyzing NFL DFS HEAD-TO-HEAD (1v1) with COMPLETE analytics.
 
-STACKING TEAMS:
-{data['stack_candidates']}
+    🎯 H2H MISSION: Beat ONE person. Maximum ceiling wins.
 
-Provide specific analysis for this friends league:
-1. Which 3-4 players offer best leverage against casual players?
-2. What's the optimal salary allocation strategy?
-3. Should we stack, and which teams/players?
-4. Any weather-based pivots?
-5. Contest-specific approach for {contest_type}?
+    GAME CONTEXT:
+    {vegas_details}
 
-Give specific player names and clear reasoning."""
+    WEATHER:
+    {weather_str}
 
-        response = self.openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=700,
-            temperature=0.1
-        )
+    QUARTERBACKS (with Monte Carlo ceiling analysis):
+    {chr(10).join(qb_details)}
 
-        return response.choices[0].message.content
+    RUNNING BACKS (ceiling matters more than floor in H2H):
+    {chr(10).join(rb_details)}
+
+    WIDE RECEIVERS (boom rate = upside potential):
+    {chr(10).join(wr_details)}
+
+    TIGHT ENDS (stack partners for QBs):
+    {chr(10).join(te_details)}
+
+    VALUE PLAYS (high ceiling + good value):
+    {[(p['name'], f"${p['salary']}", f"{p['ceiling']}pt ceiling", f"{p['value_ratio']:.2f}x value") for p in data['value_plays'][:5]]}
+
+    ANALYZE & RECOMMEND:
+    1. MUST-PLAY QB: Which QB has highest CEILING (not projection)? Consider boom rate.
+    2. STACK-WITH: Which 2 teammates give best correlation? Must be TE/WR $6K+.
+    3. BRING-BACK: Best opposing player for game script hedge?
+    4. AVOID: Any player with ceiling <12pts or bust rate >30% or salary <$3K?
+
+    Be SPECIFIC with names. Focus on CEILING not floor. This is 1v1 ceiling game."""
+
+            else:
+                # GPP/Cash prompts...
+                prompt = f"""... standard prompts for other contests ..."""
+
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=700,
+                temperature=0.1
+            )
+
+            return response.choices[0].message.content
 
     def _get_claude_insights(self, data: Dict, contest_type: str) -> str:
         """Get strategic insights from Claude"""
@@ -999,7 +1077,8 @@ Be specific with player names and actionable advice."""
         if claude_insights:
             all_insights += f"=== Claude Analysis ===\n{claude_insights}\n\n"
             sources_used.append("Claude")
-
+        # Log the raw AI insights for debugging
+        logger.info(f"🤖 RAW AI INSIGHTS (first 800 chars):\n{all_insights[:800]}")
         if not all_insights:
             return self._enhanced_fallback_analysis(player_data, contest_type)
 

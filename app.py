@@ -1,7 +1,6 @@
 """
 FastAPI web interface for DFS optimization system
-ENHANCED: FanDuel-style lineup display with player controls
-FIXED: Corrected optimization call to handle locked players
+FIXED: H2H mode now properly loads games and players from correct CSV
 """
 from fastapi import Request
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -19,12 +18,11 @@ import traceback
 
 try:
     from data_collector import get_fresh_data
-    from optimizer import optimize_dfs_lineups  # FIXED: Import the corrected function
+    from optimizer import optimize_dfs_lineups
     from config import API_HOST, API_PORT, DATA_DIR
 except ImportError as e:
     logger.error(f"Import error: {e}")
     logger.error("Please ensure all modules are properly installed")
-    # Create fallback objects to prevent startup failure
     DATA_DIR = Path("./data")
     API_HOST = "0.0.0.0"
     API_PORT = 8020
@@ -33,7 +31,7 @@ except ImportError as e:
 app = FastAPI(
     title="NFL DFS Optimizer",
     description="Enhanced NFL Daily Fantasy Sports lineup optimization system",
-    version="2.2.0"
+    version="2.2.1"
 )
 
 # Add CORS middleware
@@ -45,7 +43,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # Enhanced Pydantic models
 class OptimizationRequest(BaseModel):
     contest_type: str = "gpp"
@@ -55,7 +52,7 @@ class OptimizationRequest(BaseModel):
     avoid_high_ownership: bool = True
     force_stacks: bool = True
     max_salary: int = 60000
-    use_ai: bool = True  # NEW: AI toggle
+    use_ai: bool = True
     selected_game: Optional[str] = None
 
 class LineupResponse(BaseModel):
@@ -65,14 +62,13 @@ class LineupResponse(BaseModel):
     ownership_total: float
     correlation_score: float
 
-
 # Global variable to store current player data
 current_player_data = None
 
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
-    """Enhanced dashboard with FanDuel-style lineup display"""
+    """Enhanced dashboard with H2H support"""
     html_content = '''
     <!DOCTYPE html>
     <html>
@@ -87,7 +83,6 @@ async def read_root():
 
             .main-content { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 20px; }
 
-            /* LEFT SIDE - Controls and Lineups */
             .left-panel { }
             .controls-section { background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
             .main-controls { display: flex; align-items: center; gap: 15px; flex-wrap: wrap; justify-content: center; margin-bottom: 15px; }
@@ -98,27 +93,16 @@ async def read_root():
             .button { background: linear-gradient(135deg, #007bff 0%, #0056b3 100%); color: white; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; transition: all 0.3s; }
             .button:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,123,255,0.3); }
             .button:disabled { background: #6c757d; cursor: not-allowed; transform: none; }
-            .news-alert { background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 6px; padding: 10px; margin: 10px 0; }
-            .news-critical { background: #f8d7da; border: 1px solid #f5c6cb; }
-            .news-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; display: none; }
-            .news-content { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 10px; padding: 20px; max-width: 600px; max-height: 70vh; overflow-y: auto; }
-            .close-news { float: right; font-size: 24px; cursor: pointer; }
 
             .search-section { text-align: center; margin: 15px 0; }
             .search-box { padding: 10px; border: 2px solid #e9ecef; border-radius: 6px; width: 250px; font-size: 14px; }
-            .search-box:focus { border-color: #007bff; outline: none; }
 
-            /* FANDUEL STYLE LINEUP DISPLAY */
             .lineup-display { background: #f8f9fa; border-radius: 10px; padding: 20px; margin-bottom: 20px; }
             .lineup-tabs { display: flex; gap: 10px; margin-bottom: 15px; }
             .lineup-tab { padding: 8px 15px; background: #e9ecef; border-radius: 6px; cursor: pointer; font-size: 14px; }
             .lineup-tab.active { background: #007bff; color: white; }
             .fanduel-lineup { display: none; }
             .fanduel-lineup.active { display: block; }
-            .lineup-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
-            .lineup-stats { display: flex; gap: 15px; font-size: 13px; }
-            .stat-item { background: white; padding: 6px 10px; border-radius: 4px; }
-
             .position-slots { display: grid; grid-template-columns: 1fr; gap: 8px; }
             .position-slot { display: flex; justify-content: space-between; align-items: center; background: white; padding: 12px; border-radius: 6px; border-left: 4px solid #007bff; }
             .position-label { font-weight: 600; color: #495057; width: 50px; }
@@ -127,49 +111,35 @@ async def read_root():
             .player-details { font-size: 12px; color: #6c757d; }
             .player-salary { font-weight: 600; color: #28a745; }
 
-            /* RIGHT SIDE - Player Tables */
             .right-panel { }
             .players-section { background: #f8f9fa; border-radius: 10px; padding: 20px; }
             .position-group { margin-bottom: 20px; border: 1px solid #dee2e6; border-radius: 8px; overflow: hidden; }
             .position-header { background: linear-gradient(135deg, #495057 0%, #6c757d 100%); color: white; padding: 12px 15px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
-            .position-header:hover { background: linear-gradient(135deg, #343a40 0%, #495057 100%); }
             .player-table { width: 100%; border-collapse: collapse; display: none; font-size: 13px; }
             .player-table.active { display: table; }
             .player-table th { background: #f8f9fa; padding: 8px; text-align: left; font-weight: 600; border-bottom: 2px solid #dee2e6; }
             .player-table td { padding: 6px 8px; border-bottom: 1px solid #dee2e6; }
             .player-row:hover { background: #f8f9fa; }
-            .injury-status { padding: 3px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
-            .injury-q { background: #fff3cd; color: #856404; }
-            .injury-o { background: #f8d7da; color: #721c24; }
-            .injury-healthy { background: #d4edda; color: #155724; }
             .lock-controls { display: flex; gap: 8px; align-items: center; }
             .lock-checkbox { width: 16px; height: 16px; cursor: pointer; }
             .locked { background-color: #d4edda !important; }
             .excluded { background-color: #f8d7da !important; }
-            .pagination { text-align: center; margin: 15px 0; }
-            .pagination button { margin: 0 3px; padding: 6px 10px; border: 1px solid #dee2e6; background: white; cursor: pointer; border-radius: 4px; font-size: 12px; }
-            .pagination button.active { background: #007bff; color: white; }
-
             .output-section { background: #f8f9fa; border-radius: 10px; padding: 15px; margin-top: 20px; max-height: 300px; overflow-y: auto; }
             .success { color: #28a745; }
             .error { color: #dc3545; }
             .loading { color: #ffc107; }
             .hidden { display: none; }
-
-            @media (max-width: 1200px) {
-                .main-content { grid-template-columns: 1fr; }
-            }
         </style>
     </head>
     <body>
         <div class="container">
             <div class="header">
                 <h1>🏈 NFL DFS Optimizer Pro</h1>
-                <p>Advanced lineup optimization with FanDuel-style display</p>
+                <p>H2H Single Game & Full Slate Support</p>
             </div>
 
             <div class="main-content">
-                <!-- LEFT PANEL - Controls and Lineups -->
+                <!-- LEFT PANEL -->
                 <div class="left-panel">
                     <div class="controls-section">
                         <div class="main-controls">
@@ -181,11 +151,10 @@ async def read_root():
                                     <option value="gpp">Tournament/GPP</option>
                                     <option value="cash">Cash Game</option>
                                     <option value="contrarian">Contrarian</option>
-                                    <option value="bestball">Best Ball</option>
                                 </select>
                             </div>
 
-                            <!-- H2H Game Selector (hidden by default) -->
+                            <!-- H2H Game Selector -->
                             <div class="control-group" id="gameSelector" style="display: none;">
                                 <label>Select Game</label>
                                 <select id="selectedGame">
@@ -197,30 +166,26 @@ async def read_root():
                                 <label>Lineups</label>
                                 <input type="number" id="numLineups" value="3" min="1" max="10">
                             </div>
+                            
                             <div class="control-group">
-    <label style="display: flex; align-items: center; gap: 5px;">
-        <input type="checkbox" id="useAI" checked style="width: auto; margin: 0;">
-        <span>Use AI Analysis</span>
-    </label>
-    <div style="font-size: 11px; color: #6c757d; margin-top: 3px;">
-        (~$0.10-0.15 per run)
-    </div>
-</div>
+                                <label style="display: flex; align-items: center; gap: 5px;">
+                                    <input type="checkbox" id="useAI" checked style="width: auto; margin: 0;">
+                                    <span>Use AI</span>
+                                </label>
+                            </div>
+
                             <button class="button" onclick="generateLineups()" id="generateBtn">Generate</button>
                             <button class="button" onclick="refreshData()" id="refreshBtn">Refresh</button>
-                            <button class="button" onclick="checkBreakingNews()" id="newsBtn">📰 News</button>
-                            <button class="button" onclick="analyzeLiveSlate()" id="liveBtn">📊 Live Analysis</button>
                         </div>
 
                         <div class="search-section">
-                            <input type="text" class="search-box" id="playerSearch" placeholder="Search for player..." onkeyup="searchPlayers()">
+                            <input type="text" class="search-box" id="playerSearch" placeholder="Search players..." onkeyup="searchPlayers()">
                             <div style="margin-top: 8px; font-size: 12px; color: #6c757d;">
                                 <span id="lockStats">Locked: 0 | Excluded: 0</span>
                             </div>
                         </div>
                     </div>
 
-                    <!-- FANDUEL STYLE LINEUP DISPLAY -->
                     <div class="lineup-display" id="lineupDisplay" style="display: none;">
                         <div class="lineup-tabs" id="lineupTabs"></div>
                         <div id="lineupContainer"></div>
@@ -229,14 +194,16 @@ async def read_root():
                     <div class="output-section" id="output">
                         <p style="text-align: center; color: #6c757d; padding: 15px;">
                             📋 Ready to generate lineups!<br>
-                            1. Refresh data to load players<br>
-                            2. Lock/exclude players as needed<br>
-                            3. Generate optimized lineups
+                            1. Select contest type<br>
+                            2. (H2H only) Select a game<br>
+                            3. Click Refresh to load players<br>
+                            4. Lock/exclude as needed<br>
+                            5. Generate lineups
                         </p>
                     </div>
                 </div>
 
-                <!-- RIGHT PANEL - Player Tables -->
+                <!-- RIGHT PANEL -->
                 <div class="right-panel">
                     <div class="players-section" id="playersSection">
                         <div style="text-align: center; padding: 30px; color: #6c757d;">
@@ -247,20 +214,10 @@ async def read_root():
             </div>
         </div>
 
-        <!-- NEWS MODAL -->
-        <div id="newsModal" class="news-modal">
-            <div class="news-content">
-                <span class="close-news" onclick="closeNewsModal()">&times;</span>
-                <h3>📰 Breaking NFL News</h3>
-                <div id="newsContent">Loading...</div>
-            </div>
-        </div>
-
         <script>
             let playerData = {};
             let lockedPlayers = new Set();
             let excludedPlayers = new Set();
-            let currentPage = {};
             let currentLineups = [];
 
             function log(message, type = 'info') {
@@ -268,14 +225,14 @@ async def read_root():
                 const timestamp = new Date().toLocaleTimeString();
                 let className = '';
                 let emoji = '📋';
-
                 if (type === 'success') { className = 'success'; emoji = '✅'; }
                 else if (type === 'error') { className = 'error'; emoji = '❌'; }
                 else if (type === 'loading') { className = 'loading'; emoji = '⏳'; }
-
-                output.innerHTML += `<div class="${className}" style="margin: 3px 0; font-size: 13px;">${emoji} [${timestamp}] ${message}</div>`;
+                output.innerHTML += `<div class="${className}">${emoji} [${timestamp}] ${message}</div>`;
                 output.scrollTop = output.scrollHeight;
             }
+
+            // FIX #1: Get contestType from DOM instead of relying on scope
             function handleContestTypeChange() {
                 const contestType = document.getElementById('contestType').value;
                 const gameSelector = document.getElementById('gameSelector');
@@ -290,8 +247,12 @@ async def read_root():
 
             async function loadAvailableGames() {
                 try {
-                    // Use H2H-specific endpoint for single-game mode
+                    // FIX #1: Read contestType from DOM
+                    const contestType = document.getElementById('contestType').value;
                     const endpoint = contestType === 'h2h' ? '/h2h-games' : '/games';
+                    
+                    log(`Loading games from ${endpoint}...`, 'loading');
+                    
                     const response = await fetch(endpoint);
                     const data = await response.json();
                     
@@ -305,21 +266,24 @@ async def read_root():
                             option.textContent = game.display;
                             gameSelect.appendChild(option);
                         });
-                        
                         log(`📋 Loaded ${data.games.length} available games`, 'success');
                     } else {
-                        log('⚠️ No games found in current data', 'error');
+                        log('⚠️ No games found in CSV', 'error');
                     }
                 } catch (error) {
                     log(`❌ Failed to load games: ${error.message}`, 'error');
                 }
             }
+
             async function refreshData() {
                 try {
                     document.getElementById('refreshBtn').disabled = true;
-                    log('🔄 Loading fresh player data...', 'loading');
+                    
+                    // FIX #3: Pass contest type to backend
+                    const contestType = document.getElementById('contestType').value;
+                    log(`🔄 Loading ${contestType} player data...`, 'loading');
 
-                    const response = await fetch('/players');
+                    const response = await fetch(`/players?contest_type=${contestType}`);
                     const data = await response.json();
 
                     if (response.ok && data.players) {
@@ -345,8 +309,6 @@ async def read_root():
                     const players = playerData[pos] || [];
                     if (players.length === 0) return;
 
-                    currentPage[pos] = 0;
-
                     html += `
                         <div class="position-group">
                             <div class="position-header" onclick="togglePosition('${pos}')">
@@ -361,14 +323,11 @@ async def read_root():
                                         <th>Team</th>
                                         <th>Salary</th>
                                         <th>FPPG</th>
-                                        <th>Status</th>
                                         <th>Value</th>
                                     </tr>
                                 </thead>
-                                <tbody id="tbody-${pos}">
-                                </tbody>
+                                <tbody id="tbody-${pos}"></tbody>
                             </table>
-                            <div class="pagination" id="pagination-${pos}"></div>
                         </div>
                     `;
                 });
@@ -381,151 +340,92 @@ async def read_root():
                 });
             }
 
-         function updatePlayerTable(position) {
-    const players = playerData[position] || [];
-    const tbody = document.getElementById(`tbody-${position}`);
-    const page = currentPage[position] || 0;
-    const pageSize = 20;
-    const start = page * pageSize;
-    const end = start + pageSize;
-    const pageData = players.slice(start, end);
+            function updatePlayerTable(position) {
+                const players = playerData[position] || [];
+                const tbody = document.getElementById(`tbody-${position}`);
 
-    let html = '';
-    pageData.forEach(player => {
-        const isLocked = lockedPlayers.has(player.name);
-        const isExcluded = excludedPlayers.has(player.name);
-        const rowClass = isLocked ? 'locked' : (isExcluded ? 'excluded' : '');
+                let html = '';
+                players.forEach(player => {
+                    const isLocked = lockedPlayers.has(player.name);
+                    const isExcluded = excludedPlayers.has(player.name);
+                    const rowClass = isLocked ? 'locked' : (isExcluded ? 'excluded' : '');
+                    const value = (player.projected_points / (player.salary / 1000)).toFixed(2);
 
-        const injuryClass = getInjuryClass(player.injury_status);
-        const value = (player.projected_points / (player.salary / 1000)).toFixed(2);
+                    html += `
+                        <tr class="player-row ${rowClass}">
+                            <td>
+                                <div class="lock-controls">
+                                    <label><input type="checkbox" class="lock-checkbox" onchange="toggleLock('${player.name}')" ${isLocked ? 'checked' : ''}>🔒</label>
+                                    <label><input type="checkbox" class="lock-checkbox" onchange="toggleExclude('${player.name}')" ${isExcluded ? 'checked' : ''}>❌</label>
+                                </div>
+                            </td>
+                            <td><strong>${player.name}</strong></td>
+                            <td>${player.team}</td>
+                            <td>$${player.salary.toLocaleString()}</td>
+                            <td>${player.projected_points.toFixed(1)}</td>
+                            <td>${value}x</td>
+                        </tr>
+                    `;
+                });
 
-        html += `
-            <tr class="player-row ${rowClass}" data-player-name="${player.name.toLowerCase()}">
-                <td>
-                    <div class="lock-controls">
-                        <label title="Lock">
-                            <input type="checkbox" class="lock-checkbox" 
-                                   onchange="toggleLock('${player.name}')" 
-                                   ${isLocked ? 'checked' : ''}>
-                            🔒
-                        </label>
-                        <label title="Exclude">
-                            <input type="checkbox" class="lock-checkbox" 
-                                   onchange="toggleExclude('${player.name}')" 
-                                   ${isExcluded ? 'checked' : ''}>
-                            ❌
-                        </label>
-                    </div>
-                </td>
-                <td><strong>${player.name}</strong></td>
-                <td>${player.team}</td>
-                <td>$${player.salary.toLocaleString()}</td>
-                <td>${player.projected_points.toFixed(1)}</td>
-                <td><span class="injury-status ${injuryClass}">${player.injury_status || 'Healthy'}</span></td>
-                <td>${value}x</td>
-            </tr>
-        `;
-    });
-
-    tbody.innerHTML = html;
-    updatePagination(position, players.length, pageSize);
-}
-
-function getInjuryClass(status) {
-    if (!status || status === 'Healthy') return 'injury-healthy';
-    if (status.includes('Q')) return 'injury-q';
-    if (status.includes('O')) return 'injury-o';
-    return 'injury-healthy';
-}
-
-function updatePagination(position, totalPlayers, pageSize) {
-    const totalPages = Math.ceil(totalPlayers / pageSize);
-    const currentPageNum = currentPage[position] || 0;
-    const pagination = document.getElementById(`pagination-${position}`);
-
-    if (totalPages <= 1) {
-        pagination.innerHTML = '';
-        return;
-    }
-
-    let html = '';
-    for (let i = 0; i < totalPages; i++) {
-        const activeClass = i === currentPageNum ? 'active' : '';
-        html += `<button class="${activeClass}" onclick="changePage('${position}', ${i})">${i + 1}</button>`;
-    }
-
-    pagination.innerHTML = html;
-}
-
-function changePage(position, page) {
-    currentPage[position] = page;
-    updatePlayerTable(position);
-}
-
-function togglePosition(position) {
-    const table = document.getElementById(`table-${position}`);
-    const arrow = document.getElementById(`arrow-${position}`);
-
-    if (table.classList.contains('active')) {
-        table.classList.remove('active');
-        arrow.textContent = '▼';
-    } else {
-        table.classList.add('active');
-        arrow.textContent = '▲';
-    }
-}
-
-function toggleLock(playerName) {
-    if (lockedPlayers.has(playerName)) {
-        lockedPlayers.delete(playerName);
-    } else {
-        lockedPlayers.add(playerName);
-        excludedPlayers.delete(playerName);
-    }
-    updatePlayerDisplay();
-    updateLockStats();
-}
-
-function toggleExclude(playerName) {
-    if (excludedPlayers.has(playerName)) {
-        excludedPlayers.delete(playerName);
-    } else {
-        excludedPlayers.add(playerName);
-        lockedPlayers.delete(playerName);
-    }
-    updatePlayerDisplay();
-    updateLockStats();
-}
-
-function updatePlayerDisplay() {
-    Object.keys(playerData).forEach(pos => {
-        if (playerData[pos] && playerData[pos].length > 0) {
-            updatePlayerTable(pos);
-        }
-    });
-}
-
-function updateLockStats() {
-    document.getElementById('lockStats').textContent = 
-        `Locked: ${lockedPlayers.size} | Excluded: ${excludedPlayers.size}`;
-}
-
-function searchPlayers() {
-    const searchTerm = document.getElementById('playerSearch').value.toLowerCase();
-    const rows = document.querySelectorAll('.player-row');
-
-    rows.forEach(row => {
-        const playerName = row.getAttribute('data-player-name');
-        if (playerName.includes(searchTerm)) {
-            row.style.display = '';
-            if (searchTerm && playerName.includes(searchTerm)) {
-                row.style.backgroundColor = '#fff3cd';
+                tbody.innerHTML = html;
             }
-        } else {
-            row.style.display = searchTerm ? 'none' : '';
-        }
-    });
-}
+
+            function togglePosition(position) {
+                const table = document.getElementById(`table-${position}`);
+                const arrow = document.getElementById(`arrow-${position}`);
+                if (table.classList.contains('active')) {
+                    table.classList.remove('active');
+                    arrow.textContent = '▼';
+                } else {
+                    table.classList.add('active');
+                    arrow.textContent = '▲';
+                }
+            }
+
+            function toggleLock(playerName) {
+                if (lockedPlayers.has(playerName)) {
+                    lockedPlayers.delete(playerName);
+                } else {
+                    lockedPlayers.add(playerName);
+                    excludedPlayers.delete(playerName);
+                }
+                updatePlayerDisplay();
+                updateLockStats();
+            }
+
+            function toggleExclude(playerName) {
+                if (excludedPlayers.has(playerName)) {
+                    excludedPlayers.delete(playerName);
+                } else {
+                    excludedPlayers.add(playerName);
+                    lockedPlayers.delete(playerName);
+                }
+                updatePlayerDisplay();
+                updateLockStats();
+            }
+
+            function updatePlayerDisplay() {
+                Object.keys(playerData).forEach(pos => {
+                    if (playerData[pos] && playerData[pos].length > 0) {
+                        updatePlayerTable(pos);
+                    }
+                });
+            }
+
+            function updateLockStats() {
+                document.getElementById('lockStats').textContent = 
+                    `Locked: ${lockedPlayers.size} | Excluded: ${excludedPlayers.size}`;
+            }
+
+            function searchPlayers() {
+                const searchTerm = document.getElementById('playerSearch').value.toLowerCase();
+                const rows = document.querySelectorAll('.player-row');
+                rows.forEach(row => {
+                    const playerName = row.querySelector('strong').textContent.toLowerCase();
+                    row.style.display = playerName.includes(searchTerm) ? '' : 'none';
+                });
+            }
 
             async function generateLineups() {
                 try {
@@ -534,35 +434,27 @@ function searchPlayers() {
                     const contestType = document.getElementById('contestType').value;
                     const numLineups = parseInt(document.getElementById('numLineups').value);
                     const useAI = document.getElementById('useAI').checked;
-                    
-                    // Create request body FIRST
+
                     const requestBody = {
                         contest_type: contestType,
                         num_lineups: numLineups,
                         locked_players: Array.from(lockedPlayers),
                         excluded_players: Array.from(excludedPlayers),
-                        avoid_high_ownership: contestType === 'gpp' || contestType === 'contrarian',
-                        force_stacks: contestType !== 'cash',
                         use_ai: useAI
                     };
-                    
-                    // H2H game selection
+
                     if (contestType === 'h2h') {
                         const selectedGame = document.getElementById('selectedGame').value;
                         if (!selectedGame) {
-                            log('❌ Please select a game for Head-to-Head mode', 'error');
+                            log('❌ Please select a game for H2H mode', 'error');
                             document.getElementById('generateBtn').disabled = false;
                             return;
                         }
                         requestBody.selected_game = selectedGame;
                         log(`🎯 Generating H2H lineup for ${selectedGame}`, 'loading');
                     }
-                                        if (lockedPlayers.size > 8) {
-                        throw new Error(`Too many locked players (${lockedPlayers.size}). Maximum is 8.`);
-                    }
 
                     log(`🧠 Generating ${numLineups} ${contestType.toUpperCase()} lineups...`, 'loading');
-                    log(`🧠 AI Analysis: ${useAI ? 'ENABLED' : 'DISABLED'}`, useAI ? 'success' : 'loading');
 
                     const response = await fetch('/optimize', {
                         method: 'POST',
@@ -598,7 +490,6 @@ function searchPlayers() {
                 const tabsContainer = document.getElementById('lineupTabs');
                 const container = document.getElementById('lineupContainer');
 
-                // Create tabs
                 let tabsHtml = '';
                 lineups.forEach((lineup, index) => {
                     const activeClass = index === 0 ? 'active' : '';
@@ -606,7 +497,6 @@ function searchPlayers() {
                 });
                 tabsContainer.innerHTML = tabsHtml;
 
-                // Create lineup displays
                 let lineupsHtml = '';
                 lineups.forEach((lineup, index) => {
                     const activeClass = index === 0 ? 'active' : '';
@@ -614,13 +504,9 @@ function searchPlayers() {
 
                     lineupsHtml += `
                         <div class="fanduel-lineup ${activeClass}" id="lineup-${index}">
-                            <div class="lineup-header">
+                            <div style="text-align: center; margin-bottom: 15px;">
                                 <h3>Lineup ${index + 1} (${contestType.toUpperCase()})</h3>
-                                <div class="lineup-stats">
-                                    <div class="stat-item"><strong>${lineup.total_salary.toLocaleString()}</strong></div>
-                                    <div class="stat-item"><strong>${lineup.projected_points.toFixed(1)} pts</strong></div>
-                                    <div class="stat-item"><strong>${lineup.ownership_total.toFixed(1)}% owned</strong></div>
-                                </div>
+                                <div><strong>${lineup.total_salary.toLocaleString()}</strong> | <strong>${lineup.projected_points.toFixed(1)} pts</strong></div>
                             </div>
                             <div class="position-slots">
                                 ${createPositionSlots(players, contestType)}
@@ -631,20 +517,13 @@ function searchPlayers() {
 
                 container.innerHTML = lineupsHtml;
                 lineupDisplay.style.display = 'block';
-
-                log(`💾 Lineups saved to CSV files`, 'success');
             }
 
             function parsePlayerStrings(playerStrings) {
                 return playerStrings.map(playerStr => {
                     const match = playerStr.match(/^(.+?) \\(\\$([0-9,]+)\\) - ([A-Z]+)-([A-Z]+)$/);
                     if (match) {
-                        return {
-                            name: match[1],
-                            salary: match[2],
-                            position: match[3],
-                            team: match[4]
-                        };
+                        return { name: match[1], salary: match[2], position: match[3], team: match[4] };
                     }
                     return { name: playerStr, salary: '0', position: '', team: '' };
                 });
@@ -652,17 +531,13 @@ function searchPlayers() {
 
             function createPositionSlots(players, contestType) {
                 let positions;
-                
-                // H2H Single Game: 1 MVP + 5 FLEX
                 if (contestType === 'h2h') {
                     positions = ['MVP', 'FLEX', 'FLEX', 'FLEX', 'FLEX', 'FLEX'];
                 } else {
-                    // Standard slate: QB + 2RB + 3WR + 1TE + 1FLEX + 1DEF
                     positions = ['QB', 'RB', 'RB', 'WR', 'WR', 'WR', 'TE', 'FLEX', 'DEF'];
                 }
-                
-                let html = '';
 
+                let html = '';
                 positions.forEach((posLabel, index) => {
                     const player = players[index] || { name: 'No Player', salary: '0', position: '', team: '' };
                     html += `
@@ -676,264 +551,21 @@ function searchPlayers() {
                         </div>
                     `;
                 });
-
                 return html;
             }
 
             function showLineup(index) {
-                // Update tabs
                 document.querySelectorAll('.lineup-tab').forEach((tab, i) => {
                     tab.classList.toggle('active', i === index);
                 });
-
-                // Update lineup display
                 document.querySelectorAll('.fanduel-lineup').forEach((lineup, i) => {
                     lineup.classList.toggle('active', i === index);
                 });
             }
 
-            async function checkBreakingNews() {
-                try {
-                    document.getElementById('newsBtn').disabled = true;
-                    log('📰 Checking breaking news...', 'loading');
-
-                    const response = await fetch('/breaking-news');
-                    const data = await response.json();
-
-                    if (response.ok) {
-                        showNewsModal(data);
-                        if (data.news_events && data.news_events.length > 0) {
-                            log(`📰 Found ${data.news_events.length} news items`, 'success');
-                        } else {
-                            log('📰 No breaking news found', 'success');
-                        }
-                    } else {
-                        throw new Error(data.message || 'Failed to get news');
-                    }
-                } catch (error) {
-                    log(`❌ News check failed: ${error.message}`, 'error');
-                } finally {
-                    document.getElementById('newsBtn').disabled = false;
-                }
-            }
-
-            function showNewsModal(newsData) {
-    const modal = document.getElementById('newsModal');
-    const content = document.getElementById('newsContent');
-
-    let html = '';
-
-    if (newsData.news_events && newsData.news_events.length > 0) {
-        newsData.news_events.forEach(news => {
-            // Clean up source name
-            const sourceName = cleanSourceName(news.source);
-            
-            // Get impact level with emoji
-            const impactInfo = getImpactDisplay(news.dfs_impact);
-            
-            // Format timestamp
-            const timeAgo = formatTimeAgo(news.timestamp);
-            
-            // Choose alert style based on impact
-            const alertClass = news.dfs_impact >= 7 ? 'news-critical' : 'news-alert';
-            
-            html += `
-                <div class="${alertClass}" style="margin-bottom: 12px; padding: 12px; border-radius: 6px;">
-                    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px;">
-                        <span style="font-weight: 600; color: #2c3e50; font-size: 14px;">${sourceName}</span>
-                        <div style="display: flex; align-items: center; gap: 8px;">
-                            <span style="background: ${impactInfo.color}; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 600;">
-                                ${impactInfo.emoji} ${impactInfo.level}
-                            </span>
-                            <span style="color: #6c757d; font-size: 11px;">${timeAgo}</span>
-                        </div>
-                    </div>
-                    <div style="font-size: 14px; line-height: 1.4; color: #2c3e50;">
-                        ${news.headline}
-                    </div>
-                    ${news.summary ? `<div style="font-size: 12px; color: #6c757d; margin-top: 4px; line-height: 1.3;">${news.summary}</div>` : ''}
-                </div>
-            `;
-        });
-
-        // Show AI analysis if available
-        if (newsData.impact_analysis && newsData.impact_analysis.ai_analysis) {
-            html += `
-                <div style="margin-top: 15px; padding: 12px; background: #f8f9fa; border-radius: 6px; border-left: 4px solid #007bff;">
-                    <div style="font-weight: 600; color: #007bff; margin-bottom: 6px; font-size: 13px;">
-                        🤖 DFS Impact Analysis
-                    </div>
-                    <div style="font-size: 13px; line-height: 1.4; color: #495057;">
-                        ${newsData.impact_analysis.ai_analysis.substring(0, 200)}...
-                    </div>
-                </div>
-            `;
-        }
-    } else {
-        html = `
-            <div style="text-align: center; padding: 20px; color: #6c757d;">
-                <div style="font-size: 48px; margin-bottom: 10px;">📰</div>
-                <div style="font-size: 16px; margin-bottom: 5px;">No breaking news at this time</div>
-                <div style="font-size: 13px;">We'll notify you when DFS-relevant updates are available</div>
-            </div>
-        `;
-    }
-
-    content.innerHTML = html;
-    modal.style.display = 'block';
-}
-
-function cleanSourceName(source) {
-    const sourceMap = {
-        'espn_nfl': 'ESPN',
-        'cbs_sports': 'CBS Sports',
-        'yahoo_sports': 'Yahoo Sports', 
-        'nfl_com': 'NFL.com',
-        'usa_today': 'USA Today',
-        'nfl_official': 'NFL.com',
-        'rotoworld': 'Rotoworld', 
-        'fantasypros': 'FantasyPros'
-    };
-    return sourceMap[source] || source.toUpperCase();
-}
-
-function getImpactDisplay(impact) {
-    if (impact >= 8) {
-        return { level: 'HIGH', emoji: '🚨', color: '#dc3545' };
-    } else if (impact >= 6) {
-        return { level: 'MED', emoji: '⚠️', color: '#ffc107' };
-    } else if (impact >= 4) {
-        return { level: 'LOW', emoji: 'ℹ️', color: '#17a2b8' };
-    } else {
-        return { level: 'INFO', emoji: '📝', color: '#6c757d' };
-    }
-}
-
-function formatTimeAgo(timestamp) {
-    if (!timestamp) return 'Unknown';
-    
-    try {
-        const newsTime = new Date(timestamp);
-        const now = new Date();
-        const diffMs = now - newsTime;
-        const diffMins = Math.floor(diffMs / (1000 * 60));
-        const diffHours = Math.floor(diffMins / 60);
-        
-        if (diffMins < 60) {
-            return `${diffMins}m ago`;
-        } else if (diffHours < 24) {
-            return `${diffHours}h ago`;
-        } else {
-            return newsTime.toLocaleDateString();
-        }
-    } catch (e) {
-        return 'Recent';
-    }
-}
-
-            function closeNewsModal() {
-                document.getElementById('newsModal').style.display = 'none';
-            }
-async function analyzeLiveSlate() {
-    try {
-        document.getElementById('liveBtn').disabled = true;
-        log('📊 Analyzing live slate impact...', 'loading');
-
-        // Get currently locked players from UI state
-const currentlyLocked = Array.from(lockedPlayers).map(playerId => {
-    // Find player data for each locked ID
-    for (const pos of ['QB', 'RB', 'WR', 'TE', 'D']) {
-        const posPlayers = playerData[pos] || [];
-        const player = posPlayers.find(p => p.id === playerId);
-        if (player) {
-            return {
-                name: player.name,
-                team: player.team,
-                position: player.position,
-                projected_points: player.projected_points || 0
-            };
-        }
-    }
-    return null;
-}).filter(p => p !== null);
-
-const response = await fetch('/analyze-live-slate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ locked_players: currentlyLocked })
-});
-
-        const data = await response.json();
-
-        if (response.ok) {
-            displayLiveAnalysis(data);
-            log('📊 Live analysis completed', 'success');
-        } else {
-            throw new Error(data.error || 'Analysis failed');
-        }
-    } catch (error) {
-        log(`❌ Live analysis failed: ${error.message}`, 'error');
-    } finally {
-        document.getElementById('liveBtn').disabled = false;
-    }
-}
-
-function displayLiveAnalysis(data) {
-    let html = '<h3>📊 Live Slate Analysis</h3>';
-    
-    // Show locked player performance
-    const locked = data.locked_performance || {};
-    for (const [player, perf] of Object.entries(locked)) {
-        html += `<div style="margin: 5px 0; padding: 8px; background: #f0f8ff; border-radius: 4px;">`;
-        html += `<strong>${player}</strong>: ${perf.game_script} | `;
-        html += `Projected: ${perf.projected_final} pts (${perf.vs_expectation > 0 ? '+' : ''}${perf.vs_expectation})`;
-        html += `</div>`;
-    }
-    
-    // Show strategy changes
-    const strategy = data.strategy_changes || [];
-    strategy.forEach(change => {
-        html += `<div style="margin: 5px 0; padding: 8px; background: #fff3cd; border-radius: 4px;">${change}</div>`;
-    });
-    
-    document.getElementById('output').innerHTML += `<div style="margin-top: 15px;">${html}</div>`;
-}
-            // Auto-check for news on Sunday every 15 minutes
-            function startNewsMonitoring() {
-                const now = new Date();
-                if (now.getDay() === 0) { // Sunday
-                    setInterval(async () => {
-                        try {
-                            const response = await fetch('/breaking-news');
-                            const data = await response.json();
-
-                            // Check for compelling changes that warrant auto-adjustment
-                            if (data.impact_analysis && data.impact_analysis.confidence > 0.8) {
-                                const removeCount = (data.impact_analysis.remove_players || []).length;
-                                const addCount = (data.impact_analysis.add_players || []).length;
-
-                                if (removeCount > 0 || addCount >= 2) {
-                                    log(`🚨 COMPELLING NEWS: Auto-adjustment recommended!`, 'error');
-                                    log(`Suggested: Remove ${removeCount}, Add ${addCount} players`, 'loading');
-
-                                    // Show news modal automatically
-                                    showNewsModal(data);
-                                }
-                            }
-                        } catch (error) {
-                            console.error('Auto news check failed:', error);
-                        }
-                    }, 15 * 60 * 1000); // 15 minutes
-
-                    log('📰 Sunday news monitoring active (15min intervals)', 'success');
-                }
-            }
-
-            // Initialize
             window.addEventListener('load', function() {
                 log('🚀 NFL DFS Optimizer Pro loaded!', 'success');
                 updateLockStats();
-                startNewsMonitoring();
             });
         </script>
     </body>
@@ -943,58 +575,70 @@ function displayLiveAnalysis(data) {
 
 
 @app.get("/players")
-async def get_players():
-    """Get formatted player data for the enhanced UI"""
+async def get_players(contest_type: str = Query("gpp")):
+    """Get formatted player data - FIX #3: Contest-aware"""
     global current_player_data
 
     try:
-        # Get fresh data
-        data = await get_fresh_data()
+        # FIX #3: Load correct CSV based on contest type
+        if contest_type == 'h2h':
+            csv_path = DATA_DIR / "fanduel_h2h_salaries.csv"
+            logger.info(f"📋 Loading H2H players from: {csv_path}")
+        else:
+            csv_path = DATA_DIR / "fanduel_salaries_manual.csv"
+            logger.info(f"📋 Loading main slate players from: {csv_path}")
 
-        if not data or not data.get('players'):
-            raise HTTPException(status_code=400, detail="No player data available")
+        if not csv_path.exists():
+            raise HTTPException(status_code=400, detail=f"CSV not found: {csv_path}")
 
-        # Group players by position and format for UI
-        players_by_position = {
-            'QB': [],
-            'RB': [],
-            'WR': [],
-            'TE': [],
-            'D': []
-        }
+        import pandas as pd
+        df = pd.read_csv(csv_path)
 
-        for player in data['players']:
-            position = player.get('position', '')
+        players_by_position = {'QB': [], 'RB': [], 'WR': [], 'TE': [], 'D': []}
 
-            # Skip if position not recognized
+        for _, row in df.iterrows():
+            first = str(row.get('First Name', '')).strip()
+            last = str(row.get('Last Name', '')).strip()
+            name = f"{first} {last}".strip()
+
+            if not name or name == 'nan nan':
+                continue
+
+            try:
+                salary = int(row.get('Salary', 0))
+                fppg = float(row.get('FPPG', 0))
+                if salary <= 0 or fppg <= 0:
+                    continue
+            except (ValueError, TypeError):
+                continue
+
+            position = str(row.get('Position', '')).strip()
             if position not in players_by_position:
                 continue
 
-            # Format player for UI
-            formatted_player = {
-                'id': player.get('player_id', player.get('name', '')),
-                'name': player.get('name', ''),
-                'team': player.get('team', ''),
+                # FILTER: Skip practice squad/inactive players (FPPG = 0)
+            if fppg <= 0:
+                continue
+
+            players_by_position[position].append({
+                'id': str(row.get('Id', '')),
+                'name': name,
+                'team': str(row.get('Team', '')).strip().upper(),
                 'position': position,
-                'salary': player.get('salary', 0),
-                'projected_points': player.get('projected_points', 0),
-                'injury_status': player.get('injury_status', ''),
-                'ownership': player.get('ownership', 0),
-                'value': (player.get('projected_points', 0) / (player.get('salary', 5000) / 1000))
-            }
+                'salary': salary,
+                'projected_points': fppg,
+                'game': str(row.get('Game', '')).strip()
+            })
 
-            players_by_position[position].append(formatted_player)
+        for pos in players_by_position:
+            players_by_position[pos].sort(key=lambda p: p['salary'], reverse=True)
 
-        # Sort each position by salary (highest first)
-        for position in players_by_position:
-            players_by_position[position].sort(key=lambda p: p['salary'], reverse=True)
-
-        current_player_data = data
+        current_player_data = {'players': players_by_position}
 
         return {
             "players": players_by_position,
             "total_players": sum(len(players) for players in players_by_position.values()),
-            "week": data.get('data_quality', {}).get('current_week', 'Unknown')
+            "contest_type": contest_type
         }
 
     except Exception as e:
@@ -1002,61 +646,9 @@ async def get_players():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/games")
-async def get_available_games():
-    """Get list of available games from current slate"""
-    global current_player_data
-
-    try:
-        if not current_player_data or not current_player_data.get('players'):
-            logger.warning("No player data available for games endpoint")
-            raise HTTPException(status_code=400, detail="No player data available. Click 'Refresh' first.")
-
-        # Extract unique games from players
-        games_set = set()
-        for player in current_player_data['players']:
-            game = player.get('game', '')
-            if game and '@' in game:
-                games_set.add(game)
-
-        if not games_set:
-            logger.warning("No games found in player data")
-            raise HTTPException(status_code=400, detail="No games found in current data. Check CSV format.")
-
-        # Sort games alphabetically
-        games_list = sorted(list(games_set))
-
-        # Parse games into structured format
-        games = []
-        for game_str in games_list:
-            parts = game_str.split('@')
-            if len(parts) == 2:
-                away_team = parts[0].strip()
-                home_team = parts[1].strip()
-                games.append({
-                    'game_id': game_str,
-                    'away_team': away_team,
-                    'home_team': home_team,
-                    'display': f"{away_team} @ {home_team}"
-                })
-
-        logger.info(f"📋 Found {len(games)} available games")
-        return {
-            "games": games,
-            "total_games": len(games)
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting games: {e}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-
-
 @app.get("/h2h-games")
 async def get_h2h_games():
-    """Get available games from H2H single-game CSV"""
+    """FIX #2: Read H2H games directly from CSV"""
     try:
         h2h_csv = DATA_DIR / "fanduel_h2h_salaries.csv"
 
@@ -1066,7 +658,6 @@ async def get_h2h_games():
         import pandas as pd
         df = pd.read_csv(h2h_csv)
 
-        # Extract unique games
         games_set = set()
         for _, row in df.iterrows():
             game = str(row.get('Game', '')).strip()
@@ -1076,7 +667,6 @@ async def get_h2h_games():
         if not games_set:
             raise HTTPException(status_code=400, detail="No games found in H2H CSV")
 
-        # Parse games
         games = []
         for game_str in sorted(games_set):
             parts = game_str.split('@')
@@ -1091,326 +681,149 @@ async def get_h2h_games():
                 })
 
         logger.info(f"📋 Found {len(games)} H2H games")
-        return {
-            "games": games,
-            "total_games": len(games)
-        }
+        return {"games": games, "total_games": len(games)}
 
     except Exception as e:
         logger.error(f"Error loading H2H games: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/optimize")
 async def optimize_lineups(request: OptimizationRequest):
-    """Generate optimized lineups using the request data - FIXED WITH AUTO-REFRESH"""
+    """Generate optimized lineups"""
     global current_player_data
 
     try:
-        logger.info(f"🎯 Optimize endpoint called: contest_type={request.contest_type}, selected_game={getattr(request, 'selected_game', None)}")  # ADD THIS LINE
-        # Set AI flag from request
         os.environ['AI_ENABLED'] = 'true' if request.use_ai else 'false'
-        ai_status = '✅ ENABLED' if request.use_ai else '❌ DISABLED'
-        logger.info(f"🤖 AI Analysis: {ai_status}")
+        logger.info(f"🎯 Optimize: contest={request.contest_type}, game={getattr(request, 'selected_game', None)}")
 
-        logger.info(f"🧠 Starting {request.contest_type} optimization with locks/exclusions...")
-        # H2H: Extract game teams
+        # Auto-refresh if no data
+        if not current_player_data:
+            logger.info("📡 Auto-refreshing data...")
+            # Load correct CSV based on contest type
+            if request.contest_type == 'h2h':
+                csv_path = DATA_DIR / "fanduel_h2h_salaries.csv"
+            else:
+                csv_path = DATA_DIR / "fanduel_salaries_manual.csv"
+
+            import pandas as pd
+            df = pd.read_csv(csv_path)
+
+            # Convert to player format
+            # (Reuse logic from /players endpoint)
+            all_players = []
+            for _, row in df.iterrows():
+                first = str(row.get('First Name', '')).strip()
+                last = str(row.get('Last Name', '')).strip()
+                name = f"{first} {last}".strip()
+                if not name or name == 'nan nan':
+                    continue
+
+                try:
+                    salary = int(row.get('Salary', 0))
+                    fppg = float(row.get('FPPG', 0))
+                    if salary <= 0 or fppg <= 0:
+                        continue
+                except:
+                    continue
+
+                all_players.append({
+                    'id': str(row.get('Id', '')),
+                    'name': name,
+                    'position': str(row.get('Position', '')).strip(),
+                    'team': str(row.get('Team', '')).strip().upper(),
+                    'salary': salary,
+                    'projected_points': fppg,
+                    'projection': fppg,
+                    'game': str(row.get('Game', '')).strip()
+                })
+
+            current_player_data = {'players': all_players}
+            logger.info(f"✅ Auto-refresh: {len(all_players)} players")
+
+        all_players = current_player_data.get('players', [])
+        if isinstance(all_players, dict):
+            # Flatten if it's position-grouped
+            all_players = [p for pos_players in all_players.values() for p in pos_players]
+
+        # H2H: Filter to selected game
         single_game_teams = None
         if request.contest_type == 'h2h':
-            # Get selected game from request
             selected_game = getattr(request, 'selected_game', None)
             if not selected_game:
                 raise HTTPException(status_code=400, detail="H2H requires a selected game")
 
-            # Parse teams from game string (e.g., "KC@LAC")
             if '@' in selected_game:
                 parts = selected_game.split('@')
                 single_game_teams = [parts[0].strip(), parts[1].strip()]
                 logger.info(f"🎯 H2H Game: {selected_game} (Teams: {single_game_teams})")
             else:
                 raise HTTPException(status_code=400, detail=f"Invalid game format: {selected_game}")
-        # AUTO-REFRESH if no data available
-        if not current_player_data or not current_player_data.get('players'):
-            logger.info("📡 Auto-refreshing data (no cached data available)...")
-            data = await get_fresh_data()
-            if data and data.get('players'):
-                current_player_data = data
-                logger.info(f"✅ Auto-refresh complete: {len(data['players'])} players loaded")
-            else:
-                raise HTTPException(status_code=400,
-                                    detail="No player data available. Check data/fanduel_salaries_manual.csv")
 
-        all_players = current_player_data['players']
-
-        # FIXED: Apply locks/exclusions with debug logging
+        # Apply locks/exclusions
         filtered_players = []
-        locked_count = 0
-        excluded_count = 0
-
         for player in all_players:
             player_name = str(player.get('name', ''))
 
-            # FIXED: Mark locked players - check against player names from UI
             if player_name in request.locked_players:
-                player['locked'] = True  # Add locked flag to data
-                locked_count += 1
-                logger.info(f"🔒 MARKING LOCKED: {player_name}")
+                player['locked'] = True
+                logger.info(f"🔒 LOCKED: {player_name}")
             else:
                 player['locked'] = False
 
-            # Skip excluded players
             if player_name in request.excluded_players:
-                excluded_count += 1
-                logger.info(f"❌ EXCLUDING: {player_name}")
+                logger.info(f"❌ EXCLUDED: {player_name}")
                 continue
 
             filtered_players.append(player)
 
-        logger.info(
-            f"✅ Filtered players: {len(filtered_players)} total, {locked_count} locked, {excluded_count} excluded")
+        logger.info(f"✅ Filtered: {len(filtered_players)} players")
 
-        # Validate we have enough locked players
-        if len(request.locked_players) > 8:
-            raise HTTPException(status_code=400,
-                                detail=f"Too many locked players ({len(request.locked_players)}). Maximum is 8.")
-
-        # FIXED: Use the corrected optimize_dfs_lineups function (synchronous)
-        # FIXED: Respect the AI toggle for Monte Carlo (AI analysis uses MC)
-        use_mc = request.use_ai if hasattr(request, 'use_ai') else True
-
+        # Optimize
         lineups = optimize_dfs_lineups(
             player_data=filtered_players,
-            weather_data=current_player_data.get('weather', {}),
-            vegas_multipliers=current_player_data.get('vegas_multipliers', {}),
-            vegas_data=current_player_data.get('vegas_odds', {}),
+            weather_data={},
+            vegas_multipliers={},
+            vegas_data={},
             num_lineups=request.num_lineups,
             contest_type=request.contest_type,
             single_game_teams=single_game_teams,
-            use_monte_carlo=use_mc,  # FIXED: Use MC when AI enabled
+            use_monte_carlo=request.use_ai,
             mc_simulations=5000
         )
 
         if not lineups:
             raise HTTPException(status_code=400, detail="No lineups generated")
 
-        logger.info(f"✅ Generated {len(lineups)} lineups with player constraints")
-
-        # Convert LineupResult objects to dictionaries for JSON serialization
         lineup_dicts = []
         for lineup in lineups:
-            lineup_dict = {
+            lineup_dicts.append({
                 'players': [f"{p.name} (${p.salary:,}) - {p.position}-{p.team}" for p in lineup.players],
                 'total_salary': lineup.total_salary,
                 'projected_points': round(lineup.projected_points, 1),
                 'ownership_total': round(lineup.ownership_total, 1),
                 'correlation_score': round(lineup.correlation_score, 2),
                 'contest_type': lineup.contest_type
-            }
-            lineup_dicts.append(lineup_dict)
+            })
 
-        # Save to CSV
-        week_num = current_player_data.get('data_quality', {}).get('current_week', 1)
-        csv_path = await save_lineups_to_csv(lineups, request.contest_type, week_num)
-
-        return lineup_dicts  # Return array directly for frontend
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in optimization: {e}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Optimization error: {str(e)}")
-@app.post("/analyze-live-slate")
-async def analyze_live_slate(request: Request):
-    """Analyze locked players vs late slate strategy"""
-    try:
-        # Get locked players from request body
-        request_data = await request.json()
-        locked_players = request_data.get('locked_players', [])
-
-        # Mock early game results for testing
-        early_results = {
-            'LAC': {'score_differential': 14, 'time_remaining_pct': 25},
-            'TB': {'score_differential': -7, 'time_remaining_pct': 30},
-            'BUF': {'score_differential': 3, 'time_remaining_pct': 40}
-        }
-
-        late_slate_players = current_player_data.get('players', [])[:20] if current_player_data else []
-
-        from ai_analyzer import DualAIDFSAnalyzer
-        analyzer = DualAIDFSAnalyzer()
-
-        analysis = await analyzer.analyze_live_game_impact(
-            locked_players, early_results, late_slate_players
-        )
-
-        return {
-            'live_analysis': analysis,
-            'locked_performance': analysis.get('locked_performance', {}),
-            'strategy_changes': analysis.get('strategy_changes', []),
-            'late_slate_adjustments': analysis.get('late_slate_adjustments', [])
-        }
+        return lineup_dicts
 
     except Exception as e:
-        logger.error(f"Live slate analysis failed: {e}")
-        return {'error': str(e)}
-
-
-@app.get("/breaking-news")
-async def get_breaking_news_endpoint():
-    """Get breaking news for the GUI"""
-    try:
-        # Import news functions
-        try:
-            from news_monitor import get_breaking_news
-            from ai_analyzer import DualAIDFSAnalyzer
-
-            # Get breaking news - FIXED: removed force_check parameter
-            news_events = await get_breaking_news()
-
-            # If we have current player data, analyze impact
-            impact_analysis = {}
-            if current_player_data and news_events:
-                try:
-                    analyzer = DualAIDFSAnalyzer()
-                    impact_analysis = await analyzer.analyze_breaking_news(
-                        news_events,
-                        current_player_data.get('players', [])
-                    )
-                except Exception as e:
-                    logger.warning(f"News analysis failed: {e}")
-                    impact_analysis = {'ai_analysis': 'Analysis unavailable'}
-
-            return {
-                'news_events': news_events,
-                'impact_analysis': impact_analysis,
-                'news_count': len(news_events),
-                'last_check': datetime.now().isoformat()
-            }
-
-        except ImportError:
-            return {
-                'news_events': [],
-                'impact_analysis': {'ai_analysis': 'News monitoring not available'},
-                'news_count': 0,
-                'error': 'News monitoring module not installed'
-            }
-
-    except Exception as e:
-        logger.error(f"Breaking news endpoint failed: {e}")
-        return {
-            'news_events': [],
-            'impact_analysis': {},
-            'news_count': 0,
-            'error': str(e)
-        }
-
-
-@app.post("/update")
-async def force_data_update():
-    """Force an immediate data refresh"""
-    global current_player_data
-
-    try:
-        logger.info("🔄 Force data refresh requested")
-        data = await get_fresh_data()
-
-        if data and data.get('players'):
-            current_player_data = data
-            player_count = len(data['players'])
-            quality = data.get('data_quality', {})
-            current_week = quality.get('current_week', 'Unknown')
-
-            message = f"Data refreshed successfully - {player_count} players loaded for Week {current_week}"
-            logger.info(f"✅ {message}")
-            return {"message": message, "status": "success"}
-        else:
-            current_player_data = None
-            message = "Data refresh completed but no players found. Check data/fanduel_salaries_manual.csv"
-            logger.warning(message)
-            return {"message": message, "status": "warning"}
-
-    except Exception as e:
-        logger.error(f"Force refresh failed: {e}")
+        logger.error(f"Optimization error: {e}")
         logger.error(traceback.format_exc())
-        current_player_data = None
-        return {"message": f"Refresh failed: {str(e)}", "status": "error"}
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    try:
-        health_status = {
-            "status": "healthy",
-            "timestamp": datetime.now().isoformat(),
-            "version": "2.2.0",
-            "mode": "enhanced-gui"
-        }
-
-        # Check if we can access data
-        try:
-            data_dir_exists = DATA_DIR.exists()
-            csv_file_exists = (DATA_DIR / "fanduel_salaries_manual.csv").exists()
-
-            health_status.update({
-                "data_dir_exists": data_dir_exists,
-                "csv_file_exists": csv_file_exists,
-                "data_status": "ready" if csv_file_exists else "missing_csv",
-                "cached_players": current_player_data is not None
-            })
-        except Exception as e:
-            health_status["data_error"] = str(e)
-
-        return health_status
-
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return {"status": "unhealthy", "error": str(e), "timestamp": datetime.now().isoformat()}
+    """Health check"""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "version": "2.2.1"
+    }
 
 
-async def save_lineups_to_csv(lineups, contest_type, week_num):
-    """Save lineups to organized CSV files"""
-    try:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-
-        # Create organized directory structure
-        lineup_dir = Path("data/lineups")
-        week_dir = lineup_dir / f"week_{week_num}"
-        week_dir.mkdir(parents=True, exist_ok=True)
-
-        csv_file = week_dir / f"{contest_type}_lineups_{timestamp}.csv"
-
-        # Create CSV export
-        lineup_data = []
-        for i, lineup in enumerate(lineups):
-            lineup_row = {
-                'Lineup': i + 1,
-                'QB': f"{lineup.players[0].name}",
-                'RB1': f"{lineup.players[1].name}",
-                'RB2': f"{lineup.players[2].name}",
-                'WR1': f"{lineup.players[3].name}",
-                'WR2': f"{lineup.players[4].name}",
-                'WR3': f"{lineup.players[5].name}",
-                'TE': f"{lineup.players[6].name}",
-                'FLEX': f"{lineup.players[7].name}",
-                'DEF': f"{lineup.players[8].name}",
-                'Salary': lineup.total_salary,
-                'Projected': round(lineup.projected_points, 1),
-                'Ownership': round(lineup.ownership_total, 1)
-            }
-            lineup_data.append(lineup_row)
-
-        import pandas as pd
-        df = pd.DataFrame(lineup_data)
-        df.to_csv(csv_file, index=False)
-
-        logger.info(f"💾 Exported {len(lineups)} lineups to: {csv_file}")
-        return csv_file
-
-    except Exception as e:
-        logger.error(f"Failed to save CSV: {e}")
-        return None
-
-
-def log(message: str):
-    """Helper function for logging"""
-    logger.info(message)
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host=API_HOST, port=API_PORT)
