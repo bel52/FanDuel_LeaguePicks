@@ -916,57 +916,48 @@ Focus on actionable lineup changes only."""
         }
 
     def _get_openai_insights(self, data: Dict, contest_type: str) -> str:
-            """Get strategic insights from OpenAI with FULL analytics"""
+            """Get strategic insights from OpenAI with FULL analytics for all contest types"""
 
+            # Format rich player data (used by all contest types)
+            qb_details = [
+                f"{qb['name']} (${qb['salary']}) - Proj: {qb['projection']}pts, "
+                f"Ceiling: {qb['ceiling']}pts, Floor: {qb['floor']}pts, Boom: {qb['boom_rate']:.0%}"
+                for qb in data['top_players']['QB'][:3]
+            ]
+
+            rb_details = [
+                f"{rb['name']} (${rb['salary']}) - Proj: {rb['projection']}pts, "
+                f"Ceiling: {rb['ceiling']}pts, Boom: {rb['boom_rate']:.0%}"
+                for rb in data['top_players']['RB'][:6]
+            ]
+
+            wr_details = [
+                f"{wr['name']} (${wr['salary']}) - Proj: {wr['projection']}pts, "
+                f"Ceiling: {wr['ceiling']}pts, Boom: {wr['boom_rate']:.0%}"
+                for wr in data['top_players']['WR'][:6]
+            ]
+
+            te_details = [
+                f"{te['name']} (${te['salary']}) - Proj: {te['projection']}pts, "
+                f"Ceiling: {te['ceiling']}pts, Value: {te['value_ratio']:.2f}x"
+                for te in data['top_players']['TE'][:4]
+            ]
+
+            vegas_details = "\n".join([
+                f"{g['game']}: {g['total']}pt total, {g['home_implied']:.1f} vs {g['away_implied']:.1f} implied"
+                for g in data.get('vegas_games', [])
+            ])
+
+            weather_str = "Indoor/No impact" if not data.get('weather_impacts') else "\n".join([
+                f"{w['team']}: {w['conditions']}, {w['wind']}mph wind, {w['precip']}% precip"
+                for w in data['weather_impacts']
+            ])
+
+            value_plays_str = [(p['name'], f"${p['salary']}", f"{p['ceiling']}pt ceiling", f"{p['value_ratio']:.2f}x")
+                               for p in data['value_plays'][:5]]
+
+            # H2H
             if contest_type == 'h2h':
-                # Format rich player data for AI
-                qb_details = []
-                for qb in data['top_players']['QB'][:3]:
-                    qb_details.append(
-                        f"{qb['name']} (${qb['salary']}) - "
-                        f"Proj: {qb['projection']}pts, "
-                        f"Ceiling: {qb['ceiling']}pts, "
-                        f"Floor: {qb['floor']}pts, "
-                        f"Boom: {qb['boom_rate']:.0%}"
-                    )
-
-                te_details = []
-                for te in data['top_players']['TE'][:4]:
-                    te_details.append(
-                        f"{te['name']} (${te['salary']}) - "
-                        f"Proj: {te['projection']}pts, "
-                        f"Ceiling: {te['ceiling']}pts, "
-                        f"Value: {te['value_ratio']:.2f}x"
-                    )
-
-                wr_details = []
-                for wr in data['top_players']['WR'][:6]:
-                    wr_details.append(
-                        f"{wr['name']} (${wr['salary']}) - "
-                        f"Proj: {wr['projection']}pts, "
-                        f"Ceiling: {wr['ceiling']}pts, "
-                        f"Boom: {wr['boom_rate']:.0%}"
-                    )
-
-                rb_details = []
-                for rb in data['top_players']['RB'][:6]:
-                    rb_details.append(
-                        f"{rb['name']} (${rb['salary']}) - "
-                        f"Proj: {rb['projection']}pts, "
-                        f"Ceiling: {rb['ceiling']}pts, "
-                        f"Boom: {rb['boom_rate']:.0%}"
-                    )
-
-                vegas_details = "\n".join([
-                    f"{g['game']}: {g['total']}pt total, {g['home_implied']:.1f} vs {g['away_implied']:.1f} implied"
-                    for g in data.get('vegas_games', [])
-                ])
-
-                weather_str = "Indoor/No impact" if not data.get('weather_impacts') else "\n".join([
-                    f"{w['team']}: {w['conditions']}, {w['wind']}mph wind, {w['precip']}% precip"
-                    for w in data['weather_impacts']
-                ])
-
                 prompt = f"""You are analyzing NFL DFS HEAD-TO-HEAD (1v1) with COMPLETE analytics.
 
     🎯 H2H MISSION: Beat ONE person. Maximum ceiling wins.
@@ -977,32 +968,133 @@ Focus on actionable lineup changes only."""
     WEATHER:
     {weather_str}
 
-    QUARTERBACKS (with Monte Carlo ceiling analysis):
+    QUARTERBACKS:
     {chr(10).join(qb_details)}
 
-    RUNNING BACKS (ceiling matters more than floor in H2H):
+    RUNNING BACKS:
     {chr(10).join(rb_details)}
 
-    WIDE RECEIVERS (boom rate = upside potential):
+    WIDE RECEIVERS:
     {chr(10).join(wr_details)}
 
-    TIGHT ENDS (stack partners for QBs):
+    TIGHT ENDS:
     {chr(10).join(te_details)}
 
-    VALUE PLAYS (high ceiling + good value):
-    {[(p['name'], f"${p['salary']}", f"{p['ceiling']}pt ceiling", f"{p['value_ratio']:.2f}x value") for p in data['value_plays'][:5]]}
+    VALUE PLAYS:
+    {value_plays_str}
 
     ANALYZE & RECOMMEND:
-    1. MUST-PLAY QB: Which QB has highest CEILING (not projection)? Consider boom rate.
-    2. STACK-WITH: Which 2 teammates give best correlation? Must be TE/WR $6K+.
-    3. BRING-BACK: Best opposing player for game script hedge?
-    4. AVOID: Any player with ceiling <12pts or bust rate >30% or salary <$3K?
+    1. MUST-PLAY QB: Highest CEILING. Consider boom rate.
+    2. STACK-WITH: Which 2 teammates for correlation? Must be TE/WR $6K+.
+    3. BRING-BACK: Best opposing player?
+    4. AVOID: Players with ceiling <12pts or salary <$3K?
 
-    Be SPECIFIC with names. Focus on CEILING not floor. This is 1v1 ceiling game."""
+    Be SPECIFIC with names. CEILING over floor."""
 
+            # GPP
+            elif contest_type == 'gpp':
+                prompt = f"""NFL DFS GPP TOURNAMENT with Monte Carlo analytics.
+
+    🎯 GPP: Differentiated lineup, top 10% finish.
+
+    GAME CONTEXT:
+    {vegas_details}
+
+    WEATHER:
+    {weather_str}
+
+    QUARTERBACKS:
+    {chr(10).join(qb_details)}
+
+    RUNNING BACKS:
+    {chr(10).join(rb_details)}
+
+    WIDE RECEIVERS:
+    {chr(10).join(wr_details)}
+
+    TIGHT ENDS:
+    {chr(10).join(te_details)}
+
+    VALUE PLAYS:
+    {value_plays_str}
+
+    ANALYZE:
+    1. LEVERAGE: Best ceiling/ownership combo?
+    2. STACKING: QB+WR/TE from high-total games?
+    3. CONTRARIAN: Chalky fades?
+    4. VALUE CEILING: Cheap players with 3x upside?
+
+    Focus on differentiation. Boom rate >25%."""
+
+            # CASH
+            elif contest_type == 'cash':
+                prompt = f"""NFL DFS CASH GAME with floor analytics.
+
+    🎯 CASH: Top 50% finish. Consistency over ceiling.
+
+    GAME CONTEXT:
+    {vegas_details}
+
+    WEATHER:
+    {weather_str}
+
+    QUARTERBACKS:
+    {chr(10).join(qb_details)}
+
+    RUNNING BACKS:
+    {chr(10).join(rb_details)}
+
+    WIDE RECEIVERS:
+    {chr(10).join(wr_details)}
+
+    TIGHT ENDS:
+    {chr(10).join(te_details)}
+
+    VALUE PLAYS:
+    {value_plays_str}
+
+    ANALYZE:
+    1. HIGH FLOOR: Players with floor >80% projection?
+    2. SAFE STACKING: Balanced QB+pass catcher?
+    3. WEATHER AVOIDS: Which players hurt by conditions?
+    4. BUST AVOIDANCE: Players with bust rate >25% to fade?
+
+    Focus on consistency. Floor matters most."""
+
+            # FRIENDS LEAGUE or DEFAULT
             else:
-                # GPP/Cash prompts...
-                prompt = f"""... standard prompts for other contests ..."""
+                prompt = f"""NFL DFS FRIENDS LEAGUE (12 people) with Monte Carlo analytics.
+
+    🎯 FRIENDS: Beat 11 people this week. Top-3 finish needed.
+
+    GAME CONTEXT:
+    {vegas_details}
+
+    WEATHER:
+    {weather_str}
+
+    QUARTERBACKS:
+    {chr(10).join(qb_details)}
+
+    RUNNING BACKS:
+    {chr(10).join(rb_details)}
+
+    WIDE RECEIVERS:
+    {chr(10).join(wr_details)}
+
+    TIGHT ENDS:
+    {chr(10).join(te_details)}
+
+    VALUE PLAYS:
+    {value_plays_str}
+
+    ANALYZE:
+    1. WEEK-WINNING PLAYS: Which players have 35%+ boom rate?
+    2. LEVERAGE CASUAL: What will recreational players miss?
+    3. SMART STACKS: Best QB+pass catcher from high-total games?
+    4. VALUE EDGE: Salary advantage opportunities?
+
+    Friends league = beat 11 people. Need ceiling, avoid complete bust."""
 
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -1012,55 +1104,6 @@ Focus on actionable lineup changes only."""
             )
 
             return response.choices[0].message.content
-
-    def _get_claude_insights(self, data: Dict, contest_type: str) -> str:
-        """Get strategic insights from Claude"""
-
-        prompt = f"""You're an expert DFS analyst for a 12-person friends league {contest_type} contest. 
-
-SLATE DATA:
-Contest Type: {contest_type.upper()}
-Total Players: {data['slate_size']}
-Average Salary: ${data['avg_salary']:.0f}
-
-HIGH-TOTAL GAMES (47+ points - DFS GOLD):
-{[(g.get('game_id'), f"{g.get('total')}pts") for g in data.get('vegas_high_total_games', [])[:6]]}
-
-CRITICAL: Players from these high-scoring games should be prioritized heavily in friends league format.
-In a 12-person league, you need ceiling plays from games expected to produce 24+ points per team.
-
-TOP PLAYERS:
-QBs: {[(p['name'], f"${p['salary']}") for p in data['top_players']['QB'][:4]]}
-RBs: {[(p['name'], f"${p['salary']}") for p in data['top_players']['RB'][:6]]}
-WRs: {[(p['name'], f"${p['salary']}") for p in data['top_players']['WR'][:6]]}
-TEs: {[(p['name'], f"${p['salary']}") for p in data['top_players']['TE'][:4]]}
-
-VALUE PLAYS:
-{[(p['name'], p['position'], f"${p['salary']}", f"{p['value']:.2f}x value") for p in data['value_plays'][:6]]}
-
-WEATHER ISSUES:
-{data['weather_impacts'] if data['weather_impacts'] else 'No significant weather concerns'}
-
-HIGH-TOTAL TEAMS:
-{data['stack_candidates']}
-
-Analyze this slate for winning strategy:
-
-1. LEVERAGE SPOTS: Which players give best edge vs casual friends?
-2. SALARY STRATEGY: Where to spend up vs save money?
-3. STACKING: Best correlation plays for this slate?
-4. WEATHER IMPACT: How should conditions affect picks?
-5. CONTEST APPROACH: Specific strategy for {contest_type} format?
-
-Be specific with player names and actionable advice."""
-
-        response = self.claude_client.messages.create(
-            model="claude-3-haiku-20240307",
-            max_tokens=700,
-            messages=[{"role": "user", "content": prompt}]
-        )
-
-        return response.content[0].text
 
     def _synthesize_ai_insights(self, openai_insights: str, claude_insights: str,
                                player_data: List[Dict], contest_type: str) -> Dict[str, Any]:
