@@ -134,8 +134,8 @@ async def read_root():
     <body>
         <div class="container">
             <div class="header">
-                <h1>🏈 NFL DFS Optimizer Pro</h1>
-                <p>H2H Single Game & Full Slate Support</p>
+                <h1 class="text-3xl font-bold text-center mb-2">🏈 LeathAI NFL Optimizer Pro 🦁</h1>
+                <p class="text-center text-gray-600 mb-6">Taking Their Money - One Slate At A Time</p>
             </div>
 
             <div class="main-content">
@@ -618,6 +618,11 @@ async def get_players(contest_type: str = Query("gpp")):
 
                 # FILTER: Skip practice squad/inactive players (FPPG = 0)
             if fppg <= 0:
+                continue
+
+            # Skip if projection is invalid
+            import math
+            if not math.isfinite(fppg) or fppg <= 0:
                 continue
 
             players_by_position[position].append({

@@ -1105,6 +1105,190 @@ Focus on actionable lineup changes only."""
 
             return response.choices[0].message.content
 
+    def _get_claude_insights(self, data: Dict, contest_type: str) -> str:
+        """Get strategic insights from Claude with FULL analytics for all contest types"""
+
+        # Format rich player data (used by all contest types)
+        qb_details = [
+            f"{qb['name']} (${qb['salary']}) - Proj: {qb['projection']}pts, "
+            f"Ceiling: {qb['ceiling']}pts, Floor: {qb['floor']}pts, Boom: {qb['boom_rate']:.0%}"
+            for qb in data['top_players']['QB'][:3]
+        ]
+
+        rb_details = [
+            f"{rb['name']} (${rb['salary']}) - Proj: {rb['projection']}pts, "
+            f"Ceiling: {rb['ceiling']}pts, Boom: {rb['boom_rate']:.0%}"
+            for rb in data['top_players']['RB'][:6]
+        ]
+
+        wr_details = [
+            f"{wr['name']} (${wr['salary']}) - Proj: {wr['projection']}pts, "
+            f"Ceiling: {wr['ceiling']}pts, Boom: {wr['boom_rate']:.0%}"
+            for wr in data['top_players']['WR'][:6]
+        ]
+
+        te_details = [
+            f"{te['name']} (${te['salary']}) - Proj: {te['projection']}pts, "
+            f"Ceiling: {te['ceiling']}pts, Value: {te['value_ratio']:.2f}x"
+            for te in data['top_players']['TE'][:4]
+        ]
+
+        vegas_details = "\n".join([
+            f"{g['game']}: {g['total']}pt total, {g['home_implied']:.1f} vs {g['away_implied']:.1f} implied"
+            for g in data.get('vegas_games', [])
+        ])
+
+        weather_str = "Indoor/No impact" if not data.get('weather_impacts') else "\n".join([
+            f"{w['team']}: {w['conditions']}, {w['wind']}mph wind, {w['precip']}% precip"
+            for w in data['weather_impacts']
+        ])
+
+        value_plays_str = [(p['name'], f"${p['salary']}", f"{p['ceiling']}pt ceiling", f"{p['value_ratio']:.2f}x")
+                           for p in data['value_plays'][:5]]
+
+        if contest_type == 'h2h':
+            prompt = f"""NFL DFS HEAD-TO-HEAD (1v1) with complete analytics.
+
+    🎯 H2H: Beat ONE person. Maximum ceiling wins.
+
+    GAME CONTEXT:
+    {vegas_details}
+
+    WEATHER:
+    {weather_str}
+
+    QUARTERBACKS:
+    {chr(10).join(qb_details)}
+
+    RUNNING BACKS:
+    {chr(10).join(rb_details)}
+
+    WIDE RECEIVERS:
+    {chr(10).join(wr_details)}
+
+    TIGHT ENDS:
+    {chr(10).join(te_details)}
+
+    VALUE PLAYS:
+    {value_plays_str}
+
+    ANALYZE:
+    1. MUST-PLAY QB: Highest CEILING. Consider boom rate.
+    2. STACK-WITH: 2 teammates for correlation? TE/WR $6K+.
+    3. BRING-BACK: Best opposing player?
+    4. AVOID: Ceiling <12pts or salary <$3K?
+
+    CEILING over floor. This is 1v1."""
+
+        elif contest_type == 'gpp':
+            prompt = f"""NFL DFS GPP with analytics.
+
+    🎯 GPP: Top 10% finish.
+
+    GAME CONTEXT:
+    {vegas_details}
+
+    WEATHER:
+    {weather_str}
+
+    QUARTERBACKS:
+    {chr(10).join(qb_details)}
+
+    RUNNING BACKS:
+    {chr(10).join(rb_details)}
+
+    WIDE RECEIVERS:
+    {chr(10).join(wr_details)}
+
+    TIGHT ENDS:
+    {chr(10).join(te_details)}
+
+    VALUE PLAYS:
+    {value_plays_str}
+
+    ANALYZE:
+    1. LEVERAGE: Best ceiling/ownership?
+    2. STACKING: QB+WR/TE from high totals?
+    3. CONTRARIAN: Chalky fades?
+    4. VALUE CEILING: Cheap 3x upside?
+
+    Differentiation. Boom >25%."""
+
+        elif contest_type == 'cash':
+            prompt = f"""NFL DFS CASH with floor analytics.
+
+    🎯 CASH: Top 50%. Consistency.
+
+    GAME CONTEXT:
+    {vegas_details}
+
+    WEATHER:
+    {weather_str}
+
+    QUARTERBACKS:
+    {chr(10).join(qb_details)}
+
+    RUNNING BACKS:
+    {chr(10).join(rb_details)}
+
+    WIDE RECEIVERS:
+    {chr(10).join(wr_details)}
+
+    TIGHT ENDS:
+    {chr(10).join(te_details)}
+
+    VALUE PLAYS:
+    {value_plays_str}
+
+    ANALYZE:
+    1. HIGH FLOOR: Floor >80%?
+    2. SAFE STACKING: Balanced QB+catcher?
+    3. WEATHER AVOIDS: Hurt by conditions?
+    4. BUST AVOIDANCE: Bust >25% fade?
+
+    Floor matters."""
+
+        else:
+            prompt = f"""NFL DFS FRIENDS (12 people).
+
+    🎯 FRIENDS: Beat 11 people. Top-3.
+
+    GAME CONTEXT:
+    {vegas_details}
+
+    WEATHER:
+    {weather_str}
+
+    QUARTERBACKS:
+    {chr(10).join(qb_details)}
+
+    RUNNING BACKS:
+    {chr(10).join(rb_details)}
+
+    WIDE RECEIVERS:
+    {chr(10).join(wr_details)}
+
+    TIGHT ENDS:
+    {chr(10).join(te_details)}
+
+    VALUE PLAYS:
+    {value_plays_str}
+
+    ANALYZE:
+    1. WEEK-WINNING: 35%+ boom?
+    2. LEVERAGE CASUAL: What recreational miss?
+    3. SMART STACKS: QB+catcher high totals?
+    4. VALUE EDGE: Salary advantage?
+
+    Need ceiling, avoid bust."""
+
+        response = self.claude_client.messages.create(
+            model="claude-3-haiku-20240307",
+            max_tokens=700,
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        return response.content[0].text
     def _synthesize_ai_insights(self, openai_insights: str, claude_insights: str,
                                player_data: List[Dict], contest_type: str) -> Dict[str, Any]:
         """Combine AI insights into actionable recommendations"""
