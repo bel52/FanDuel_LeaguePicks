@@ -601,7 +601,7 @@ class EnhancedDataCollector:
     async def collect_players_for_slate(self, games_info: Dict[str, Any], contest_type: str = 'gpp') -> List[Dict]:
         """Collect players - NOW READS CSV DIRECTLY"""
         current_week = games_info['current_week']
-
+t
         # ===== MULTI-SOURCE INJURY CHECK =====
         logger.info("🚑 Checking ESPN + RSS for injuries...")
 

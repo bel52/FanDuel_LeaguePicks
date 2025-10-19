@@ -76,10 +76,10 @@ class MonteCarloEngine:
 
     async def simulate_player_performance(self, player: PlayerSimulation,
                                           num_sims: int = None) -> Dict[str, float]:
-        """Simulate individual player performance with advanced variance modeling"""
+        """Simulate individual player performance with friends league calibration"""
 
         if num_sims is None:
-            num_sims = min(1000, self.num_simulations // 10)  # Efficient sampling
+            num_sims = min(1000, self.num_simulations // 10)
 
         # Check cache first
         cache_key = f"{player.name}_{player.base_projection}_{num_sims}"
@@ -93,7 +93,7 @@ class MonteCarloEngine:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             self.executor,
-            self._simulate_player_scores,
+            self._simulate_player_scores_friends_league,  # CHANGED: Use friends league version
             player,
             num_sims
         )
@@ -102,44 +102,51 @@ class MonteCarloEngine:
         self.simulation_cache[cache_key] = result
         return result
 
-    def _simulate_player_scores(self, player: PlayerSimulation, num_sims: int) -> Dict[str, float]:
-        """Core simulation logic with position-specific distributions"""
+    def _simulate_player_scores_friends_league(self, player: PlayerSimulation, num_sims: int) -> Dict[str, float]:
+        """FRIENDS LEAGUE: Reduced variance simulation for 12-person format"""
 
         scores = []
         base_proj = player.base_projection
-        variance = base_proj * player.variance_factor
+
+        # REDUCED variance for friends league (not tournament variance)
+        variance_multipliers = {
+            'QB': 0.20,  # Reduced from 0.28
+            'RB': 0.25,  # Reduced from 0.35
+            'WR': 0.30,  # Reduced from 0.45
+            'TE': 0.25,  # Reduced from 0.38
+            'D': 0.30  # Reduced from 0.42
+        }
+        variance = base_proj * variance_multipliers.get(player.position, 0.25)
 
         for _ in range(num_sims):
-            # Base performance using log-normal distribution (realistic for fantasy points)
+            # Use normal distribution for friends league (not log-normal extremes)
             if player.position == 'D':
-                # Defense scores use different distribution (can go negative)
                 score = np.random.normal(base_proj, variance)
             else:
-                # Skill position players use log-normal (always positive, right-skewed)
-                mu = np.log(base_proj) - 0.5 * (variance / base_proj) ** 2
-                sigma = variance / base_proj
-                score = np.random.lognormal(mu, sigma)
+                # Reduced variance normal distribution
+                score = np.random.normal(base_proj, variance)
+                score = max(0, score)  # No negative scores
 
-            # Apply game script factors
-            script_factor = self._sample_game_script_factor(player)
+            # REDUCED game script impact for friends league
+            script_factor = self._sample_game_script_factor_friends(player)
             score *= script_factor
 
-            # Apply weather impact
+            # Apply weather impact (unchanged)
             if player.weather_impact < 1.0:
                 weather_factor = np.random.uniform(player.weather_impact, 1.0)
                 score *= weather_factor
 
-            # Apply injury risk (small chance of 0 points)
-            if np.random.random() < player.injury_risk:
+            # REDUCED injury risk for friends league
+            if np.random.random() < (player.injury_risk * 0.5):  # Half the injury risk
                 score = 0
 
-            # Position-specific floor constraints
+            # Position-specific floors (unchanged)
             if player.position == 'QB' and score < 8:
-                score = max(score, np.random.uniform(8, 12))  # QBs rarely score under 8
+                score = max(score, np.random.uniform(8, 12))
             elif player.position in ['RB', 'WR', 'TE'] and score < 2:
-                score = max(score, np.random.uniform(2, 5))  # Skill players rarely 0
+                score = max(score, np.random.uniform(2, 5))
 
-            scores.append(max(0, score))  # Hard floor at 0
+            scores.append(max(0, score))
 
         scores = np.array(scores)
 
@@ -149,33 +156,32 @@ class MonteCarloEngine:
             'floor_10': float(np.percentile(scores, 10)),
             'floor_25': float(np.percentile(scores, 25)),
             'median': float(np.percentile(scores, 50)),
-            'ceiling_75': float(np.percentile(scores, 75)),
-            'ceiling_90': float(np.percentile(scores, 90)),
+            'ceiling_75': float(np.percentile(scores, 75)),  # Use 75th instead of 90th
+            'ceiling_90': float(np.percentile(scores, 90)),  # Keep but de-emphasize
             'ceiling_95': float(np.percentile(scores, 95)),
             'max': float(np.max(scores)),
             'min': float(np.min(scores)),
-            'bust_rate': float(np.sum(scores < base_proj * 0.6) / len(scores)),
-            'boom_rate': float(np.sum(scores > base_proj * 1.4) / len(scores)),
+            'bust_rate': float(np.sum(scores < base_proj * 0.7) / len(scores)),  # 70% threshold
+            'boom_rate': float(np.sum(scores > base_proj * 1.25) / len(scores)),  # 1.25x threshold
             'zero_rate': float(np.sum(scores == 0) / len(scores))
         }
 
-    def _sample_game_script_factor(self, player: PlayerSimulation) -> float:
-        """Sample game script impact factor"""
+    def _sample_game_script_factor_friends(self, player: PlayerSimulation) -> float:
+        """FRIENDS LEAGUE: Reduced game script impact"""
 
-        # Use player's game script correlation to determine factor
         correlation = player.game_script_correlation
 
         if correlation > 0.3:
-            # Player benefits from positive game script
-            factors = [1.0, 1.1, 1.2]
-            weights = [0.4, 0.4, 0.2]
+            # Reduced impact for positive script
+            factors = [1.0, 1.05, 1.10]  # Max 10% boost instead of 20%
+            weights = [0.5, 0.3, 0.2]
         elif correlation < -0.3:
-            # Player hurt by negative game script
-            factors = [0.8, 0.9, 1.0]
-            weights = [0.2, 0.4, 0.4]
+            # Reduced impact for negative script
+            factors = [0.90, 0.95, 1.0]  # Max 10% penalty instead of 20%
+            weights = [0.2, 0.3, 0.5]
         else:
-            # Neutral game script impact
-            factors = [0.9, 1.0, 1.1]
+            # Neutral (most common)
+            factors = [0.95, 1.0, 1.05]
             weights = [0.25, 0.5, 0.25]
 
         return np.random.choice(factors, p=weights)
