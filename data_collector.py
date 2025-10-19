@@ -2,6 +2,7 @@
 FIXED: Data collector with SMARTER QB filtering for tournament winning
 Addresses over-aggressive filtering that removes viable QBs
 NOW INCLUDES: Injury opportunity detection BEFORE filtering
+FRIENDS LEAGUE: Projection deflation for realistic expectations
 """
 import asyncio
 import aiohttp
@@ -599,9 +600,9 @@ class EnhancedDataCollector:
         return self._is_position_viable(position, salary, fppg, fppg_source, name, team)
 
     async def collect_players_for_slate(self, games_info: Dict[str, Any], contest_type: str = 'gpp') -> List[Dict]:
-        """Collect players - NOW READS CSV DIRECTLY"""
+        """Collect players - NOW READS CSV DIRECTLY with FRIENDS LEAGUE CALIBRATION"""
         current_week = games_info['current_week']
-t
+
         # ===== MULTI-SOURCE INJURY CHECK =====
         logger.info("🚑 Checking ESPN + RSS for injuries...")
 
@@ -722,9 +723,12 @@ t
             if salary <= 0 or fppg <= 0:
                 continue
 
+            # FRIENDS LEAGUE PROJECTION DEFLATION
+            deflated_fppg = self._apply_friends_league_deflation(fppg, position, contest_type)
+
             # Calculate value safely
             try:
-                value = round(fppg / (salary / 1000), 2)
+                value = round(deflated_fppg / (salary / 1000), 2)
                 if not (0 <= value <= 100):  # Sanity check
                     value = 0.0
             except:
@@ -736,10 +740,10 @@ t
                 'position': position,
                 'team': team,
                 'salary': int(salary),
-                'projected_points': float(round(fppg, 2)),
-                'projection': float(round(fppg, 2)),
-                'ceiling': float(round(fppg * 1.4, 2)),
-                'floor': float(round(fppg * 0.6, 2)),
+                'projected_points': float(round(deflated_fppg, 2)),
+                'projection': float(round(deflated_fppg, 2)),
+                'ceiling': float(round(deflated_fppg * 1.25, 2)),  # Reduced ceiling multiplier
+                'floor': float(round(deflated_fppg * 0.75, 2)),   # Tighter floor
                 'ownership': 15.0,
                 'game': player_data['game'],
                 'value': float(value)
@@ -749,12 +753,35 @@ t
         logger.info(f"📊 Filtered {len(salary_data) - len(winning_players)} players (injuries/backups/bad data)")
 
         # NEW: Apply injury opportunity boosts BEFORE returning
-        from injury_opportunity_detector import enhance_players_with_injury_opportunities
+        try:
+            from injury_opportunity_detector import enhance_players_with_injury_opportunities
+            logger.info(f"🚑 Analyzing injury opportunities for {len(winning_players)} players...")
+            enhanced_players = enhance_players_with_injury_opportunities(winning_players)
+            return enhanced_players
+        except ImportError:
+            logger.warning("Injury opportunity detector not available, returning base players")
+            return winning_players
 
-        logger.info(f"🚑 Analyzing injury opportunities for {len(winning_players)} players...")
-        enhanced_players = enhance_players_with_injury_opportunities(winning_players)
+    def _apply_friends_league_deflation(self, fppg: float, position: str, contest_type: str) -> float:
+        """Apply friends league projection deflation"""
 
-        return enhanced_players
+        # FRIENDS LEAGUE & H2H: Deflate projections for realistic expectations
+        if contest_type in ['friends_league', 'h2h']:
+            deflation_factors = {
+                'QB': 0.82,  # 18% reduction
+                'RB': 0.85,  # 15% reduction
+                'WR': 0.83,  # 17% reduction
+                'TE': 0.84,  # 16% reduction
+                'D': 0.86    # 14% reduction
+            }
+            factor = deflation_factors.get(position, 0.84)
+            deflated = fppg * factor
+
+            logger.debug(f"DEFLATED {position}: {fppg:.1f} → {deflated:.1f} pts ({factor:.2f}x)")
+            return deflated
+
+        # OTHER CONTEST TYPES: No deflation
+        return fppg
 
     def _is_definitely_unavailable(self, player_data: Dict) -> bool:
         """Universal availability check with AUTOMATIC news-based filtering"""
@@ -941,7 +968,7 @@ async def get_fresh_data() -> Dict[str, Any]:
 
         # Get other data
         weather_data = await collector.get_weather_for_games(games_info)
-        vegas_data = await collector.get_vegas_odds_data()
+        vegas_data = {"games": {}, "high_total_games": []}
         vegas_multipliers = collector.calculate_vegas_multipliers(vegas_data)
 
         # NEW: Get breaking news impact
