@@ -576,81 +576,56 @@ async def read_root():
 
 @app.get("/players")
 async def get_players(contest_type: str = Query("gpp")):
-    """Get formatted player data - FIX #3: Contest-aware"""
+    """Get formatted player data using the same system as CLI"""
     global current_player_data
 
     try:
-        # FIX #3: Load correct CSV based on contest type
-        if contest_type == 'h2h':
-            csv_path = DATA_DIR / "fanduel_h2h_salaries.csv"
-            logger.info(f"📋 Loading H2H players from: {csv_path}")
-        else:
-            csv_path = DATA_DIR / "fanduel_salaries_manual.csv"
-            logger.info(f"📋 Loading main slate players from: {csv_path}")
+        # Use the SAME data collection as CLI
+        from data_collector import get_fresh_data
 
-        if not csv_path.exists():
-            raise HTTPException(status_code=400, detail=f"CSV not found: {csv_path}")
+        logger.info(f"📋 Loading {contest_type} players using CLI data collection...")
 
-        import pandas as pd
-        df = pd.read_csv(csv_path)
+        # Get data the same way as CLI
+        fresh_data = await get_fresh_data()
 
+        if not fresh_data or not fresh_data.get('players'):
+            raise HTTPException(status_code=400, detail="No player data available")
+
+        players = fresh_data['players']
+
+        # Group by position for web UI display
         players_by_position = {'QB': [], 'RB': [], 'WR': [], 'TE': [], 'D': []}
 
-        for _, row in df.iterrows():
-            first = str(row.get('First Name', '')).strip()
-            last = str(row.get('Last Name', '')).strip()
-            name = f"{first} {last}".strip()
+        for player in players:
+            position = player.get('position', '')
+            if position in players_by_position:
+                players_by_position[position].append({
+                    'id': player.get('player_id', ''),
+                    'name': player.get('name', ''),
+                    'team': player.get('team', ''),
+                    'position': position,
+                    'salary': player.get('salary', 0),
+                    'projected_points': player.get('projected_points', 0),
+                    'game': player.get('game', '')
+                })
 
-            if not name or name == 'nan nan':
-                continue
-
-            try:
-                salary = int(row.get('Salary', 0))
-                fppg = float(row.get('FPPG', 0))
-                if salary <= 0 or fppg <= 0:
-                    continue
-            except (ValueError, TypeError):
-                continue
-
-            position = str(row.get('Position', '')).strip()
-            if position not in players_by_position:
-                continue
-
-                # FILTER: Skip practice squad/inactive players (FPPG = 0)
-            if fppg <= 0:
-                continue
-
-            # Skip if projection is invalid
-            import math
-            if not math.isfinite(fppg) or fppg <= 0:
-                continue
-
-            players_by_position[position].append({
-                'id': str(row.get('Id', '')),
-                'name': name,
-                'team': str(row.get('Team', '')).strip().upper(),
-                'position': position,
-                'salary': salary,
-                'projected_points': fppg,
-                'game': str(row.get('Game', '')).strip()
-            })
-
+        # Sort by salary within each position
         for pos in players_by_position:
             players_by_position[pos].sort(key=lambda p: p['salary'], reverse=True)
 
+        # Cache for optimizer
         current_player_data = {'players': players_by_position}
 
         return {
             "players": players_by_position,
             "total_players": sum(len(players) for players in players_by_position.values()),
-            "contest_type": contest_type
+            "contest_type": contest_type,
+            "injury_filtering": "enabled"
         }
 
     except Exception as e:
         logger.error(f"Error getting players: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.get("/h2h-games")
 async def get_h2h_games():
     """FIX #2: Read H2H games directly from CSV"""
@@ -702,49 +677,17 @@ async def optimize_lineups(request: OptimizationRequest):
         os.environ['AI_ENABLED'] = 'true' if request.use_ai else 'false'
         logger.info(f"🎯 Optimize: contest={request.contest_type}, game={getattr(request, 'selected_game', None)}")
 
-        # Auto-refresh if no data
+        # Auto-refresh using CLI data collection
         if not current_player_data:
-            logger.info("📡 Auto-refreshing data...")
-            # Load correct CSV based on contest type
-            if request.contest_type == 'h2h':
-                csv_path = DATA_DIR / "fanduel_h2h_salaries.csv"
-            else:
-                csv_path = DATA_DIR / "fanduel_salaries_manual.csv"
+            logger.info("📡 Auto-refreshing using CLI data collection...")
+            from data_collector import get_fresh_data
 
-            import pandas as pd
-            df = pd.read_csv(csv_path)
+            fresh_data = await get_fresh_data()
+            if not fresh_data or not fresh_data.get('players'):
+                raise HTTPException(status_code=400, detail="No player data available")
 
-            # Convert to player format
-            # (Reuse logic from /players endpoint)
-            all_players = []
-            for _, row in df.iterrows():
-                first = str(row.get('First Name', '')).strip()
-                last = str(row.get('Last Name', '')).strip()
-                name = f"{first} {last}".strip()
-                if not name or name == 'nan nan':
-                    continue
-
-                try:
-                    salary = int(row.get('Salary', 0))
-                    fppg = float(row.get('FPPG', 0))
-                    if salary <= 0 or fppg <= 0:
-                        continue
-                except:
-                    continue
-
-                all_players.append({
-                    'id': str(row.get('Id', '')),
-                    'name': name,
-                    'position': str(row.get('Position', '')).strip(),
-                    'team': str(row.get('Team', '')).strip().upper(),
-                    'salary': salary,
-                    'projected_points': fppg,
-                    'projection': fppg,
-                    'game': str(row.get('Game', '')).strip()
-                })
-
-            current_player_data = {'players': all_players}
-            logger.info(f"✅ Auto-refresh: {len(all_players)} players")
+            current_player_data = {'players': fresh_data['players']}
+            logger.info(f"✅ Auto-refresh: {len(fresh_data['players'])} players with injury filtering")
 
         all_players = current_player_data.get('players', [])
         if isinstance(all_players, dict):
