@@ -953,14 +953,14 @@ class EnhancedDataCollector:
 
 
 # Main entry point
-async def get_fresh_data() -> Dict[str, Any]:
+async def get_fresh_data(contest_type: str = "gpp") -> Dict[str, Any]:
     """Get fresh data with BREAKING NEWS INTEGRATION"""
     async with EnhancedDataCollector() as collector:
         # Get games info
         games_info = await collector.get_current_week_games()
 
         # Get players with REAL projections
-        players = await collector.collect_players_for_slate(games_info, 'gpp')
+        players = await collector.collect_players_for_slate(games_info, contest_type)
 
         if not players:
             logger.error("NO VALID PLAYERS FOUND")
