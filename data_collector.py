@@ -601,6 +601,7 @@ class EnhancedDataCollector:
 
     async def collect_players_for_slate(self, games_info: Dict[str, Any], contest_type: str = 'gpp') -> List[Dict]:
         """Collect players - NOW READS CSV DIRECTLY with FRIENDS LEAGUE CALIBRATION"""
+        logger.info(f"🔍 DEBUG: collect_players_for_slate called with contest_type='{contest_type}'")
         current_week = games_info['current_week']
 
         # ===== MULTI-SOURCE INJURY CHECK =====
@@ -955,6 +956,7 @@ class EnhancedDataCollector:
 # Main entry point
 async def get_fresh_data(contest_type: str = "gpp") -> Dict[str, Any]:
     """Get fresh data with BREAKING NEWS INTEGRATION"""
+    logger.info(f"🔍 DEBUG: get_fresh_data called with contest_type='{contest_type}'")
     async with EnhancedDataCollector() as collector:
         # Get games info
         games_info = await collector.get_current_week_games()
@@ -968,7 +970,7 @@ async def get_fresh_data(contest_type: str = "gpp") -> Dict[str, Any]:
 
         # Get other data
         weather_data = await collector.get_weather_for_games(games_info)
-        vegas_data = {"games": {}, "high_total_games": []}
+        vegas_data = await collector.get_vegas_odds_data()
         vegas_multipliers = collector.calculate_vegas_multipliers(vegas_data)
 
         # NEW: Get breaking news impact
