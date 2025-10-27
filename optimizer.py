@@ -455,9 +455,15 @@ class EnhancedDFSOptimizer:
 
         base_value = player.projection
 
-        # H2H: Pure projection (no fancy bonuses that favor cheap players)
+        # H2H: Use ceiling analysis for upside optimization
         if contest_type == 'h2h':
-            return player.projection  # That's it - just raw projection
+            if player.monte_carlo_analyzed and player.ceiling_90 > 0:
+                # Weight ceiling heavily (70%) + projection (30%) for upside
+                return (player.ceiling_90 * 0.7) + (player.projection * 0.3)
+            else:
+                # Fallback: estimate ceiling as 1.4x projection
+                estimated_ceiling = player.projection * 1.4
+                return (estimated_ceiling * 0.7) + (player.projection * 0.3)
 
         # Friends league logic (unchanged)
         if contest_type == 'friends_league':
@@ -486,9 +492,43 @@ class EnhancedDFSOptimizer:
 
         base_value = player.projection
 
-        # H2H: Pure projection
+        # H2H: Use ceiling analysis + game script weighting
         if contest_type == 'h2h':
-            return player.projection  # That's it
+            # Base ceiling value
+            if player.monte_carlo_analyzed and player.ceiling_90 > 0:
+                base_value = (player.ceiling_90 * 0.7) + (player.projection * 0.3)
+            else:
+                estimated_ceiling = player.projection * 1.4
+                base_value = (estimated_ceiling * 0.7) + (player.projection * 0.3)
+
+            # Apply game script multipliers based on vegas_data
+            vegas_data = getattr(self, 'vegas_data', {})
+            if vegas_data and isinstance(vegas_data, dict):
+                games = vegas_data.get('games', {})
+                game_script_multiplier = 1.0
+
+                # Find this player's game total
+                for game_id, game_data in games.items():
+                    if player.team in [game_data.get('home_team'), game_data.get('away_team')]:
+                        total = game_data.get('total_points', 45.0)
+
+                        # High-total games favor passing (QB/WR/TE get boost)
+                        if total >= 48.0:  # High-scoring game
+                            if player.position in ['QB', 'WR', 'TE']:
+                                game_script_multiplier = 1.25  # 25% boost for pass catchers
+                            elif player.position == 'RB':
+                                game_script_multiplier = 1.10  # Smaller boost for RBs
+                        # Low-total games favor rushing (RB gets boost)
+                        elif total <= 42.0:  # Low-scoring game
+                            if player.position == 'RB':
+                                game_script_multiplier = 1.20  # 20% boost for RBs
+                            elif player.position in ['QB', 'WR', 'TE']:
+                                game_script_multiplier = 0.95  # Small penalty for pass catchers
+                        break
+
+                return base_value * game_script_multiplier
+
+            return base_value
 
         # Other contest types
         elif contest_type == 'gpp':
@@ -623,8 +663,20 @@ class EnhancedDFSOptimizer:
             if expensive:
                 prob += pulp.lpSum([player_vars[i] for i in expensive]) >= 1
 
-            logger.info(f"✅ H2H constraints applied: 6 players, ${H2H_SALARY_CAP} cap with correlation stacking")
-            return
+                # H2H TEAM LIMITS: Max 3 players per team to prevent over-concentration
+                team_counts: Dict[str, List[int]] = {}
+                for i, player in enumerate(players):
+                    team_counts.setdefault(player.team, []).append(i)
+
+                max_per_team_h2h = 3  # Conservative limit for H2H
+                for team, player_indices in team_counts.items():
+                    if len(player_indices) > 1:  # Only apply if team has multiple players
+                        prob += pulp.lpSum([player_vars[i] for i in player_indices]) <= max_per_team_h2h
+                        logger.info(f"🔒 H2H TEAM LIMIT: Max {max_per_team_h2h} players from {team}")
+
+                logger.info(
+                    f"✅ H2H constraints applied: 6 players, ${H2H_SALARY_CAP} cap with correlation stacking + team limits")
+                return
 
         # MAIN SLATE constraints (unchanged)
         prob += pulp.lpSum([players[i].salary * player_vars[i] for i in range(len(players))]) <= FANDUEL_SALARY_CAP
@@ -728,12 +780,15 @@ class EnhancedDFSOptimizer:
                     except (ValueError, IndexError):
                         continue
 
-            # Fallback: pick highest salary if extraction failed
-            if not mvp:
-                logger.warning("Couldn't extract MVP, using highest salary player")
-                mvp = max(selected_players, key=lambda p: p.projection)
+            # Fallback: pick highest ceiling player as MVP
 
-            mvp.is_mvp = True
+
+# Fallback: pick highest ceiling player as MVP
+if not mvp:
+    logger.warning("Couldn't extract MVP, using highest ceiling player")
+    mvp = max(selected_players, key=lambda p: p.ceiling_90 if p.monte_carlo_analyzed else p.projection * 1.4)
+
+mvp.is_mvp = True
 
             # Calculate projections with MVP bonus
             mvp_projection = mvp.projection * 1.5

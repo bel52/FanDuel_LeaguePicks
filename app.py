@@ -586,7 +586,7 @@ async def get_players(contest_type: str = Query("gpp")):
         logger.info(f"📋 Loading {contest_type} players using CLI data collection...")
 
         # Get data the same way as CLI
-        fresh_data = await get_fresh_data()
+        fresh_data = await get_fresh_data(contest_type)
 
         if not fresh_data or not fresh_data.get('players'):
             raise HTTPException(status_code=400, detail="No player data available")
