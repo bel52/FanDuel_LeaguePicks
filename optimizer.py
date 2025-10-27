@@ -760,49 +760,47 @@ class EnhancedDFSOptimizer:
                 total_salary += player.salary
                 total_ownership += player.ownership
 
-        # H2H: Pick MVP and apply 1.5x after optimization
-        if contest_type == 'h2h':
-            if len(selected_players) != 6:
-                logger.error(f"H2H lineup has {len(selected_players)} players, expected 6")
-                return None
+            # H2H: Pick MVP and apply 1.5x after optimization
+            if contest_type == 'h2h':
+                if len(selected_players) != 6:
+                    logger.error(f"H2H lineup has {len(selected_players)} players, expected 6")
+                    return None
 
-            # Extract MVP from optimizer's decision
-            mvp = None
-            for var in prob.variables():
-                if var.name.startswith('is_mvp_') and var.varValue == 1:
-                    try:
-                        player_idx = int(var.name.replace('is_mvp_', ''))
-                        mvp = players[player_idx]
-                        if mvp not in selected_players:
-                            logger.error(f"Optimizer selected MVP {mvp.name} not in lineup!")
-                            mvp = None
-                        break
-                    except (ValueError, IndexError):
-                        continue
+                # Extract MVP from optimizer's decision
+                mvp = None
+                for var in prob.variables():
+                    if var.name.startswith('is_mvp_') and var.varValue == 1:
+                        try:
+                            player_idx = int(var.name.replace('is_mvp_', ''))
+                            mvp = players[player_idx]
+                            if mvp not in selected_players:
+                                logger.error(f"Optimizer selected MVP {mvp.name} not in lineup!")
+                                mvp = None
+                            break
+                        except (ValueError, IndexError):
+                            continue
 
-            # Fallback: pick highest ceiling player as MVP
+                # Fallback: pick highest ceiling player as MVP
+                if not mvp:
+                    logger.warning("Couldn't extract MVP, using highest ceiling player")
+                    mvp = max(selected_players,
+                              key=lambda p: p.ceiling_90 if p.monte_carlo_analyzed else p.projection * 1.4)
 
+                mvp.is_mvp = True
 
-# Fallback: pick highest ceiling player as MVP
-if not mvp:
-    logger.warning("Couldn't extract MVP, using highest ceiling player")
-    mvp = max(selected_players, key=lambda p: p.ceiling_90 if p.monte_carlo_analyzed else p.projection * 1.4)
+                # Calculate projections with MVP bonus
+                mvp_projection = mvp.projection * 1.5
+                other_projection = sum(p.projection for p in selected_players if p != mvp)
+                projected_points = mvp_projection + other_projection
 
-mvp.is_mvp = True
+                # Calculate salary with MVP 1.5x cost
+                mvp_salary_cost = int(mvp.salary * 1.5)
+                other_salary = sum(p.salary for p in selected_players if p != mvp)
+                total_salary = mvp_salary_cost + other_salary
 
-            # Calculate projections with MVP bonus
-            mvp_projection = mvp.projection * 1.5
-            other_projection = sum(p.projection for p in selected_players if p != mvp)
-            projected_points = mvp_projection + other_projection
-
-            # Calculate salary with MVP 1.5x cost
-            mvp_salary_cost = int(mvp.salary * 1.5)
-            other_salary = sum(p.salary for p in selected_players if p != mvp)
-            total_salary = mvp_salary_cost + other_salary
-
-            # Order: MVP first, then by salary
-            ordered_players = [mvp] + sorted([p for p in selected_players if p != mvp], key=lambda p: p.salary,
-                                             reverse=True)
+                # Order: MVP first, then by salary
+                ordered_players = [mvp] + sorted([p for p in selected_players if p != mvp], key=lambda p: p.salary,
+                                                 reverse=True)
 
             logger.info(f"🏆 H2H MVP: {mvp.name} (${mvp_salary_cost:,} with 1.5x) - {mvp_projection:.1f} pts")
 
