@@ -586,7 +586,7 @@ async def get_players(contest_type: str = Query("gpp")):
         logger.info(f"📋 Loading {contest_type} players using CLI data collection...")
 
         # Get data the same way as CLI
-        fresh_data = await get_fresh_data(contest_type)
+        fresh_data = await get_fresh_data()
 
         if not fresh_data or not fresh_data.get('players'):
             raise HTTPException(status_code=400, detail="No player data available")
@@ -682,7 +682,7 @@ async def optimize_lineups(request: OptimizationRequest):
             logger.info("📡 Auto-refreshing using CLI data collection...")
             from data_collector import get_fresh_data
 
-            fresh_data = await get_fresh_data(request.contest_type)
+            fresh_data = await get_fresh_data()
             if not fresh_data or not fresh_data.get('players'):
                 raise HTTPException(status_code=400, detail="No player data available")
 
@@ -696,24 +696,17 @@ async def optimize_lineups(request: OptimizationRequest):
 
         # H2H: Filter to selected game
         single_game_teams = None
-        if request.contest_type == 'h2h':
-            selected_game = getattr(request, 'selected_game', None)
-        if request.contest_type == "h2h" and selected_game:
+
+        if request.contest_type == "h2h":
+            selected_game = getattr(request, "selected_game", None)
+
+            if not selected_game:
+                raise HTTPException(status_code=400, detail="H2H requires a selected game")
+
             if "@" in selected_game:
                 parts = selected_game.split("@")
                 single_game_teams = [parts[0].strip(), parts[1].strip()]
                 logger.info(f"🎯 H2H parsed teams: {single_game_teams} from {selected_game}")
-            else:
-                single_game_teams = None
-        else:
-            single_game_teams = None
-            if not selected_game:
-                raise HTTPException(status_code=400, detail="H2H requires a selected game")
-
-            if '@' in selected_game:
-                parts = selected_game.split('@')
-                single_game_teams = [parts[0].strip(), parts[1].strip()]
-                logger.info(f"🎯 H2H Game: {selected_game} (Teams: {single_game_teams})")
             else:
                 raise HTTPException(status_code=400, detail=f"Invalid game format: {selected_game}")
 
