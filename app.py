@@ -734,7 +734,6 @@ async def optimize_lineups(request: OptimizationRequest):
             player_data=filtered_players,
             weather_data=current_player_data.get('weather', {}),
             vegas_multipliers=current_player_data.get('vegas_multipliers', {}),
-            vegas_odds=current_player_data.get('vegas_odds', {}),
             num_lineups=request.num_lineups,
             contest_type=request.contest_type
         )
