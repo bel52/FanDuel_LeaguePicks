@@ -1,0 +1,280 @@
+{
+  "lineups": [
+    {
+      "contest_type": "friends_league",
+      "total_salary": 59300,
+      "projected_points": 130.88,
+      "ceiling_90": 148.23,
+      "floor_10": 111.51,
+      "high_total_exposure": 8,
+      "primary_stack": "BUF",
+      "players": [
+        {
+          "name": "Josh Allen",
+          "position": "QB",
+          "team": "BUF",
+          "salary": 9200,
+          "projection": 21.42,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "Jonathan Taylor",
+          "position": "RB",
+          "team": "IND",
+          "salary": 9700,
+          "projection": 27.41,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "Chase Brown",
+          "position": "RB",
+          "team": "CIN",
+          "salary": 7300,
+          "projection": 13.35,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Drake London",
+          "position": "WR",
+          "team": "ATL",
+          "salary": 7500,
+          "projection": 19.36,
+          "game_mult": 1.1,
+          "ai_must_play": false
+        },
+        {
+          "name": "Khalil Shakir",
+          "position": "WR",
+          "team": "BUF",
+          "salary": 5900,
+          "projection": 9.94,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Michael Pittman Jr.",
+          "position": "WR",
+          "team": "IND",
+          "salary": 5800,
+          "projection": 11.31,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Dalton Kincaid",
+          "position": "TE",
+          "team": "BUF",
+          "salary": 5800,
+          "projection": 10.01,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Darren Waller",
+          "position": "TE",
+          "team": "MIA",
+          "salary": 5100,
+          "projection": 10.97,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "New Orleans Saints",
+          "position": "D",
+          "team": "NO",
+          "salary": 3000,
+          "projection": 7.1,
+          "game_mult": 1.43,
+          "ai_must_play": false
+        }
+      ]
+    },
+    {
+      "contest_type": "friends_league",
+      "total_salary": 59900,
+      "projected_points": 128.3,
+      "ceiling_90": 144.11,
+      "floor_10": 109.77,
+      "high_total_exposure": 9,
+      "primary_stack": "BUF",
+      "players": [
+        {
+          "name": "Josh Allen",
+          "position": "QB",
+          "team": "BUF",
+          "salary": 9200,
+          "projection": 25.14,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "De'Von Achane",
+          "position": "RB",
+          "team": "MIA",
+          "salary": 9200,
+          "projection": 20.61,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "Chase Brown",
+          "position": "RB",
+          "team": "CIN",
+          "salary": 7300,
+          "projection": 12.79,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Davante Adams",
+          "position": "WR",
+          "team": "LAR",
+          "salary": 8600,
+          "projection": 17.58,
+          "game_mult": 1.43,
+          "ai_must_play": false
+        },
+        {
+          "name": "Khalil Shakir",
+          "position": "WR",
+          "team": "BUF",
+          "salary": 5900,
+          "projection": 10.07,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Michael Pittman Jr.",
+          "position": "WR",
+          "team": "IND",
+          "salary": 5800,
+          "projection": 10.75,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Dalton Kincaid",
+          "position": "TE",
+          "team": "BUF",
+          "salary": 5800,
+          "projection": 13.19,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Darren Waller",
+          "position": "TE",
+          "team": "MIA",
+          "salary": 5100,
+          "projection": 10.9,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "New Orleans Saints",
+          "position": "D",
+          "team": "NO",
+          "salary": 3000,
+          "projection": 7.29,
+          "game_mult": 1.43,
+          "ai_must_play": false
+        }
+      ]
+    },
+    {
+      "contest_type": "friends_league",
+      "total_salary": 59300,
+      "projected_points": 122.82,
+      "ceiling_90": 139.1,
+      "floor_10": 105.41,
+      "high_total_exposure": 9,
+      "primary_stack": "BUF",
+      "players": [
+        {
+          "name": "Josh Allen",
+          "position": "QB",
+          "team": "BUF",
+          "salary": 9200,
+          "projection": 20.0,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "Jonathan Taylor",
+          "position": "RB",
+          "team": "IND",
+          "salary": 9700,
+          "projection": 28.28,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "Chase Brown",
+          "position": "RB",
+          "team": "CIN",
+          "salary": 7300,
+          "projection": 10.11,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Ja'Marr Chase",
+          "position": "WR",
+          "team": "CIN",
+          "salary": 9100,
+          "projection": 17.75,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "Khalil Shakir",
+          "position": "WR",
+          "team": "BUF",
+          "salary": 5900,
+          "projection": 7.43,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Devontez Walker",
+          "position": "WR",
+          "team": "BAL",
+          "salary": 4200,
+          "projection": 6.69,
+          "game_mult": 1.32,
+          "ai_must_play": false
+        },
+        {
+          "name": "Dalton Kincaid",
+          "position": "TE",
+          "team": "BUF",
+          "salary": 5800,
+          "projection": 12.84,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Darren Waller",
+          "position": "TE",
+          "team": "MIA",
+          "salary": 5100,
+          "projection": 12.76,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "New Orleans Saints",
+          "position": "D",
+          "team": "NO",
+          "salary": 3000,
+          "projection": 6.95,
+          "game_mult": 1.43,
+          "ai_must_play": false
+        }
+      ]
+    }
+  ]
+}

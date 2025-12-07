@@ -2,6 +2,7 @@
 FastAPI web interface for DFS optimization system
 FIXED: H2H mode now properly loads games and players from correct CSV
 """
+from late_swap import LateSwapEngine, filter_for_late_swap
 from fastapi import Request
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, FileResponse
@@ -10,6 +11,7 @@ from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import asyncio
 import os
+from late_swap import LateSwapEngine, filter_for_late_swap
 from pathlib import Path
 import json
 from datetime import datetime
@@ -167,10 +169,21 @@ async def read_root():
                                 <input type="number" id="numLineups" value="3" min="1" max="10">
                             </div>
                             
+
                             <div class="control-group">
                                 <label style="display: flex; align-items: center; gap: 5px;">
                                     <input type="checkbox" id="useAI" checked style="width: auto; margin: 0;">
                                     <span>Use AI</span>
+                                </label>
+                            </div>
+
+                            <!-- Late Swap Mode: When checked the optimizer will exclude players
+                                 from games that have already started. It uses the
+                                 `/late-swap-optimize` endpoint instead of `/optimize`. -->
+                            <div class="control-group">
+                                <label style="display: flex; align-items: center; gap: 5px;">
+                                    <input type="checkbox" id="lateSwap" style="width: auto; margin: 0;">
+                                    <span>Late Swap Mode</span>
                                 </label>
                             </div>
 
@@ -456,7 +469,14 @@ async def read_root():
 
                     log(`🧠 Generating ${numLineups} ${contestType.toUpperCase()} lineups...`, 'loading');
 
-                    const response = await fetch('/optimize', {
+                    // Determine whether to perform a late-swap optimization. When the
+                    // lateSwap checkbox is checked the optimizer will exclude players
+                    // from games that have already started and hit the
+                    // `/late-swap-optimize` endpoint instead of `/optimize`.
+                    const lateSwapEnabled = document.getElementById('lateSwap')?.checked;
+                    const endpoint = lateSwapEnabled ? '/late-swap-optimize' : '/optimize';
+
+                    const response = await fetch(endpoint, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(requestBody)
@@ -467,7 +487,11 @@ async def read_root():
                         throw new Error(errorData.detail || `HTTP ${response.status}`);
                     }
 
-                    const lineups = await response.json();
+                    const data = await response.json();
+                    // The /late-swap-optimize endpoint returns an object
+                    // with a ``lineups`` property, whereas /optimize
+                    // returns the array directly. Normalise the result here.
+                    const lineups = Array.isArray(data) ? data : data.lineups;
                     currentLineups = lineups;
                     displayFanDuelLineups(lineups, contestType);
 
@@ -586,7 +610,8 @@ async def get_players(contest_type: str = Query("gpp")):
         logger.info(f"📋 Loading {contest_type} players using CLI data collection...")
 
         # Get data the same way as CLI
-        fresh_data = await get_fresh_data()
+        # Pass contest_type through to data collection so AI analysis uses proper context
+        fresh_data = await get_fresh_data(contest_type)
 
         if not fresh_data or not fresh_data.get('players'):
             raise HTTPException(status_code=400, detail="No player data available")
@@ -682,7 +707,8 @@ async def optimize_lineups(request: OptimizationRequest):
             logger.info("📡 Auto-refreshing using CLI data collection...")
             from data_collector import get_fresh_data
 
-            fresh_data = await get_fresh_data()
+            # Pass contest_type from request to get_fresh_data for context-aware AI
+            fresh_data = await get_fresh_data(request.contest_type)
             if not fresh_data or not fresh_data.get('players'):
                 raise HTTPException(status_code=400, detail="No player data available")
 
@@ -734,6 +760,7 @@ async def optimize_lineups(request: OptimizationRequest):
             player_data=filtered_players,
             weather_data=current_player_data.get('weather', {}),
             vegas_multipliers=current_player_data.get('vegas_multipliers', {}),
+            vegas_odds=current_player_data.get('vegas_odds', {}),
             num_lineups=request.num_lineups,
             contest_type=request.contest_type
         )
@@ -759,6 +786,166 @@ async def optimize_lineups(request: OptimizationRequest):
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# ADD THESE ENDPOINTS TO app.py (after the /optimize endpoint)
+
+# First, add this import at the top of app.py:
+# from late_swap import LateSwapEngine, filter_for_late_swap
+
+@app.get("/game-status")
+async def get_game_status():
+    """Get current game status for late-swap UI"""
+    try:
+        from late_swap import LateSwapEngine
+        from data_collector import EnhancedDataCollector
+
+        async with EnhancedDataCollector() as collector:
+            games_info = await collector.get_current_week_games()
+
+        engine = LateSwapEngine()
+        game_status = engine.get_game_status_summary(games_info)
+        started_teams = engine.get_started_teams(games_info)
+        available_teams = engine.get_available_teams(games_info)
+
+        return {
+            "games": game_status,
+            "started_teams": list(started_teams),
+            "available_teams": list(available_teams),
+            "current_time": engine.get_current_time_et().isoformat(),
+            "total_games": len(game_status),
+            "games_started": len([g for g in game_status if g['started']]),
+            "games_remaining": len([g for g in game_status if not g['started']])
+        }
+    except Exception as e:
+        logger.error(f"Game status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/late-swap-optimize")
+async def late_swap_optimize(request: OptimizationRequest):
+    """
+    Generate optimized lineups for late-swap scenarios
+
+    - Auto-filters out players whose games have started
+    - Respects locked players (keeps them even if game started)
+    - Optimizes remaining slots from available player pool
+    """
+    global current_player_data
+
+    try:
+        from late_swap import filter_for_late_swap
+        from data_collector import get_fresh_data, EnhancedDataCollector
+
+        logger.info(f"🔄 Late-swap optimization: {request.num_lineups} lineups, {len(request.locked_players)} locked")
+
+        # Get fresh data if needed
+        if not current_player_data:
+            # Pass contest_type to get_fresh_data for context-aware AI
+            current_player_data = await get_fresh_data(request.contest_type)
+
+        if not current_player_data or not current_player_data.get('players'):
+            raise HTTPException(status_code=400, detail="No player data available")
+
+        # Get current games info
+        async with EnhancedDataCollector() as collector:
+            games_info = await collector.get_current_week_games()
+
+        # Filter for late-swap
+        late_swap_data = filter_for_late_swap(
+            players=current_player_data['players'],
+            games_info=games_info,
+            locked_players=request.locked_players
+        )
+
+        available_players = late_swap_data['available_players']
+        locked_players_data = late_swap_data['locked_players_data']
+        started_teams = late_swap_data['started_teams']
+
+        logger.info(f"⏰ Late-swap: {len(available_players)} available, {len(locked_players_data)} locked")
+        logger.info(f"🔒 Started teams: {sorted(started_teams)}")
+
+        if not available_players and not locked_players_data:
+            raise HTTPException(status_code=400, detail="No players available - all games may have started")
+
+        # Apply exclusions to available pool
+        filtered_available = []
+        for player in available_players:
+            player_name = player.get('name', player.get('player_id', ''))
+            if player_name in request.excluded_players:
+                continue
+            filtered_available.append(player)
+
+        # Combine locked + available for optimization
+        # The optimizer will respect the 'locked' flag
+        all_players = locked_players_data + filtered_available
+
+        logger.info(
+            f"📊 Total pool: {len(all_players)} ({len(locked_players_data)} locked + {len(filtered_available)} available)")
+
+        # Run optimization
+        lineups = optimize_dfs_lineups(
+            player_data=all_players,
+            weather_data=current_player_data.get('weather', {}),
+            vegas_multipliers=current_player_data.get('vegas_multipliers', {}),
+            vegas_odds=current_player_data.get('vegas_odds', {}),
+            num_lineups=request.num_lineups,
+            contest_type=request.contest_type
+        )
+
+        if not lineups:
+            raise HTTPException(status_code=400, detail="Late-swap optimization failed")
+
+        # Build response with late-swap metadata
+        response_lineups = []
+        for lineup in lineups:
+            players_info = []
+            locked_count = 0
+            for p in lineup.players:
+                is_locked = p.team in started_teams or getattr(p, 'locked', False)
+                if is_locked:
+                    locked_count += 1
+                players_info.append({
+                    'display': f"{p.name} (${p.salary:,}) - {p.position}-{p.team}",
+                    'name': p.name,
+                    'team': p.team,
+                    'position': p.position,
+                    'salary': p.salary,
+                    'projection': round(p.projection, 1),
+                    'locked': is_locked
+                })
+
+            response_lineups.append({
+                'players': [p['display'] for p in players_info],
+                'players_detail': players_info,
+                'total_salary': lineup.total_salary,
+                'projected_points': round(lineup.projected_points, 1),
+                'ownership_total': round(lineup.ownership_total, 1),
+                'correlation_score': round(lineup.correlation_score, 3),
+                'locked_count': locked_count,
+                'available_count': 9 - locked_count
+            })
+
+        logger.info(f"✅ Generated {len(response_lineups)} late-swap lineups")
+
+        return {
+            'lineups': response_lineups,
+            'late_swap_info': {
+                'started_teams': list(started_teams),
+                'available_teams': list(late_swap_data.get('started_teams', set()) ^
+                                        set(t for g in games_info.get('all_games', []) for t in g.get('teams', []))),
+                'locked_players': [p.get('name') for p in locked_players_data],
+                'remaining_positions': late_swap_data['remaining_positions'],
+                'game_status': late_swap_data['game_status']
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Late-swap error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
 async def health_check():

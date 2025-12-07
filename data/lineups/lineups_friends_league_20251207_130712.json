@@ -1,0 +1,280 @@
+{
+  "lineups": [
+    {
+      "contest_type": "friends_league",
+      "total_salary": 60000,
+      "projected_points": 131.0,
+      "ceiling_90": 148.23,
+      "floor_10": 110.4,
+      "high_total_exposure": 8,
+      "primary_stack": "LAR",
+      "players": [
+        {
+          "name": "Matthew Stafford",
+          "position": "QB",
+          "team": "LAR",
+          "salary": 8000,
+          "projection": 22.44,
+          "game_mult": 1.43,
+          "ai_must_play": false
+        },
+        {
+          "name": "James Cook III",
+          "position": "RB",
+          "team": "BUF",
+          "salary": 9300,
+          "projection": 22.35,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "Breece Hall",
+          "position": "RB",
+          "team": "NYJ",
+          "salary": 7500,
+          "projection": 16.01,
+          "game_mult": 1.32,
+          "ai_must_play": false
+        },
+        {
+          "name": "Puka Nacua",
+          "position": "WR",
+          "team": "LAR",
+          "salary": 9300,
+          "projection": 20.4,
+          "game_mult": 1.43,
+          "ai_must_play": true
+        },
+        {
+          "name": "Tee Higgins",
+          "position": "WR",
+          "team": "CIN",
+          "salary": 7100,
+          "projection": 13.33,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Jaylen Waddle",
+          "position": "WR",
+          "team": "MIA",
+          "salary": 6700,
+          "projection": 13.26,
+          "game_mult": 1.32,
+          "ai_must_play": false
+        },
+        {
+          "name": "Darren Waller",
+          "position": "TE",
+          "team": "MIA",
+          "salary": 5100,
+          "projection": 10.17,
+          "game_mult": 1.32,
+          "ai_must_play": false
+        },
+        {
+          "name": "Sincere McCormick",
+          "position": "RB",
+          "team": "ARI",
+          "salary": 4000,
+          "projection": 5.88,
+          "game_mult": 1.43,
+          "ai_must_play": false
+        },
+        {
+          "name": "New Orleans Saints",
+          "position": "D",
+          "team": "NO",
+          "salary": 3000,
+          "projection": 7.17,
+          "game_mult": 1.21,
+          "ai_must_play": false
+        }
+      ]
+    },
+    {
+      "contest_type": "friends_league",
+      "total_salary": 60000,
+      "projected_points": 130.74,
+      "ceiling_90": 147.05,
+      "floor_10": 113.09,
+      "high_total_exposure": 8,
+      "primary_stack": "BUF",
+      "players": [
+        {
+          "name": "Josh Allen",
+          "position": "QB",
+          "team": "BUF",
+          "salary": 9200,
+          "projection": 21.4,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "James Cook III",
+          "position": "RB",
+          "team": "BUF",
+          "salary": 9300,
+          "projection": 22.82,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "Sincere McCormick",
+          "position": "RB",
+          "team": "ARI",
+          "salary": 4000,
+          "projection": 7.1,
+          "game_mult": 1.43,
+          "ai_must_play": false
+        },
+        {
+          "name": "Puka Nacua",
+          "position": "WR",
+          "team": "LAR",
+          "salary": 9300,
+          "projection": 19.92,
+          "game_mult": 1.43,
+          "ai_must_play": true
+        },
+        {
+          "name": "Tee Higgins",
+          "position": "WR",
+          "team": "CIN",
+          "salary": 7100,
+          "projection": 11.99,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Tre Tucker",
+          "position": "WR",
+          "team": "LV",
+          "salary": 5500,
+          "projection": 11.3,
+          "game_mult": 1.1,
+          "ai_must_play": false
+        },
+        {
+          "name": "Dalton Kincaid",
+          "position": "TE",
+          "team": "BUF",
+          "salary": 5800,
+          "projection": 12.76,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Darren Waller",
+          "position": "TE",
+          "team": "MIA",
+          "salary": 5100,
+          "projection": 13.26,
+          "game_mult": 1.32,
+          "ai_must_play": false
+        },
+        {
+          "name": "Los Angeles Rams",
+          "position": "D",
+          "team": "LAR",
+          "salary": 4700,
+          "projection": 10.2,
+          "game_mult": 1.43,
+          "ai_must_play": false
+        }
+      ]
+    },
+    {
+      "contest_type": "friends_league",
+      "total_salary": 60000,
+      "projected_points": 125.58,
+      "ceiling_90": 141.23,
+      "floor_10": 109.24,
+      "high_total_exposure": 8,
+      "primary_stack": "BUF",
+      "players": [
+        {
+          "name": "Josh Allen",
+          "position": "QB",
+          "team": "BUF",
+          "salary": 9200,
+          "projection": 24.92,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "James Cook III",
+          "position": "RB",
+          "team": "BUF",
+          "salary": 9300,
+          "projection": 17.83,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "Sincere McCormick",
+          "position": "RB",
+          "team": "ARI",
+          "salary": 4000,
+          "projection": 7.22,
+          "game_mult": 1.43,
+          "ai_must_play": false
+        },
+        {
+          "name": "Ja'Marr Chase",
+          "position": "WR",
+          "team": "CIN",
+          "salary": 9100,
+          "projection": 16.59,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "Drake London",
+          "position": "WR",
+          "team": "ATL",
+          "salary": 7500,
+          "projection": 17.48,
+          "game_mult": 1.21,
+          "ai_must_play": false
+        },
+        {
+          "name": "Marvin Harrison Jr.",
+          "position": "WR",
+          "team": "ARI",
+          "salary": 6800,
+          "projection": 11.24,
+          "game_mult": 1.43,
+          "ai_must_play": false
+        },
+        {
+          "name": "Dalton Kincaid",
+          "position": "TE",
+          "team": "BUF",
+          "salary": 5800,
+          "projection": 10.65,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Darren Waller",
+          "position": "TE",
+          "team": "MIA",
+          "salary": 5100,
+          "projection": 13.72,
+          "game_mult": 1.32,
+          "ai_must_play": false
+        },
+        {
+          "name": "Arizona Cardinals",
+          "position": "D",
+          "team": "ARI",
+          "salary": 3200,
+          "projection": 5.92,
+          "game_mult": 1.43,
+          "ai_must_play": false
+        }
+      ]
+    }
+  ]
+}

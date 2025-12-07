@@ -1,0 +1,280 @@
+{
+  "lineups": [
+    {
+      "contest_type": "friends_league",
+      "total_salary": 60000,
+      "projected_points": 125.6,
+      "ceiling_90": 142.75,
+      "floor_10": 107.99,
+      "high_total_exposure": 9,
+      "primary_stack": "BUF",
+      "players": [
+        {
+          "name": "Josh Allen",
+          "position": "QB",
+          "team": "BUF",
+          "salary": 9200,
+          "projection": 28.37,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "Chase Brown",
+          "position": "RB",
+          "team": "CIN",
+          "salary": 7300,
+          "projection": 13.27,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Michael Carter",
+          "position": "RB",
+          "team": "ARI",
+          "salary": 5100,
+          "projection": 7.26,
+          "game_mult": 1.43,
+          "ai_must_play": false
+        },
+        {
+          "name": "Puka Nacua",
+          "position": "WR",
+          "team": "LAR",
+          "salary": 9300,
+          "projection": 20.06,
+          "game_mult": 1.43,
+          "ai_must_play": true
+        },
+        {
+          "name": "Ja'Marr Chase",
+          "position": "WR",
+          "team": "CIN",
+          "salary": 9100,
+          "projection": 19.3,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "Khalil Shakir",
+          "position": "WR",
+          "team": "BUF",
+          "salary": 5900,
+          "projection": 9.17,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Dalton Kincaid",
+          "position": "TE",
+          "team": "BUF",
+          "salary": 5800,
+          "projection": 11.17,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Darren Waller",
+          "position": "TE",
+          "team": "MIA",
+          "salary": 5100,
+          "projection": 9.34,
+          "game_mult": 1.32,
+          "ai_must_play": false
+        },
+        {
+          "name": "Arizona Cardinals",
+          "position": "D",
+          "team": "ARI",
+          "salary": 3200,
+          "projection": 7.67,
+          "game_mult": 1.43,
+          "ai_must_play": false
+        }
+      ]
+    },
+    {
+      "contest_type": "friends_league",
+      "total_salary": 60000,
+      "projected_points": 125.28,
+      "ceiling_90": 142.03,
+      "floor_10": 108.25,
+      "high_total_exposure": 8,
+      "primary_stack": "BUF",
+      "players": [
+        {
+          "name": "Josh Allen",
+          "position": "QB",
+          "team": "BUF",
+          "salary": 9200,
+          "projection": 21.88,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "James Cook III",
+          "position": "RB",
+          "team": "BUF",
+          "salary": 9300,
+          "projection": 22.46,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "Chase Brown",
+          "position": "RB",
+          "team": "CIN",
+          "salary": 7300,
+          "projection": 12.38,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Davante Adams",
+          "position": "WR",
+          "team": "LAR",
+          "salary": 8600,
+          "projection": 17.43,
+          "game_mult": 1.43,
+          "ai_must_play": false
+        },
+        {
+          "name": "Khalil Shakir",
+          "position": "WR",
+          "team": "BUF",
+          "salary": 5900,
+          "projection": 10.03,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Jayden Reed",
+          "position": "WR",
+          "team": "GB",
+          "salary": 5800,
+          "projection": 13.5,
+          "game_mult": 1.21,
+          "ai_must_play": false
+        },
+        {
+          "name": "Dalton Kincaid",
+          "position": "TE",
+          "team": "BUF",
+          "salary": 5800,
+          "projection": 10.27,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Darren Waller",
+          "position": "TE",
+          "team": "MIA",
+          "salary": 5100,
+          "projection": 10.89,
+          "game_mult": 1.32,
+          "ai_must_play": false
+        },
+        {
+          "name": "New Orleans Saints",
+          "position": "D",
+          "team": "NO",
+          "salary": 3000,
+          "projection": 6.42,
+          "game_mult": 1.32,
+          "ai_must_play": false
+        }
+      ]
+    },
+    {
+      "contest_type": "friends_league",
+      "total_salary": 60000,
+      "projected_points": 124.11,
+      "ceiling_90": 140.78,
+      "floor_10": 107.5,
+      "high_total_exposure": 9,
+      "primary_stack": "BUF",
+      "players": [
+        {
+          "name": "Josh Allen",
+          "position": "QB",
+          "team": "BUF",
+          "salary": 9200,
+          "projection": 26.65,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "James Cook III",
+          "position": "RB",
+          "team": "BUF",
+          "salary": 9300,
+          "projection": 20.37,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "Chase Brown",
+          "position": "RB",
+          "team": "CIN",
+          "salary": 7300,
+          "projection": 12.94,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Ja'Marr Chase",
+          "position": "WR",
+          "team": "CIN",
+          "salary": 9100,
+          "projection": 17.82,
+          "game_mult": 1.54,
+          "ai_must_play": true
+        },
+        {
+          "name": "Khalil Shakir",
+          "position": "WR",
+          "team": "BUF",
+          "salary": 5900,
+          "projection": 9.5,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Andrei Iosivas",
+          "position": "WR",
+          "team": "CIN",
+          "salary": 5000,
+          "projection": 6.88,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Dalton Kincaid",
+          "position": "TE",
+          "team": "BUF",
+          "salary": 5800,
+          "projection": 10.51,
+          "game_mult": 1.54,
+          "ai_must_play": false
+        },
+        {
+          "name": "Darren Waller",
+          "position": "TE",
+          "team": "MIA",
+          "salary": 5100,
+          "projection": 12.37,
+          "game_mult": 1.32,
+          "ai_must_play": false
+        },
+        {
+          "name": "Minnesota Vikings",
+          "position": "D",
+          "team": "MIN",
+          "salary": 3300,
+          "projection": 7.05,
+          "game_mult": 1.32,
+          "ai_must_play": false
+        }
+      ]
+    }
+  ]
+}

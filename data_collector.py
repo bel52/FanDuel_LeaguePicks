@@ -80,7 +80,7 @@ class WinningAIAnalyzer:
             try:
                 return self._get_ai_recommendations(
                     elite_env_players, good_env_players, bad_env_players,
-                    high_total_games, contest_type
+                    high_total_games, contest_type, players
                 )
             except Exception as e:
                 logger.warning(f"AI analysis failed: {e}")
@@ -107,13 +107,23 @@ class WinningAIAnalyzer:
         good_players: List[Dict],
         bad_players: List[Dict],
         high_total_games: List[Dict],
-        contest_type: str
+        contest_type: str,
+        all_players: List[Dict]
     ) -> Dict[str, Any]:
-        """Get AI-powered must-play/fade recommendations"""
+        """
+        Get AI-powered must-play/fade recommendations.
+
+        In addition to the existing high-total game context, enrich the prompt with
+        predicted ownership estimates and value plays. Ownership estimates are
+        approximated based on salary and position. Value plays highlight low-cost
+        players with strong projection-to-salary ratios and potential role increases
+        due to team injuries.
+        """
         try:
             import openai
 
-            prompt = self._build_prompt(elite_players, high_total_games, contest_type)
+            # Build a detailed prompt with ownership and value data
+            prompt = self._build_prompt(elite_players, high_total_games, contest_type, all_players)
 
             client = openai.OpenAI(api_key=self.openai_key)
 
@@ -123,14 +133,16 @@ class WinningAIAnalyzer:
                     {
                         "role": "system",
                         "content": """You are an elite DFS analyst for a 12-person friends league.
-Your job: identify MUST PLAY and MUST FADE players based on game environment.
+Your job: identify MUST PLAY and MUST FADE players based on game environment and slate context.
 
 Rules:
-1. Players in 48+ total games are premium targets
-2. QBs in shootouts (47+) are near-auto plays  
-3. Stack the QB with 1-2 WRs from highest-total game
-4. Fade players in games under 42 total
-5. For friends league: maximize CEILING, ignore ownership
+1. Players in 48+ total games are premium targets.
+2. QBs in shootouts (47+) are near-auto plays.
+3. Stack the QB with 1-2 WRs from the highest-total game.
+4. Fade players in games under 42 total.
+5. Use salary, injury context and ownership data to identify high-upside and contrarian plays.
+6. For friends leagues (small-field tournaments), emphasize ceiling and differentiation.
+7. For head-to-head, prioritize consistency and avoid volatile punts.
 
 Return ONLY valid JSON:
 {
@@ -139,21 +151,22 @@ Return ONLY valid JSON:
     "stack_game": "AWAY@HOME",
     "stack_qb": "QB Name",
     "stack_receivers": ["WR1 Name", "WR2 Name"]
-}"""
+}
+"""
                     },
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=600,
+                max_tokens=800,
                 temperature=0.2
             )
 
-            # Track cost
+            # Track cost (GPT-4o pricing approximated)
             usage = response.usage
             cost = (usage.prompt_tokens * 0.00015 / 1000 + usage.completion_tokens * 0.0006 / 1000)
             self.weekly_spend += cost
             logger.info(f"💰 AI cost: ${cost:.4f} (weekly: ${self.weekly_spend:.2f})")
 
-            # Parse response
+            # Parse JSON content from response
             content = response.choices[0].message.content
             if '```json' in content:
                 content = content.split('```json')[1].split('```')[0]
@@ -172,27 +185,137 @@ Return ONLY valid JSON:
             logger.error(f"AI recommendation failed: {e}")
             return self._get_rule_based_recommendations(elite_players, [], [], contest_type)
 
-    def _build_prompt(self, elite_players: List[Dict], high_total_games: List[Dict], contest_type: str) -> str:
-        """Build concise prompt"""
-        lines = [
-            f"Contest: 12-person friends league ({contest_type})",
-            "Goal: Beat 11 opponents with highest ceiling lineup",
-            "",
-            "HIGH-TOTAL GAMES (47+):"
-        ]
+    def _build_prompt(
+        self,
+        elite_players: List[Dict],
+        high_total_games: List[Dict],
+        contest_type: str,
+        all_players: List[Dict]
+    ) -> str:
+        """
+        Construct a detailed prompt for the AI model.
 
+        In addition to listing the highest-total games and elite players, include:
+        - A section highlighting players projected to be highly owned ("Chalk") based on salary and position.
+        - A section of value plays and salary savers with strong projection-to-salary ratios.
+        - A section highlighting potential injury-driven opportunities (cheap players on teams with notable injuries).
+
+        These sections provide the model with additional context so it can make
+        more informed must-play and must-fade recommendations.
+        """
+        lines: List[str] = []
+
+        # Contest description
+        lines.append(f"Contest: 12-person friends league ({contest_type})")
+        lines.append("Goal: Build the highest-ceiling lineup using game environment, ownership and value.")
+        lines.append("")
+
+        # High-total games (limit to 5 for brevity)
+        lines.append("HIGH-TOTAL GAMES (47+):")
         for game in high_total_games[:5]:
             lines.append(f"  {game['game_id']}: {game['total']} total")
-
         lines.append("")
-        lines.append("TOP PLAYERS IN ELITE GAMES (sorted by projection):")
 
+        # Elite players sorted by projection
+        lines.append("TOP PLAYERS IN ELITE GAMES (sorted by projection):")
         sorted_elite = sorted(elite_players, key=lambda x: x.get('projected_points', 0), reverse=True)
         for p in sorted_elite[:20]:
-            lines.append(f"  {p['name']}|{p['position']}|{p['team']}|${p['salary']}|{p.get('projected_points', 0):.1f}pts|{p.get('game_total', 45)}total")
-
+            proj = p.get('projected_points', 0.0)
+            lines.append(
+                f"  {p['name']}|{p['position']}|{p['team']}|${p['salary']}|{proj:.1f}pts|{p.get('game_total', 45)} total"
+            )
         lines.append("")
-        lines.append("Identify 3-4 must-play players and best QB+WR stack from highest-total game.")
+
+        # Predicted ownership estimates (chalk)
+        def _predict_ownership(player: Dict) -> float:
+            """Approximate ownership based on salary and position (replicates optimizer logic)."""
+            salary = player.get('salary', 0)
+            position = player.get('position', '')
+            ownership = 15.0
+            if salary >= 9500:
+                ownership = 40.0
+            elif salary >= 8500:
+                ownership = 30.0
+            elif salary >= 7500:
+                ownership = 22.0
+            elif salary >= 6000:
+                ownership = 15.0
+            else:
+                ownership = 10.0
+            if position == 'QB' and salary >= 8000:
+                ownership += 5
+            elif position == 'RB':
+                ownership += 3
+            return max(5.0, min(50.0, ownership))
+
+        # Compute ownership for all players and select top 5
+        ownership_list = []
+        for p in all_players:
+            try:
+                own = _predict_ownership(p)
+                ownership_list.append((p, own))
+            except Exception:
+                continue
+        ownership_list.sort(key=lambda x: x[1], reverse=True)
+        top_chalk = ownership_list[:5]
+
+        if top_chalk:
+            lines.append("CHALK (predicted high ownership):")
+            for p, own in top_chalk:
+                lines.append(
+                    f"  {p['name']}|{p['position']}|{p['team']}|${p['salary']}|{p.get('projected_points', 0):.1f}pts|{own:.1f}% predicted ownership"
+                )
+            lines.append("")
+
+        # Value plays and salary savers (projection per dollar)
+        value_candidates: List[tuple] = []
+        for p in all_players:
+            salary = p.get('salary', 0)
+            proj = p.get('projected_points', 0.0)
+            if salary > 0:
+                ratio = proj / salary
+                # consider players under 7000 salary as value pool
+                if salary <= 7000:
+                    value_candidates.append((p, ratio))
+        value_candidates.sort(key=lambda x: x[1], reverse=True)
+        top_values = value_candidates[:5]
+        if top_values:
+            lines.append("VALUE PLAYS & SALARY SAVERS:")
+            for p, ratio in top_values:
+                lines.append(
+                    f"  {p['name']}|{p['position']}|{p['team']}|${p['salary']}|{p.get('projected_points', 0):.1f}pts|{ratio*1000:.2f} pts/$1000"
+                )
+            lines.append("")
+
+        # Injury-driven opportunities: identify teams with out/IR/susp/NA and pick cheap players
+        injured_teams = set()
+        for p in all_players:
+            status = str(p.get('injury_status', '')).upper()
+            if any(flag in status for flag in ['IR', 'OUT', 'SUSP', 'NA']):
+                injured_teams.add(p.get('team', ''))
+        injury_candidates: List[tuple] = []
+        for p in all_players:
+            team = p.get('team', '')
+            salary = p.get('salary', 0)
+            proj = p.get('projected_points', 0.0)
+            if team in injured_teams and salary > 0 and salary <= 6500:
+                ratio = proj / salary
+                injury_candidates.append((p, ratio))
+        injury_candidates.sort(key=lambda x: x[1], reverse=True)
+        top_injury_vals = injury_candidates[:5]
+        if top_injury_vals:
+            lines.append("INJURY OPPORTUNITIES (cheap fill-ins with upside):")
+            for p, ratio in top_injury_vals:
+                lines.append(
+                    f"  {p['name']}|{p['position']}|{p['team']}|${p['salary']}|{p.get('projected_points', 0):.1f}pts|{ratio*1000:.2f} pts/$1000"
+                )
+            lines.append("")
+
+        # Instructions for the model
+        lines.append(
+            "Identify 3-4 must-play players and 1-2 must-fade players using the context above. "
+            "Focus on ceiling for tournaments and consistency for head-to-head, and choose the best QB+WR stack from a high-total game."
+        )
 
         return "\n".join(lines)
 
@@ -448,6 +571,7 @@ class EnhancedDataCollector:
                 'teams': teams,
                 'time_slot': time_slot,
                 'time': game_et.strftime('%A %I:%M %p ET'),
+                'game_datetime': game_et,
             }
 
         except Exception as e:
