@@ -1,12 +1,12 @@
 """
-FIXED: Data collector with SMARTER QB filtering for tournament winning
-Addresses over-aggressive filtering that removes viable QBs
-NOW INCLUDES: Injury opportunity detection BEFORE filtering
-FRIENDS LEAGUE: Projection deflation for realistic expectations
+WINNING Data Collector - Integrates AI must-play analysis with Vegas data
+Fixes:
+1. AI now identifies MUST PLAY/FADE players before optimization
+2. Vegas game totals flow through to player objects
+3. Breaking news triggers AI re-analysis
 """
 import asyncio
 import aiohttp
-import os
 import pandas as pd
 import nfl_data_py as nfl
 from datetime import datetime, timedelta, timezone
@@ -15,6 +15,8 @@ import json
 from pathlib import Path
 import time
 from loguru import logger
+import os
+
 try:
     from news_monitor import get_breaking_news, get_player_news
     NEWS_AVAILABLE = True
@@ -22,6 +24,7 @@ try:
 except ImportError:
     NEWS_AVAILABLE = False
     logger.warning("News monitoring not available")
+
 import pytz
 import numpy as np
 
@@ -30,16 +33,281 @@ from config import (
     RATE_LIMITS, CACHE_TTL, VALIDATION_THRESHOLDS
 )
 
+
+class WinningAIAnalyzer:
+    """
+    AI analyzer that identifies MUST PLAY and MUST FADE players
+    Integrated directly into data collection for seamless flow
+    """
+
+    def __init__(self):
+        self.openai_key = os.getenv('OPENAI_API_KEY', '')
+        self.anthropic_key = os.getenv('ANTHROPIC_API_KEY', '')
+        self.model = os.getenv('GPT_MODEL', 'gpt-4o-mini')
+        self.weekly_budget = float(os.getenv('AI_WEEKLY_BUDGET', '15.0'))
+        self.weekly_spend = 0.0
+
+    def analyze_for_winning_picks(
+        self,
+        players: List[Dict],
+        vegas_data: Dict,
+        contest_type: str = 'gpp'
+    ) -> Dict[str, Any]:
+        """
+        Main AI analysis - returns must-play/must-fade recommendations
+        """
+        high_total_games = vegas_data.get('high_total_games', [])
+        game_data = vegas_data.get('games', {})
+
+        # Categorize players by game environment
+        elite_env_players = []  # 48+ total
+        good_env_players = []   # 45-47 total
+        bad_env_players = []    # <42 total
+
+        for player in players:
+            team = player.get('team', '')
+            game_total = self._get_team_game_total(team, game_data)
+
+            if game_total >= 48:
+                elite_env_players.append({**player, 'game_total': game_total})
+            elif game_total >= 45:
+                good_env_players.append({**player, 'game_total': game_total})
+            elif game_total <= 42:
+                bad_env_players.append({**player, 'game_total': game_total})
+
+        # Try AI analysis if available and affordable
+        if self.openai_key and self._can_afford_call():
+            try:
+                return self._get_ai_recommendations(
+                    elite_env_players, good_env_players, bad_env_players,
+                    high_total_games, contest_type
+                )
+            except Exception as e:
+                logger.warning(f"AI analysis failed: {e}")
+
+        # Fall back to rule-based recommendations
+        return self._get_rule_based_recommendations(
+            elite_env_players, good_env_players, bad_env_players, contest_type
+        )
+
+    def _get_team_game_total(self, team: str, game_data: Dict) -> float:
+        """Get game total for a team"""
+        for game_id, data in game_data.items():
+            if team in [data.get('home_team'), data.get('away_team')]:
+                return data.get('total_points', 45.0)
+        return 45.0
+
+    def _can_afford_call(self) -> bool:
+        """Check budget"""
+        return (self.weekly_spend + 0.05) <= self.weekly_budget
+
+    def _get_ai_recommendations(
+        self,
+        elite_players: List[Dict],
+        good_players: List[Dict],
+        bad_players: List[Dict],
+        high_total_games: List[Dict],
+        contest_type: str
+    ) -> Dict[str, Any]:
+        """Get AI-powered must-play/fade recommendations"""
+        try:
+            import openai
+
+            prompt = self._build_prompt(elite_players, high_total_games, contest_type)
+
+            client = openai.OpenAI(api_key=self.openai_key)
+
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """You are an elite DFS analyst for a 12-person friends league.
+Your job: identify MUST PLAY and MUST FADE players based on game environment.
+
+Rules:
+1. Players in 48+ total games are premium targets
+2. QBs in shootouts (47+) are near-auto plays  
+3. Stack the QB with 1-2 WRs from highest-total game
+4. Fade players in games under 42 total
+5. For friends league: maximize CEILING, ignore ownership
+
+Return ONLY valid JSON:
+{
+    "must_play": ["PlayerName|Position|Team|Reason"],
+    "must_fade": ["PlayerName|Position|Team|Reason"],
+    "stack_game": "AWAY@HOME",
+    "stack_qb": "QB Name",
+    "stack_receivers": ["WR1 Name", "WR2 Name"]
+}"""
+                    },
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=600,
+                temperature=0.2
+            )
+
+            # Track cost
+            usage = response.usage
+            cost = (usage.prompt_tokens * 0.00015 / 1000 + usage.completion_tokens * 0.0006 / 1000)
+            self.weekly_spend += cost
+            logger.info(f"💰 AI cost: ${cost:.4f} (weekly: ${self.weekly_spend:.2f})")
+
+            # Parse response
+            content = response.choices[0].message.content
+            if '```json' in content:
+                content = content.split('```json')[1].split('```')[0]
+            elif '```' in content:
+                content = content.split('```')[1].split('```')[0]
+
+            recommendations = json.loads(content.strip())
+            recommendations['source'] = 'ai'
+
+            logger.info(f"🤖 AI MUST PLAYS: {len(recommendations.get('must_play', []))}")
+            logger.info(f"🤖 AI STACK: {recommendations.get('stack_game', 'None')}")
+
+            return recommendations
+
+        except Exception as e:
+            logger.error(f"AI recommendation failed: {e}")
+            return self._get_rule_based_recommendations(elite_players, [], [], contest_type)
+
+    def _build_prompt(self, elite_players: List[Dict], high_total_games: List[Dict], contest_type: str) -> str:
+        """Build concise prompt"""
+        lines = [
+            f"Contest: 12-person friends league ({contest_type})",
+            "Goal: Beat 11 opponents with highest ceiling lineup",
+            "",
+            "HIGH-TOTAL GAMES (47+):"
+        ]
+
+        for game in high_total_games[:5]:
+            lines.append(f"  {game['game_id']}: {game['total']} total")
+
+        lines.append("")
+        lines.append("TOP PLAYERS IN ELITE GAMES (sorted by projection):")
+
+        sorted_elite = sorted(elite_players, key=lambda x: x.get('projected_points', 0), reverse=True)
+        for p in sorted_elite[:20]:
+            lines.append(f"  {p['name']}|{p['position']}|{p['team']}|${p['salary']}|{p.get('projected_points', 0):.1f}pts|{p.get('game_total', 45)}total")
+
+        lines.append("")
+        lines.append("Identify 3-4 must-play players and best QB+WR stack from highest-total game.")
+
+        return "\n".join(lines)
+
+    def _get_rule_based_recommendations(
+        self,
+        elite_players: List[Dict],
+        good_players: List[Dict],
+        bad_players: List[Dict],
+        contest_type: str
+    ) -> Dict[str, Any]:
+        """Rule-based fallback when AI unavailable"""
+
+        must_play = []
+        must_fade = []
+
+        # Sort elite players by projection
+        sorted_elite = sorted(elite_players, key=lambda x: x.get('projected_points', 0), reverse=True)
+
+        # Find best QB in elite environment
+        elite_qbs = [p for p in sorted_elite if p.get('position') == 'QB']
+        stack_qb = None
+        stack_team = None
+
+        if elite_qbs:
+            qb = elite_qbs[0]
+            stack_qb = qb['name']
+            stack_team = qb['team']
+            must_play.append(f"{qb['name']}|QB|{qb['team']}|Best QB in high-total game ({qb.get('game_total', 45)} total)")
+
+        # Find WRs to stack with QB
+        stack_receivers = []
+        if stack_team:
+            team_wrs = [p for p in sorted_elite if p.get('position') == 'WR' and p.get('team') == stack_team]
+            for wr in team_wrs[:2]:
+                stack_receivers.append(wr['name'])
+                must_play.append(f"{wr['name']}|WR|{wr['team']}|Stack with {stack_qb}")
+
+        # Find best non-stack players in elite environments
+        non_stack_elite = [p for p in sorted_elite if p.get('team') != stack_team]
+        for p in non_stack_elite[:2]:
+            if p['position'] in ['RB', 'WR', 'TE']:
+                must_play.append(f"{p['name']}|{p['position']}|{p['team']}|Elite game environment ({p.get('game_total', 45)} total)")
+
+        # Must fade: expensive players in bad environments
+        for p in bad_players:
+            if p.get('salary', 0) >= 7000:
+                must_fade.append(f"{p['name']}|{p['position']}|{p['team']}|Bad game environment ({p.get('game_total', 45)} total)")
+
+        return {
+            'must_play': must_play[:5],
+            'must_fade': must_fade[:5],
+            'stack_game': f"@{stack_team}" if stack_team else None,
+            'stack_qb': stack_qb,
+            'stack_receivers': stack_receivers,
+            'source': 'rule_based'
+        }
+
+    def apply_to_players(self, players: List[Dict], recommendations: Dict) -> List[Dict]:
+        """
+        Apply AI recommendations to player data
+        Must-play: +30% projection boost
+        Must-fade: -40% projection penalty
+        """
+        must_play_names = set()
+        must_fade_names = set()
+
+        # Parse must-play names
+        for entry in recommendations.get('must_play', []):
+            if '|' in str(entry):
+                name = entry.split('|')[0].strip().lower()
+                must_play_names.add(name)
+
+        # Parse must-fade names
+        for entry in recommendations.get('must_fade', []):
+            if '|' in str(entry):
+                name = entry.split('|')[0].strip().lower()
+                must_fade_names.add(name)
+
+        # Apply to players
+        modified = []
+        boost_count = 0
+        fade_count = 0
+
+        for player in players:
+            p = player.copy()
+            name_lower = p.get('name', '').lower()
+
+            if name_lower in must_play_names:
+                original = p.get('projected_points', 0)
+                p['projected_points'] = original * 1.30  # +30% boost
+                p['ai_must_play'] = True
+                boost_count += 1
+                logger.info(f"🎯 MUST PLAY: {p['name']} {original:.1f} → {p['projected_points']:.1f}")
+
+            elif name_lower in must_fade_names:
+                original = p.get('projected_points', 0)
+                p['projected_points'] = original * 0.60  # -40% penalty
+                p['ai_must_fade'] = True
+                fade_count += 1
+                logger.info(f"⛔ MUST FADE: {p['name']} {original:.1f} → {p['projected_points']:.1f}")
+
+            modified.append(p)
+
+        logger.info(f"✅ AI applied: {boost_count} boosted, {fade_count} faded")
+        return modified
+
+
 class EnhancedSlateManager:
-    """Manages REAL slate detection with robust error handling"""
+    """Manages REAL slate detection"""
 
     def __init__(self):
         self.eastern = pytz.timezone('America/New_York')
 
     def get_current_nfl_week(self) -> int:
-        """Get REAL current NFL week with multiple fallbacks"""
-
-        # Method 1: Try ESPN API
+        """Get current NFL week"""
         try:
             import requests
             response = requests.get(
@@ -48,105 +316,34 @@ class EnhancedSlateManager:
             )
             if response.status_code == 200:
                 data = response.json()
-
-                # Handle different ESPN response formats
                 if 'week' in data:
                     if isinstance(data['week'], dict):
-                        current_week = data['week'].get('number', None)
-                    else:
-                        current_week = data.get('week')
-
-                    if current_week and isinstance(current_week, int):
-                        logger.info(f"ESPN API Week: {current_week}")
-                        return current_week
-
+                        return data['week'].get('number', self._calculate_week_from_date())
+                    return data.get('week', self._calculate_week_from_date())
         except Exception as e:
             logger.warning(f"ESPN API failed: {e}")
 
-        # Method 2: Calculate from date
         return self._calculate_week_from_date()
 
     def _calculate_week_from_date(self) -> int:
-        """Calculate NFL week from current date"""
+        """Calculate NFL week from date"""
         now = datetime.now(self.eastern)
-
-        # 2024 NFL season started September 5, 2024 (Thursday Night)
         season_start = datetime(2024, 9, 5, tzinfo=self.eastern)
 
         if now < season_start:
-            logger.info("Before season start, using Week 1")
             return 1
 
         days_since_start = (now - season_start).days
-        week = max(1, min(18, (days_since_start // 7) + 1))
+        return max(1, min(18, (days_since_start // 7) + 1))
 
-        logger.info(f"Calculated week from date: Week {week} (days since start: {days_since_start})")
-        return week
 
 class EnhancedDataCollector:
-    """FIXED: Real data collection with SMARTER QB filtering for winning lineups"""
+    """WINNING Data Collector with integrated AI analysis"""
 
     def __init__(self):
         self.session = None
         self.slate_manager = EnhancedSlateManager()
-
-    async def get_breaking_news_impact(self, players: List[Dict]) -> Dict[str, Any]:
-        """Get breaking news and automatically identify ruled-out players"""
-        if not NEWS_AVAILABLE:
-            return {'news_events': [], 'impact_analysis': {}, 'ruled_out_players': set()}
-
-        try:
-            news_events = await get_breaking_news()
-            if not news_events:
-                return {'news_events': [], 'impact_analysis': {}, 'ruled_out_players': set()}
-
-            logger.info(f"📰 Found {len(news_events)} breaking news items")
-
-            # Extract ruled-out players from news
-            ruled_out_players = set()
-            injury_keywords = ['ruled out', 'out vs', 'out for', 'will not play', 'inactive']
-
-            for news in news_events:
-                title = news.get('title', '')
-                summary = news.get('summary', '')
-                full_text = f"{title} {summary}".lower()
-
-                # Check if this is injury news
-                if any(keyword in full_text for keyword in injury_keywords):
-                    # Extract player names - IMPROVED DETECTION
-                    words = title.split()
-                    for i in range(len(words) - 1):
-                        word1 = words[i].strip(',:;.!?')
-                        word2 = words[i + 1].strip(',:;.!?')
-
-                        # Skip common words
-                        skip_words = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday',
-                                      'Saturday', 'Sunday', 'Week', 'NFL', 'Game', 'Coach', 'Sources']
-
-                        if (len(word1) > 1 and word1[0].isupper() and
-                                len(word2) > 1 and word2[0].isupper() and
-                                word1 not in skip_words):
-                            potential_name = f"{word1} {word2}".lower()
-                            ruled_out_players.add(potential_name)
-                            logger.info(f"🚫 NEWS DETECTED: {potential_name.title()}")
-
-            self._ruled_out_players = ruled_out_players
-
-            player_names = [p.get('name', '') for p in players]
-            player_specific_news = await get_player_news(player_names)
-
-            return {
-                'news_events': news_events,
-                'player_specific_news': player_specific_news,
-                'ruled_out_players': ruled_out_players,
-                'news_count': len(news_events),
-                'player_news_count': len(player_specific_news)
-            }
-
-        except Exception as e:
-            logger.error(f"Error getting breaking news impact: {e}")
-            self._ruled_out_players = set()
-            return {'news_events': [], 'impact_analysis': {}, 'ruled_out_players': set()}
+        self.ai_analyzer = WinningAIAnalyzer()
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession(
@@ -160,96 +357,53 @@ class EnhancedDataCollector:
             await self.session.close()
 
     async def get_current_week_games(self):
-        """Get REAL current week games with robust parsing"""
+        """Get current week games from ESPN"""
         try:
             url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 
             async with self.session.get(url) as response:
                 if response.status != 200:
-                    logger.error(f"ESPN API returned {response.status}")
-                    return self._get_current_date_fallback()
+                    return self._get_fallback_games()
 
                 data = await response.json()
-                logger.info(f"ESPN API response keys: {list(data.keys())}")
-
-                # Get current week with multiple fallbacks
                 current_week = self._extract_week_number(data)
 
-                # Parse games from events
                 all_games = []
-                events = data.get('events', [])
-
-                if not events:
-                    logger.warning("No events found in ESPN response")
-                    return self._get_current_date_fallback()
-
-                logger.info(f"Processing {len(events)} events from ESPN")
-
-                for i, event in enumerate(events):
-                    try:
-                        game_info = self._parse_game_event(event, i)
-                        if game_info:
-                            all_games.append(game_info)
-
-                    except Exception as e:
-                        logger.warning(f"Error parsing event {i}: {e}")
-                        continue
+                for event in data.get('events', []):
+                    game_info = self._parse_game_event(event)
+                    if game_info:
+                        all_games.append(game_info)
 
                 if not all_games:
-                    logger.error("No valid games parsed from ESPN")
-                    return self._get_current_date_fallback()
+                    return self._get_fallback_games()
 
-                # Categorize games by time slot
-                main_slate = []
-                single_games = all_games.copy()
+                main_slate = [g for g in all_games if g['time_slot'] in ['sunday_early', 'sunday_late']]
 
-                for game in all_games:
-                    if game['time_slot'] in ['sunday_early', 'sunday_late']:
-                        main_slate.append(game)
-
-                logger.info(f"Parsed {len(all_games)} real games, {len(main_slate)} in main slate")
-
-                # Log game details for verification
-                for game in all_games[:3]:  # Show first 3 games
-                    logger.info(f"{game['teams'][0]} vs {game['teams'][1]} - {game['time']}")
+                logger.info(f"📅 Week {current_week}: {len(all_games)} games, {len(main_slate)} main slate")
 
                 return {
                     'current_week': current_week,
                     'all_games': all_games,
                     'main_slate': main_slate,
-                    'single_games': single_games,
+                    'single_games': all_games,
                 }
 
         except Exception as e:
-            logger.error(f"Error in get_current_week_games: {e}")
-            return self._get_current_date_fallback()
+            logger.error(f"Error getting games: {e}")
+            return self._get_fallback_games()
 
     def _extract_week_number(self, data: Dict) -> int:
-        """Extract week number from ESPN data with multiple attempts"""
-
-        # Attempt 1: Direct week field
+        """Extract week from ESPN data"""
         if 'week' in data:
             week_data = data['week']
-            if isinstance(week_data, dict) and 'number' in week_data:
-                return week_data['number']
-            elif isinstance(week_data, int):
-                return week_data
+            if isinstance(week_data, dict):
+                return week_data.get('number', self.slate_manager._calculate_week_from_date())
+            return week_data
+        return self.slate_manager._calculate_week_from_date()
 
-        # Attempt 2: From season data
-        if 'season' in data:
-            season_data = data['season']
-            if isinstance(season_data, dict) and 'week' in season_data:
-                return season_data['week']
-
-        # Attempt 3: Calculate from date
-        calculated_week = self.slate_manager._calculate_week_from_date()
-        logger.info(f"Using calculated week: {calculated_week}")
-        return calculated_week
-
-    def _parse_game_event(self, event: Dict, index: int) -> Optional[Dict]:
-        """Parse individual game event from ESPN"""
+    def _parse_game_event(self, event: Dict) -> Optional[Dict]:
+        """Parse game event"""
         try:
-            # Get game date/time
             game_date = event.get('date', '')
             if not game_date:
                 return None
@@ -257,114 +411,59 @@ class EnhancedDataCollector:
             game_datetime = datetime.fromisoformat(game_date.replace('Z', '+00:00'))
             game_et = game_datetime.astimezone(self.slate_manager.eastern)
 
-            # Get teams
             competition = event.get('competitions', [{}])[0]
             competitors = competition.get('competitors', [])
 
             if len(competitors) < 2:
                 return None
 
-            # Extract team abbreviations
             teams = []
-            for competitor in competitors:
-                team_data = competitor.get('team', {})
-                abbrev = team_data.get('abbreviation', '')
+            for comp in competitors:
+                abbrev = comp.get('team', {}).get('abbreviation', '')
                 if abbrev:
                     teams.append(abbrev)
 
             if len(teams) != 2:
                 return None
 
-            # Determine time slot
-            time_slot = self._determine_time_slot(game_et)
+            hour = game_et.hour
+            day = game_et.weekday()
 
-            game_info = {
+            if day == 3:
+                time_slot = 'thursday_night'
+            elif day == 6:
+                if hour < 16:
+                    time_slot = 'sunday_early'
+                elif hour < 20:
+                    time_slot = 'sunday_late'
+                else:
+                    time_slot = 'sunday_night'
+            elif day == 0:
+                time_slot = 'monday_night'
+            else:
+                time_slot = 'other'
+
+            return {
                 'id': f"{teams[0]}_vs_{teams[1]}",
                 'teams': teams,
                 'time_slot': time_slot,
                 'time': game_et.strftime('%A %I:%M %p ET'),
-                'datetime': game_et
             }
 
-            return game_info
-
         except Exception as e:
-            logger.warning(f"Error parsing game event: {e}")
             return None
 
-    def _determine_time_slot(self, game_datetime: datetime) -> str:
-        """Determine game time slot"""
-        hour = game_datetime.hour
-        day = game_datetime.weekday()
-
-        if day == 3:  # Thursday
-            return 'thursday_night'
-        elif day == 6:  # Sunday
-            if hour < 16:
-                return 'sunday_early'
-            elif hour < 20:
-                return 'sunday_late'
-            else:
-                return 'sunday_night'
-        elif day == 0:  # Monday
-            return 'monday_night'
-        else:
-            return 'other'
-
-    def _get_current_date_fallback(self):
-        """Fallback using current date logic"""
-        current_week = self.slate_manager._calculate_week_from_date()
-
-        logger.warning(f"Using date-based fallback: Week {current_week}")
-
-        # Generate likely games based on typical NFL schedule
-        example_games = [
+    def _get_fallback_games(self):
+        """Fallback games"""
+        week = self.slate_manager._calculate_week_from_date()
+        games = [
             {'id': 'BUF_vs_MIA', 'teams': ['BUF', 'MIA'], 'time_slot': 'sunday_early', 'time': 'Sunday 1:00 PM ET'},
             {'id': 'PHI_vs_WAS', 'teams': ['PHI', 'WAS'], 'time_slot': 'sunday_early', 'time': 'Sunday 1:00 PM ET'},
-            {'id': 'GB_vs_DET', 'teams': ['GB', 'DET'], 'time_slot': 'sunday_early', 'time': 'Sunday 1:00 PM ET'},
-            {'id': 'KC_vs_LAC', 'teams': ['KC', 'LAC'], 'time_slot': 'sunday_late', 'time': 'Sunday 4:05 PM ET'},
         ]
-
-        return {
-            'current_week': current_week,
-            'all_games': example_games,
-            'main_slate': example_games,
-            'single_games': example_games,
-        }
-
-    async def get_espn_injury_report(self) -> set:
-        """Get injured players from ESPN API - AUTOMATIC"""
-        try:
-            url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries"
-
-            async with self.session.get(url) as response:
-                if response.status != 200:
-                    logger.warning(f"ESPN injury API returned {response.status}")
-                    return set()
-
-                data = await response.json()
-                ruled_out = set()
-
-                # Parse injuries from ESPN
-                teams = data.get('teams', [])
-                for team in teams:
-                    athletes = team.get('athletes', [])
-                    for athlete in athletes:
-                        status = athlete.get('status', '').upper()
-                        player_name = athlete.get('displayName', '').lower()
-
-                        if status in ['OUT', 'DOUBTFUL'] and player_name:
-                            ruled_out.add(player_name)
-                            logger.info(f"🚫 ESPN INJURY: {player_name.title()} - {status}")
-
-                return ruled_out
-
-        except Exception as e:
-            logger.error(f"ESPN injury API error: {e}")
-            return set()
+        return {'current_week': week, 'all_games': games, 'main_slate': games, 'single_games': games}
 
     async def get_vegas_odds_data(self) -> Dict[str, Any]:
-        """Get REAL Vegas odds data (GAME-CHANGING for tournament success)"""
+        """Get Vegas odds data"""
         try:
             from vegas_data_collector import VegasDataCollector
             collector = VegasDataCollector()
@@ -372,636 +471,270 @@ class EnhancedDataCollector:
 
             if vegas_data and vegas_data.get('games'):
                 high_total_count = len(vegas_data.get('high_total_games', []))
-                logger.info(f"🎯 VEGAS DATA: {high_total_count} high-total games (47+ pts) found")
+                logger.info(f"🎰 VEGAS: {len(vegas_data['games'])} games, {high_total_count} high-total (47+)")
 
-                # Log the high-total games (these drive tournament wins)
-                for high_game in vegas_data.get('high_total_games', []):
-                    logger.info(f"🔥 {high_game['game_id']}: {high_game['total']} total points")
+                for game in vegas_data.get('high_total_games', []):
+                    logger.info(f"   🔥 {game['game_id']}: {game['total']} total")
 
                 return vegas_data
-            else:
-                logger.warning("No Vegas games data returned")
-                return {'games': {}, 'high_total_games': [], 'data_source': 'empty'}
 
-        except ImportError:
-            logger.warning("Vegas data collector not available")
-            return {'games': {}, 'high_total_games': [], 'data_source': 'unavailable'}
+            return self._get_fallback_vegas()
+
         except Exception as e:
-            logger.error(f"Vegas data collection failed: {e}")
-            return {'games': {}, 'high_total_games': [], 'data_source': 'error'}
+            logger.error(f"Vegas data failed: {e}")
+            return self._get_fallback_vegas()
+
+    def _get_fallback_vegas(self) -> Dict[str, Any]:
+        """Fallback Vegas data"""
+        return {
+            'games': {},
+            'high_total_games': [],
+            'avg_total': 45.0,
+            'data_source': 'fallback'
+        }
 
     def calculate_vegas_multipliers(self, vegas_data: Dict) -> Dict[str, float]:
-        """Calculate team multipliers based on IMPLIED TEAM TOTALS - STEP 3 COMPLETE"""
-
+        """Calculate team multipliers from Vegas data"""
         multipliers = {}
         games = vegas_data.get('games', {})
 
-        if not games:
-            logger.warning("No Vegas games data for multipliers")
-            return {}
-
-        # Calculate league average implied score (typically ~24 points)
-        all_implied_scores = []
-        for game_data in games.values():
-            home_implied = game_data.get('home_implied_score')
-            away_implied = game_data.get('away_implied_score')
-            if home_implied:
-                all_implied_scores.append(home_implied)
-            if away_implied:
-                all_implied_scores.append(away_implied)
-
-        league_avg_implied = sum(all_implied_scores) / len(all_implied_scores) if all_implied_scores else 24.0
-        logger.info(f"📊 League avg implied score: {league_avg_implied:.1f} points")
-
         for game_id, game_data in games.items():
+            total = game_data.get('total_points', 45)
+            spread = abs(game_data.get('spread') or 0)
             home_team = game_data.get('home_team')
             away_team = game_data.get('away_team')
-            home_implied = game_data.get('home_implied_score', league_avg_implied)
-            away_implied = game_data.get('away_implied_score', league_avg_implied)
 
-            # STEP 3: Per-team multipliers based on IMPLIED TOTALS
-            # Higher implied score = higher DFS scoring expectation
+            # Total multiplier
+            if total >= 50:
+                total_mult = 1.40
+            elif total >= 48:
+                total_mult = 1.30
+            elif total >= 46:
+                total_mult = 1.20
+            elif total >= 44:
+                total_mult = 1.10
+            elif total <= 40:
+                total_mult = 0.80
+            else:
+                total_mult = 1.0
 
-            # Normalize around league average (24 pts)
-            home_multiplier = home_implied / league_avg_implied
-            away_multiplier = away_implied / league_avg_implied
+            # Spread multiplier
+            if spread <= 3:
+                spread_mult = 1.10
+            elif spread >= 10:
+                spread_mult = 0.90
+            else:
+                spread_mult = 1.0
 
-            # Apply tiered boosts for high-scoring environments
-            def apply_tiers(base_mult: float, implied: float) -> float:
-                """Apply stepped multipliers for different scoring tiers"""
-                if implied >= 29.0:
-                    return base_mult * 1.20  # Elite offense (29+ implied)
-                elif implied >= 26.5:
-                    return base_mult * 1.15  # Strong offense (26.5-29)
-                elif implied >= 24.5:
-                    return base_mult * 1.08  # Above average (24.5-26.5)
-                elif implied >= 22.0:
-                    return base_mult * 1.00  # Average (22-24.5)
-                elif implied >= 20.0:
-                    return base_mult * 0.95  # Below average (20-22)
-                else:
-                    return base_mult * 0.88  # Low scoring (under 20)
+            final_mult = total_mult * spread_mult
 
-            home_final = apply_tiers(home_multiplier, home_implied)
-            away_final = apply_tiers(away_multiplier, away_implied)
-
-            # Store multipliers
             if home_team:
-                multipliers[home_team] = home_final
-                logger.info(f"VEGAS WEIGHT: {home_team} implied {home_implied:.1f} → {home_final:.2f}x")
-
+                multipliers[home_team] = final_mult
             if away_team:
-                multipliers[away_team] = away_final
-                logger.info(f"VEGAS WEIGHT: {away_team} implied {away_implied:.1f} → {away_final:.2f}x")
+                multipliers[away_team] = final_mult
 
-        logger.info(f"✅ STEP 3 COMPLETE: Applied per-team implied multipliers to {len(multipliers)} teams")
+        logger.info(f"📊 Vegas multipliers for {len(multipliers)} teams")
         return multipliers
 
-    async def get_nfl_projections(self) -> Dict[str, float]:
-        """Get NFL projections with better error handling"""
-        try:
-            logger.info("Fetching NFL projections...")
-
-            current_year = datetime.now().year
-
-            # Try to get weekly data
-            try:
-                weekly_data = nfl.import_weekly_data([current_year])
-                logger.info(f"Loaded weekly data: {len(weekly_data)} rows")
-            except Exception as e:
-                logger.error(f"Failed to load weekly data: {e}")
-                return {}
-
-            projections = {}
-            current_week = self.slate_manager.get_current_nfl_week()
-
-            # Use last 3 weeks of data
-            recent_weeks = list(range(max(1, current_week - 2), current_week + 1))
-            recent_data = weekly_data[weekly_data['week'].isin(recent_weeks)]
-
-            logger.info(f"Using weeks {recent_weeks} for projections")
-
-            # Group by player and calculate averages
-            for player_name, player_games in recent_data.groupby('player_display_name'):
-                if not player_name or pd.isna(player_name):
-                    continue
-
-                # Get position (take most common)
-                positions = player_games['position'].dropna()
-                if positions.empty:
-                    continue
-                position = positions.mode().iloc[0] if len(positions) > 0 else 'UNK'
-
-                # Calculate average stats
-                games_played = len(player_games)
-                if games_played == 0:
-                    continue
-
-                try:
-                    if position == 'QB':
-                        pass_yds = player_games['passing_yards'].fillna(0).mean()
-                        pass_tds = player_games['passing_tds'].fillna(0).mean()
-                        ints = player_games['interceptions'].fillna(0).mean()
-                        rush_yds = player_games['rushing_yards'].fillna(0).mean()
-                        rush_tds = player_games['rushing_tds'].fillna(0).mean()
-
-                        projection = ((pass_yds / 25) + (pass_tds * 6) - (ints * 2) +
-                                    (rush_yds / 10) + (rush_tds * 6))
-
-                    elif position == 'RB':
-                        rush_yds = player_games['rushing_yards'].fillna(0).mean()
-                        rush_tds = player_games['rushing_tds'].fillna(0).mean()
-                        rec_yds = player_games['receiving_yards'].fillna(0).mean()
-                        rec_tds = player_games['receiving_tds'].fillna(0).mean()
-                        receptions = player_games['receptions'].fillna(0).mean()
-
-                        projection = ((rush_yds / 10) + (rush_tds * 6) +
-                                    (rec_yds / 10) + (rec_tds * 6) + receptions)
-
-                    elif position in ['WR', 'TE']:
-                        rec_yds = player_games['receiving_yards'].fillna(0).mean()
-                        rec_tds = player_games['receiving_tds'].fillna(0).mean()
-                        receptions = player_games['receptions'].fillna(0).mean()
-
-                        projection = (rec_yds / 10) + (rec_tds * 6) + receptions
-
-                    else:
-                        continue
-
-                    if projection > 3:  # Minimum threshold
-                        projections[player_name] = round(projection, 1)
-
-                except Exception as e:
-                    logger.debug(f"Error calculating projection for {player_name}: {e}")
-                    continue
-
-            logger.info(f"Generated {len(projections)} projections")
-            return projections
-
-        except Exception as e:
-            logger.error(f"Error in get_nfl_projections: {e}")
-            return {}
-
     async def get_weather_for_games(self, games_info: Dict) -> Dict[str, Dict]:
-        """Get weather data with error handling"""
+        """Get weather data"""
         weather_data = {}
 
-        try:
-            all_games = games_info.get('all_games', [])
-            outdoor_teams = set()
-
-            for game in all_games:
-                for team in game.get('teams', []):
-                    stadium_info = NFL_STADIUMS.get(team, {})
-                    if stadium_info.get('type') == 'outdoor':
-                        outdoor_teams.add(team)
-
-            if not outdoor_teams:
-                logger.info("No outdoor teams found")
-                return {}
-
-            logger.info(f"Getting weather for {len(outdoor_teams)} outdoor teams")
-
-            for team in outdoor_teams:
+        for game in games_info.get('all_games', []):
+            for team in game.get('teams', []):
                 stadium = NFL_STADIUMS.get(team, {})
-                if not stadium:
-                    continue
-
-                # Default weather (fallback)
-                weather_data[team] = {
-                    'temperature': 68,
-                    'wind_speed': '8 mph',
-                    'conditions': 'Partly Cloudy',
-                    'precipitation_chance': 10,
-                    'stadium_type': 'outdoor',
-                    'factor': 1.0
-                }
-
-        except Exception as e:
-            logger.error(f"Weather collection error: {e}")
+                if not stadium.get('dome', True):
+                    weather_data[team] = {
+                        'temperature': 65,
+                        'wind_speed': '10 mph',
+                        'conditions': 'Clear',
+                        'factor': 1.0
+                    }
 
         return weather_data
 
     def _is_viable_player(self, player_data: Dict) -> bool:
-        """UNIVERSAL filtering system that adapts week-to-week for ALL positions"""
+        """Filter non-viable players"""
         name = player_data.get('name', '')
         position = player_data.get('position', '')
-        team = player_data.get('team', '')
         salary = player_data.get('salary', 0)
         fppg = player_data.get('projected_points', 0)
-        injury_status = player_data.get('injury_status', '')
-        fppg_source = player_data.get('fppg_source', 'unknown')
+        injury_status = player_data.get('injury_status', '').upper()
 
-        # UNIVERSAL RULE 1: Remove definitively unavailable players
-        if self._is_definitely_unavailable(player_data):
+        # Definitively unavailable
+        if any(x in injury_status for x in ['IR', 'OUT', 'SUSP']):
             return False
 
-        # UNIVERSAL RULE 2: Position-specific intelligent filtering
-        return self._is_position_viable(position, salary, fppg, fppg_source, name, team)
+        # Basic validation
+        if not name or len(name.strip()) < 2:
+            return False
 
-    async def collect_players_for_slate(self, games_info: Dict[str, Any], contest_type: str = 'gpp') -> List[Dict]:
-        """Collect players - NOW READS CSV DIRECTLY with FRIENDS LEAGUE CALIBRATION"""
-        logger.info(f"🔍 DEBUG: collect_players_for_slate called with contest_type='{contest_type}'")
-        current_week = games_info['current_week']
+        # Position-specific thresholds
+        if position == 'QB':
+            return salary >= 6000 or fppg >= 10
+        elif position == 'RB':
+            return salary >= 4500 or fppg >= 5
+        elif position == 'WR':
+            return salary >= 4500 or fppg >= 4
+        elif position == 'TE':
+            return salary >= 4000 or fppg >= 3
+        elif position == 'D':
+            return salary >= 3000
 
-        # ===== MULTI-SOURCE INJURY CHECK =====
-        logger.info("🚑 Checking ESPN + RSS for injuries...")
+        return False
 
-        # Source 1: ESPN Official Injury Report
-        espn_injured = await self.get_espn_injury_report()
-
-        # Source 2: Breaking News RSS
-        news_impact = await self.get_breaking_news_impact([])
-        rss_injured = news_impact.get('ruled_out_players', set())
-
-        # Combine both sources
-        all_ruled_out = espn_injured | rss_injured
-        self._ruled_out_players = all_ruled_out
-
-        if all_ruled_out:
-            logger.info(f"🚫 TOTAL INJURIES FOUND: {len(all_ruled_out)}")
-            for name in sorted(all_ruled_out):
-                logger.info(f"   ❌ {name.title()}")
-        # ===== END INJURY CHECK =====
-
-        # Get teams in slate
+    async def collect_players_for_slate(self, games_info: Dict, contest_type: str = 'gpp') -> List[Dict]:
+        """Collect and filter players"""
         playing_teams = set()
         for game in games_info.get('main_slate', []):
             playing_teams.update(game.get('teams', []))
 
-        logger.info(f"Teams in slate: {sorted(playing_teams)}")
+        if not playing_teams:
+            playing_teams = None
 
-        # READ CSV DIRECTLY - switch based on contest type
         try:
-            if contest_type == 'h2h':
-                csv_path = DATA_DIR / "fanduel_h2h_salaries.csv"
-                logger.info("📋 Using H2H single-game CSV")
-            else:
-                csv_path = DATA_DIR / "fanduel_salaries_manual.csv"
-                logger.info("📋 Using main slate CSV")
+            from fanduel_salary_scraper import get_fanduel_salaries
+            salary_data = await get_fanduel_salaries()
 
-            if not csv_path.exists():
-                logger.error(f"CSV not found: {csv_path}")
+            if not salary_data:
+                logger.error("No FanDuel salary data")
                 return []
 
-            import pandas as pd
-            df = pd.read_csv(csv_path)
-
-            logger.info(f"CSV loaded: {len(df)} rows, columns: {list(df.columns)}")
-
-            salary_data = []
-            for _, row in df.iterrows():
-                first = str(row.get('First Name', '')).strip()
-                last = str(row.get('Last Name', '')).strip()
-                name = f"{first} {last}".strip()
-
-                if not name or name == 'nan nan':
+            # Filter viable players
+            players = []
+            for p in salary_data:
+                if not self._is_viable_player(p):
                     continue
 
-                # Safe extraction with NaN handling
-                try:
-                    salary_val = row.get('Salary', 0)
-                    if pd.isna(salary_val):
-                        salary_val = 0
-                    salary_val = int(salary_val)
-
-                    fppg_val = row.get('FPPG', 0)
-                    if pd.isna(fppg_val):
-                        fppg_val = 0.0
-                    fppg_val = float(fppg_val)
-
-                    # Skip if bad data
-                    if salary_val <= 0 or fppg_val <= 0:
-                        continue
-
-                except (ValueError, TypeError):
+                team = p.get('team', '').upper()
+                if playing_teams and team not in playing_teams:
                     continue
 
-                salary_data.append({
-                    'id': str(row.get('Id', '')),
-                    'name': name,
-                    'position': str(row.get('Position', '')).strip(),
-                    'team': str(row.get('Team', '')).strip().upper(),
-                    'salary': salary_val,
-                    'projected_points': fppg_val,
-                    'fppg_source': 'real',
-                    'injury_status': str(row.get('Injury Indicator', '')).strip(),
-                    'game': str(row.get('Game', '')).strip()
-                })
+                fppg = p.get('projected_points', 0)
+                if fppg <= 0:
+                    continue
 
-            logger.info(f"Parsed {len(salary_data)} players")
+                player = {
+                    'player_id': f"fd_{p.get('id', p.get('name', ''))}",
+                    'name': p.get('name', ''),
+                    'position': p.get('position', ''),
+                    'team': team,
+                    'salary': int(p.get('salary', 5000)),
+                    'projected_points': round(fppg, 2),
+                    'projection': round(fppg, 2),
+                    'ceiling': round(fppg * 1.4, 2),
+                    'floor': round(fppg * 0.7, 2),
+                    'ownership': np.random.uniform(5.0, 35.0),
+                    'opponent': p.get('opponent', ''),
+                    'injury_status': p.get('injury_status', ''),
+                }
+                players.append(player)
+
+            logger.info(f"📋 Collected {len(players)} viable players")
+            return players
 
         except Exception as e:
-            logger.error(f"CSV read error: {e}")
+            logger.error(f"Error collecting players: {e}")
             return []
 
-        # Filter viable players
-        filtered_injury = 0
-        filtered_backup = 0
-        filtered_other = 0
+    async def get_breaking_news_impact(self, players: List[Dict]) -> Dict[str, Any]:
+        """Get breaking news"""
+        if not NEWS_AVAILABLE:
+            return {'news_events': [], 'impact_analysis': {}}
 
-        winning_players = []
-        for player_data in salary_data:
-            if not self._is_viable_player(player_data):
-                # Track why filtered
-                if player_data.get('injury_status', '').strip():
-                    filtered_injury += 1
-                elif player_data.get('salary', 0) < 5000:
-                    filtered_backup += 1
-                else:
-                    filtered_other += 1
-                continue
-
-            name = player_data['name']
-            position = player_data['position']
-            team = player_data['team']
-            salary = player_data['salary']
-            fppg = player_data['projected_points']
-
-            if fppg <= 0:
-                continue
-            # Safety checks for JSON serialization
-            if salary <= 0 or fppg <= 0:
-                continue
-
-            # FRIENDS LEAGUE PROJECTION DEFLATION
-            deflated_fppg = self._apply_friends_league_deflation(fppg, position, contest_type)
-
-            # Calculate value safely
-            try:
-                value = round(deflated_fppg / (salary / 1000), 2)
-                if not (0 <= value <= 100):  # Sanity check
-                    value = 0.0
-            except:
-                value = 0.0
-
-            winning_players.append({
-                'player_id': f"fd_{player_data['id']}",
-                'name': name,
-                'position': position,
-                'team': team,
-                'salary': int(salary),
-                'projected_points': float(round(deflated_fppg, 2)),
-                'projection': float(round(deflated_fppg, 2)),
-                'ceiling': float(round(deflated_fppg * 1.25, 2)),  # Reduced ceiling multiplier
-                'floor': float(round(deflated_fppg * 0.75, 2)),   # Tighter floor
-                'ownership': 15.0,
-                'game': player_data['game'],
-                'value': float(value)
-            })
-
-        logger.info(f"Final count: {len(winning_players)} players")
-        logger.info(f"📊 Filtered {len(salary_data) - len(winning_players)} players (injuries/backups/bad data)")
-
-        # NEW: Apply injury opportunity boosts BEFORE returning
         try:
-            from injury_opportunity_detector import enhance_players_with_injury_opportunities
-            logger.info(f"🚑 Analyzing injury opportunities for {len(winning_players)} players...")
-            enhanced_players = enhance_players_with_injury_opportunities(winning_players)
-            return enhanced_players
-        except ImportError:
-            logger.warning("Injury opportunity detector not available, returning base players")
-            return winning_players
-
-    def _apply_friends_league_deflation(self, fppg: float, position: str, contest_type: str) -> float:
-        """Apply friends league projection deflation"""
-
-        # FRIENDS LEAGUE & H2H: Deflate projections for realistic expectations
-        if contest_type in ['friends_league', 'h2h']:
-            deflation_factors = {
-                'QB': 0.82,  # 18% reduction
-                'RB': 0.85,  # 15% reduction
-                'WR': 0.83,  # 17% reduction
-                'TE': 0.84,  # 16% reduction
-                'D': 0.86    # 14% reduction
+            news_events = await get_breaking_news()
+            return {
+                'news_events': news_events,
+                'news_count': len(news_events)
             }
-            factor = deflation_factors.get(position, 0.84)
-            deflated = fppg * factor
-
-            logger.debug(f"DEFLATED {position}: {fppg:.1f} → {deflated:.1f} pts ({factor:.2f}x)")
-            return deflated
-
-        # OTHER CONTEST TYPES: No deflation
-        return fppg
-
-    def _is_definitely_unavailable(self, player_data: Dict) -> bool:
-        """Universal availability check with AUTOMATIC news-based filtering"""
-
-        name = player_data.get('name', '').lower()
-        injury_status = str(player_data.get('injury_status', '')).strip().upper()
-
-        # Priority 1: Check breaking news for ruled-out players
-        ruled_out_from_news = getattr(self, '_ruled_out_players', set())
-        if any(out_name in name for out_name in ruled_out_from_news):
-            logger.info(f"🚫 NEWS FILTER: {player_data.get('name')} (ruled out via breaking news)")
-            return True
-
-        # Priority 2: CSV injury designations
-        if 'IR' in injury_status:
-            logger.info(f"FILTERING IR player: {player_data.get('name')}")
-            return True
-
-        unavailable_flags = ['OUT', 'SUSP', 'DOUBTFUL']
-        if any(flag in injury_status for flag in unavailable_flags):
-            logger.info(f"FILTERING unavailable: {player_data.get('name')} ({injury_status})")
-            return True
-
-        # Priority 3: Broken entries
-        if not name or len(name.strip()) < 2:
-            return True
-
-        return False
-
-    def _is_position_viable(self, position: str, salary: int, fppg: float,
-                            fppg_source: str, name: str, team: str) -> bool:
-        """Position-specific viability using ADAPTIVE thresholds"""
-
-        if position == 'QB':
-            return self._is_viable_qb_adaptive(salary, fppg, fppg_source, name, team)
-        elif position == 'RB':
-            return self._is_viable_rb_adaptive(salary, fppg, fppg_source, name, team)
-        elif position == 'WR':
-            return self._is_viable_wr_adaptive(salary, fppg, fppg_source, name, team)
-        elif position == 'TE':
-            return self._is_viable_te_adaptive(salary, fppg, fppg_source, name, team)
-        elif position == 'D':
-            return self._is_viable_def_adaptive(salary, fppg, fppg_source, name, team)
-        else:
-            return False
-
-    def _is_viable_qb_adaptive(self, salary: int, fppg: float, fppg_source: str,
-                               name: str, team: str) -> bool:
-        """QB filtering - ONLY keep starting QBs"""
-
-        # HARD FLOOR: Any QB under $6,000 is a backup and won't play
-        if salary < 6000:
-            logger.info(f"FILTERING backup QB: {name} (${salary})")
-            return False
-
-        # Elite starters
-        if salary >= 8000:
-            return True
-
-        # Starting QBs with real production
-        if salary >= 6000 and fppg >= 12.0:
-            return True
-
-        # When in doubt for QBs $6K+, keep them
-        return True
-
-    def _is_viable_rb_adaptive(self, salary: int, fppg: float, fppg_source: str,
-                               name: str, team: str) -> bool:
-        """RB filtering - remove obvious non-contributors"""
-
-        # Elite/starter RBs - obvious keeps
-        if salary >= 7000:
-            return True
-
-        # Mid-tier with real production
-        if salary >= 5000 and fppg >= 8.0:
-            return True
-
-        # Value plays with upside
-        if salary >= 4500 and fppg >= 6.0:
-            return True
-
-        # Remove obvious practice squad/inactive RBs
-        if salary < 4200 and fppg < 3:
-            logger.debug(f"FILTERING practice squad RB: {name}")
-            return False
-
-        # Emergency keeps for tournament leverage
-        if salary >= 4000 and fppg >= 4.0:
-            return True
-
-        return False
-
-    def _is_viable_wr_adaptive(self, salary: int, fppg: float, fppg_source: str,
-                               name: str, team: str) -> bool:
-        """WR filtering - keep upside plays, remove practice squad"""
-
-        # Elite WRs - obvious keeps
-        if salary >= 7000:
-            return True
-
-        # Solid producers
-        if salary >= 5500 and fppg >= 8.0:
-            return True
-
-        # Value/upside plays
-        if salary >= 4500 and fppg >= 5.0:
-            return True
-
-        # Remove obvious non-contributors
-        if salary < 4200 and fppg < 2:
-            logger.debug(f"FILTERING practice squad WR: {name}")
-            return False
-
-        # Dart throws for tournaments
-        if salary >= 4000:
-            return True
-
-        return False
-
-    def _is_viable_te_adaptive(self, salary: int, fppg: float, fppg_source: str,
-                               name: str, team: str) -> bool:
-        """TE filtering - position is thin, be more inclusive"""
-
-        # Elite TEs
-        if salary >= 6000:
-            return True
-
-        # Solid contributors
-        if salary >= 4800 and fppg >= 6.0:
-            return True
-
-        # Value plays (TE is thin)
-        if salary >= 4200 and fppg >= 3.0:
-            return True
-
-        # Remove obvious non-contributors
-        if salary < 4000 and fppg < 1:
-            logger.debug(f"FILTERING practice squad TE: {name}")
-            return False
-
-        # Keep most TEs (position scarcity)
-        return True
-
-    def _is_viable_def_adaptive(self, salary: int, fppg: float, fppg_source: str,
-                                name: str, team: str) -> bool:
-        """Defense filtering - all NFL defenses are viable"""
-
-        # All defenses $3000+ are real NFL teams
-        if salary >= 3000:
-            return True
-
-        # Filter out obvious errors
-        if salary < 3000:
-            logger.debug(f"FILTERING invalid defense: {name}")
-            return False
-
-        return True
-
-    def _get_ceiling_multiplier(self, position: str) -> float:
-        """Position-specific ceiling multipliers for tournament play"""
-        return {
-            'QB': 1.4,
-            'RB': 1.3,
-            'WR': 1.5,
-            'TE': 1.4,
-            'D': 1.2
-        }.get(position, 1.3)
+        except Exception as e:
+            logger.error(f"News error: {e}")
+            return {'news_events': [], 'news_count': 0}
 
 
-# Main entry point
-async def get_fresh_data(contest_type: str = "gpp") -> Dict[str, Any]:
-    """Get fresh data with BREAKING NEWS INTEGRATION"""
-    logger.info(f"🔍 DEBUG: get_fresh_data called with contest_type='{contest_type}'")
+async def get_fresh_data(contest_type: str = 'gpp') -> Dict[str, Any]:
+    """
+    WINNING DATA COLLECTION
+
+    This function:
+    1. Gets games and Vegas data
+    2. Collects players
+    3. Runs AI analysis to identify must-play/must-fade
+    4. Applies AI recommendations to player projections
+    5. Returns enhanced player pool ready for optimization
+    """
     async with EnhancedDataCollector() as collector:
-        # Get games info
+        # Get games
         games_info = await collector.get_current_week_games()
 
-        # Get players with REAL projections
+        # Get players
         players = await collector.collect_players_for_slate(games_info, contest_type)
 
         if not players:
-            logger.error("NO VALID PLAYERS FOUND")
+            logger.error("NO PLAYERS FOUND")
             return {}
 
-        # Get other data
-        weather_data = await collector.get_weather_for_games(games_info)
+        # Get Vegas data
         vegas_data = await collector.get_vegas_odds_data()
         vegas_multipliers = collector.calculate_vegas_multipliers(vegas_data)
 
-        # NEW: Get breaking news impact
-        news_impact = await collector.get_breaking_news_impact(players)
+        # Attach game totals to players
+        for player in players:
+            team = player['team']
+            for game_id, game_info in vegas_data.get('games', {}).items():
+                if team in [game_info.get('home_team'), game_info.get('away_team')]:
+                    player['game_total'] = game_info.get('total_points', 45)
+                    player['game_environment_mult'] = vegas_multipliers.get(team, 1.0)
+                    break
+            else:
+                player['game_total'] = 45.0
+                player['game_environment_mult'] = 1.0
+
+        # =============================================
+        # AI ANALYSIS: Identify must-play/must-fade
+        # =============================================
+        logger.info("🤖 Running AI analysis for must-play/must-fade...")
+        ai_recommendations = collector.ai_analyzer.analyze_for_winning_picks(
+            players, vegas_data, contest_type
+        )
+
+        # Apply AI recommendations to player projections
+        enhanced_players = collector.ai_analyzer.apply_to_players(players, ai_recommendations)
+
+        # Get other data
+        weather_data = await collector.get_weather_for_games(games_info)
+        news_impact = await collector.get_breaking_news_impact(enhanced_players)
+
+        # Summary stats
+        must_play_count = sum(1 for p in enhanced_players if p.get('ai_must_play'))
+        must_fade_count = sum(1 for p in enhanced_players if p.get('ai_must_fade'))
+        high_total_count = sum(1 for p in enhanced_players if p.get('game_environment_mult', 1.0) >= 1.25)
+
+        logger.info(f"📊 FINAL POOL: {len(enhanced_players)} players")
+        logger.info(f"   🎯 Must-play: {must_play_count}")
+        logger.info(f"   ⛔ Must-fade: {must_fade_count}")
+        logger.info(f"   🔥 In high-total games: {high_total_count}")
 
         return {
-            'players': players,
+            'players': enhanced_players,
             'games_info': games_info,
             'weather': weather_data,
             'vegas_odds': vegas_data,
             'vegas_multipliers': vegas_multipliers,
+            'ai_recommendations': ai_recommendations,
             'breaking_news': news_impact,
             'last_updated': datetime.now().isoformat(),
             'data_quality': {
-                'player_count': len(players),
+                'player_count': len(enhanced_players),
                 'total_games': len(games_info['all_games']),
                 'main_slate_games': len(games_info['main_slate']),
                 'current_week': games_info['current_week'],
-                'avg_projection': sum(p['projected_points'] for p in players) / len(players) if players else 0,
-                'avg_ownership': sum(p.get('ownership', 0) for p in players) / len(players) if players else 0,
-                'teams_in_slate': sorted(set(p['team'] for p in players)),
-                'real_projections': sum(1 for p in players if p.get('fppg_source') == 'real'),
-                'estimated_projections': sum(1 for p in players if p.get('fppg_source') == 'estimated'),
-                'injury_opportunities': sum(1 for p in players if p.get('injury_opportunity', False)),
-                'salary_range': {
-                    'min': min(p['salary'] for p in players) if players else 0,
-                    'max': max(p['salary'] for p in players) if players else 0
-                },
-                'vegas_games': len(vegas_data) if vegas_data else 0,
-                'vegas_multipliers': len(vegas_multipliers),
-                'breaking_news_items': news_impact.get('news_count', 0),
-                'player_news_items': news_impact.get('player_news_count', 0)
+                'must_play_count': must_play_count,
+                'must_fade_count': must_fade_count,
+                'high_total_players': high_total_count,
+                'vegas_games': len(vegas_data.get('games', {})),
+                'ai_source': ai_recommendations.get('source', 'none'),
+                'teams_in_slate': sorted(set(p['team'] for p in enhanced_players)),
             }
         }

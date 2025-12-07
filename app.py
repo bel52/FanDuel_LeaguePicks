@@ -614,7 +614,7 @@ async def get_players(contest_type: str = Query("gpp")):
             players_by_position[pos].sort(key=lambda p: p['salary'], reverse=True)
 
         # Cache for optimizer
-        current_player_data = {'players': players_by_position}
+        current_player_data = fresh_data
 
         return {
             "players": players_by_position,
@@ -686,7 +686,7 @@ async def optimize_lineups(request: OptimizationRequest):
             if not fresh_data or not fresh_data.get('players'):
                 raise HTTPException(status_code=400, detail="No player data available")
 
-            current_player_data = {'players': fresh_data['players']}
+            current_player_data = fresh_data
             logger.info(f"✅ Auto-refresh: {len(fresh_data['players'])} players with injury filtering")
 
         all_players = current_player_data.get('players', [])
@@ -732,14 +732,11 @@ async def optimize_lineups(request: OptimizationRequest):
         # Optimize
         lineups = optimize_dfs_lineups(
             player_data=filtered_players,
-            weather_data={},
-            vegas_multipliers={},
-            vegas_data={},
+            weather_data=data.get('weather', {}),
+            vegas_multipliers=data.get('vegas_multipliers', {}),
+            vegas_odds=data.get('vegas_odds', {}),  # CORRECT parameter name
             num_lineups=request.num_lineups,
-            contest_type=request.contest_type,
-            single_game_teams=single_game_teams,
-            use_monte_carlo=request.use_ai,
-            mc_simulations=5000
+            contest_type=request.contest_type
         )
 
         if not lineups:

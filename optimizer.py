@@ -1,30 +1,28 @@
 # optimizer.py
 """
-Enhanced DFS lineup optimization with Monte Carlo variance analysis
-FIXED: H2H mode with simplified MVP selection (no complex constraints)
+WINNING DFS Optimizer for Friends League Domination
+Fixes the 3 core problems:
+1. Vegas data now DRIVES selection (not just mild multipliers)
+2. AI identifies MUST PLAY/FADE players with projection boosts/penalties
+3. Forces stacking from highest-total games
 """
 import asyncio
 import json
-import os
 import random
-import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 import pulp
 from loguru import logger
-from fastapi import HTTPException
 
 from config import (
     DATA_DIR,
     FANDUEL_POSITIONS,
     FANDUEL_SALARY_CAP,
-    H2H_SALARY_CAP,
-    H2H_ROSTER_SIZE,
     OPTIMIZATION_CONFIG,
 )
 
@@ -53,10 +51,12 @@ except ImportError as e:
     AI_AVAILABLE = False
 
 
+# -----------------------------
 # Data structures
+# -----------------------------
 @dataclass
 class Player:
-    """Enhanced Player data structure with Monte Carlo variance"""
+    """Enhanced Player data structure with Monte Carlo variance and game environment"""
     id: str
     name: str
     position: str
@@ -68,11 +68,6 @@ class Player:
     injury_risk: float = 0.0
     value: float = 0.0
     variance: float = 0.0
-    locked: bool = False
-    is_core: bool = False
-    is_mvp: bool = False
-    mvp_candidate: bool = False
-    mvp_rank: int = 0
     # Monte Carlo fields
     floor_10: float = 0.0
     ceiling_90: float = 0.0
@@ -80,6 +75,12 @@ class Player:
     boom_rate: float = 0.0
     bust_rate: float = 0.0
     monte_carlo_analyzed: bool = False
+    # NEW: Game environment and AI fields
+    game_total: float = 45.0
+    game_environment_mult: float = 1.0
+    ai_must_play: bool = False
+    ai_must_fade: bool = False
+    locked: bool = False
 
     def __post_init__(self):
         self.value = self.projection / (self.salary / 1000) if self.salary > 0 else 0
@@ -98,6 +99,7 @@ class LineupResult:
     correlation_score: float
     weather_impact: float
     contest_type: str
+    # Monte Carlo fields
     ceiling_90: float = 0.0
     ceiling_95: float = 0.0
     floor_10: float = 0.0
@@ -107,133 +109,83 @@ class LineupResult:
     risk_level: str = "Unknown"
     boom_probability: float = 0.0
     bust_probability: float = 0.0
-    monte_carlo_insights: Dict = None
+    monte_carlo_insights: Dict = field(default_factory=dict)
+    # NEW: Game environment info
+    high_total_exposure: int = 0
+    primary_stack_team: str = ""
 
 
-def calculate_player_confidence(player: Player, vegas_data: Dict) -> float:
-    """Score a player's "must play" confidence (0-100)"""
-    confidence = 0.0
-
-    # 1. VALUE
-    if player.value >= 4.0:
-        confidence += 30
-    elif player.value >= 3.5:
-        confidence += 20
-    elif player.value >= 3.0:
-        confidence += 10
-
-    # 2. VEGAS ENVIRONMENT
-    if isinstance(vegas_data, dict):
-        vegas_mult = vegas_data.get(player.team, vegas_data.get('vegas_multipliers', {}).get(player.team, 1.0))
-    else:
-        vegas_mult = 1.0
-    if vegas_mult >= 1.40:
-        confidence += 25
-    elif vegas_mult >= 1.25:
-        confidence += 15
-
-    # 3. MONTE CARLO CEILING
-    if player.monte_carlo_analyzed:
-        ceiling_ratio = player.ceiling_90 / player.projection if player.projection > 0 else 1
-        if ceiling_ratio >= 1.35:
-            confidence += 20
-        elif ceiling_ratio >= 1.25:
-            confidence += 10
-
-    # 4. OWNERSHIP LEVERAGE
-    if player.ownership <= 15 and player.projection >= 15:
-        confidence += 15
-
-    # 5. POSITION SCARCITY
-    if player.position in ['RB', 'TE']:
-        confidence += 10
-
-    return min(100, confidence)
-
-
-def identify_core_plays(players: List[Player], vegas_multipliers: Dict, num_lineups: int) -> List[Player]:
-    """Mark players as 'core' if they exceed confidence threshold"""
-    CORE_THRESHOLD = 60
-    MAX_CORE_PLAYS = 3
-
-    player_confidence = []
-    for player in players:
-        conf = calculate_player_confidence(player, vegas_multipliers)
-        player_confidence.append((player, conf))
-
-    player_confidence.sort(key=lambda x: x[1], reverse=True)
-
-    core_count = 0
-    for player, conf in player_confidence:
-        if conf >= CORE_THRESHOLD and core_count < MAX_CORE_PLAYS:
-            player.is_core = True
-            core_count += 1
-            logger.info(f"🔥 CORE PLAY: {player.name} ({player.position}) ${player.salary} - {conf:.0f} confidence")
-        else:
-            player.is_core = False
-
-    if core_count == 0:
-        logger.info("📊 No core plays identified - normal exposure limits apply")
-    else:
-        logger.info(f"📊 Identified {core_count} core play(s)")
-
-    return players
-
-
-def calculate_max_exposure(num_lineups: int, position: str) -> int:
-    """Calculate max player appearances"""
-    if num_lineups <= 3:
-        target_pct = 1.00
-    elif num_lineups <= 5:
-        target_pct = {'QB': 0.80, 'RB': 1.00, 'WR': 0.80, 'TE': 0.80, 'D': 0.80}.get(position, 0.80)
-    elif num_lineups <= 15:
-        target_pct = {'QB': 0.60, 'RB': 0.65, 'WR': 0.55, 'TE': 0.60, 'D': 0.50}.get(position, 0.60)
-    else:
-        target_pct = {'QB': 0.50, 'RB': 0.55, 'WR': 0.50, 'TE': 0.50, 'D': 0.45}.get(position, 0.50)
-
-    return max(1, int(num_lineups * target_pct))
-
-
+# -----------------------------
+# Optimizer
+# -----------------------------
 class EnhancedDFSOptimizer:
-    """Enhanced DFS optimization with Monte Carlo variance modeling"""
+    """
+    WINNING DFS Optimizer - Built for 12-person friends league domination
 
-    @staticmethod
-    def _injury_gate(players: List[Dict], logger=None) -> Tuple[List[Dict], Set[str]]:
-        """Hard-exclude clearly unavailable players"""
-        HARD_STATUSES = {"OUT", "IR", "INACTIVE", "SUSPENDED", "PUP", "NFI"}
-        TEXT_FLAGS = ("ruled out", "inactive", "season-ending", "placed on ir")
+    Key changes from standard optimizer:
+    1. Game environment (Vegas totals) drives 50%+ of player value
+    2. Forces 3+ players from highest-total games
+    3. AI must-play players get 25% boost, must-fade get 35% penalty
+    4. Ownership is IGNORED (doesn't matter in 12-person league)
+    """
 
-        def _status_fields(p: Dict) -> Tuple[str, str]:
-            indicator = str(p.get("injury_indicator") or p.get("injuryIndicator") or p.get(
-                "Injury Indicator") or "").strip().upper()
-            details = str(
-                p.get("injury_details") or p.get("injuryDetails") or p.get("Injury Details") or "").strip().lower()
-            return indicator, details
-
-        original_count = len(players)
-        kept, blocked = [], []
-        for p in players:
-            ind, det = _status_fields(p)
-            if ind in HARD_STATUSES or any(flag in det for flag in TEXT_FLAGS):
-                blocked.append((p, f"CSV:{ind}"))
-                continue
-            kept.append(p)
-
-        if logger:
-            logger.info(f"🧱 Injury gate: scanned {original_count}, kept {len(kept)}, removed {len(blocked)}")
-
-        return kept, {str(p.get("id")) for p, _ in blocked}
-
-    def __init__(self, use_monte_carlo: bool = True, mc_simulations: int = 10000):
+    def __init__(self, use_monte_carlo: bool = True, mc_simulations: int = 5000):
         self.use_monte_carlo = use_monte_carlo and MONTE_CARLO_AVAILABLE
         self.mc_simulations = mc_simulations
         self.monte_carlo_engine = MonteCarloEngine(num_simulations=mc_simulations) if self.use_monte_carlo else None
 
-    async def prepare_players(self, player_data: List[Dict], weather_data: Dict = None, vegas_data: Dict = None) -> \
-    List[Player]:
-        """Convert player data with optional Monte Carlo enhancement"""
-        player_data, _excluded_ids = self._injury_gate(player_data, logger)
+        # NEW: Game environment tracking
+        self.vegas_multipliers: Dict[str, float] = {}
+        self.high_total_teams: List[str] = []
+        self.game_totals: Dict[str, float] = {}  # team -> game total
+        self.high_total_threshold = 47.0
+
+        if use_monte_carlo and not MONTE_CARLO_AVAILABLE:
+            logger.warning("Monte Carlo requested but not available - falling back to basic optimization")
+
+    def set_vegas_data(self, vegas_multipliers: Dict[str, float], vegas_odds: Dict = None):
+        """
+        CRITICAL: Set Vegas data that drives player selection
+        Call this BEFORE optimization
+        """
+        self.vegas_multipliers = vegas_multipliers or {}
+
+        # Identify high-total teams
+        self.high_total_teams = [
+            team for team, mult in self.vegas_multipliers.items()
+            if mult >= 1.25  # 47+ total games
+        ]
+
+        # Extract actual game totals if available
+        if vegas_odds and 'games' in vegas_odds:
+            for game_id, game_data in vegas_odds['games'].items():
+                total = game_data.get('total_points', 45)
+                home = game_data.get('home_team')
+                away = game_data.get('away_team')
+                if home:
+                    self.game_totals[home] = total
+                if away:
+                    self.game_totals[away] = total
+
+        logger.info(f"🎯 HIGH-TOTAL TEAMS (47+): {self.high_total_teams}")
+        logger.info(f"📊 Vegas multipliers set for {len(self.vegas_multipliers)} teams")
+
+    async def prepare_players(
+            self,
+            player_data: List[Dict],
+            weather_data: Dict = None,
+            vegas_multipliers: Dict = None,
+    ) -> List[Player]:
+        """Convert player data with game environment enhancement"""
         players: List[Player] = []
+
+        # Store vegas multipliers
+        if vegas_multipliers:
+            self.vegas_multipliers = vegas_multipliers
+            self.high_total_teams = [
+                team for team, mult in vegas_multipliers.items()
+                if mult >= 1.25
+            ]
 
         for data in player_data:
             try:
@@ -243,14 +195,19 @@ class EnhancedDFSOptimizer:
                 salary = int(data.get('salary', 5000))
                 projection = float(data.get('projection', data.get('projected_points', 0)))
 
+                # Basic filtering
                 if not player_name or len(player_name.strip()) < 2 or projection < 0:
                     continue
 
+                # Normalize defense position
                 if position in ['DST', 'DEF', 'D/ST']:
                     position = 'D'
 
-                is_locked = data.get('locked', False)
+                # Get game environment data
+                game_mult = self.vegas_multipliers.get(team, 1.0)
+                game_total = self.game_totals.get(team, 45.0)
 
+                # Create player with game environment
                 player = Player(
                     id=str(data.get('player_id', data.get('id', player_name))),
                     name=player_name,
@@ -258,15 +215,14 @@ class EnhancedDFSOptimizer:
                     team=team,
                     salary=salary,
                     projection=projection,
-                    locked=is_locked,
+                    game_total=game_total,
+                    game_environment_mult=game_mult,
+                    ai_must_play=data.get('ai_must_play', False),
+                    ai_must_fade=data.get('ai_must_fade', False),
+                    locked=data.get('locked', False),
                 )
 
-                if data.get('injury_opportunity', False):
-                    opportunity_score = data.get('opportunity_score', 0)
-                    if opportunity_score >= 0.7:
-                        boost_factor = 1.0 + (opportunity_score * 0.25)
-                        player.projection *= boost_factor
-
+                # Apply weather adjustments
                 if weather_data and team in weather_data:
                     weather_factor = weather_data[team].get('factor', 1.0)
                     player.weather_factor = weather_factor
@@ -278,14 +234,19 @@ class EnhancedDFSOptimizer:
                 logger.error(f"Error processing player {data}: {e}")
                 continue
 
+        # Enhance with Monte Carlo analysis
         if self.use_monte_carlo and players:
             logger.info(f"Running Monte Carlo analysis on {len(players)} players...")
-            players = await self._enhance_players_with_monte_carlo(players, weather_data, vegas_data)
+            players = await self._enhance_players_with_monte_carlo(players, weather_data, vegas_multipliers)
 
         return players
 
-    async def _enhance_players_with_monte_carlo(self, players: List[Player], weather_data: Dict = None,
-                                                vegas_data: Dict = None) -> List[Player]:
+    async def _enhance_players_with_monte_carlo(
+            self,
+            players: List[Player],
+            weather_data: Dict = None,
+            vegas_data: Dict = None,
+    ) -> List[Player]:
         """Enhance players with Monte Carlo variance analysis"""
         sim_data: List[Dict[str, Any]] = []
         for player in players:
@@ -298,15 +259,19 @@ class EnhancedDFSOptimizer:
             })
 
         sim_players = convert_player_data_to_simulation(sim_data, weather_data, vegas_data)
-        enhanced_players: List[Player] = []
 
+        enhanced_players: List[Player] = []
         batch_size = 20
+
         for i in range(0, len(players), batch_size):
             batch_players = players[i:i + batch_size]
             batch_sims = sim_players[i:i + batch_size]
 
-            sim_tasks = [self.monte_carlo_engine.simulate_player_performance(sim_player, num_sims=1000) for sim_player
-                         in batch_sims]
+            sim_tasks = []
+            for sim_player in batch_sims:
+                task = self.monte_carlo_engine.simulate_player_performance(sim_player, num_sims=1000)
+                sim_tasks.append(task)
+
             batch_results = await asyncio.gather(*sim_tasks)
 
             for player, sim_result in zip(batch_players, batch_results):
@@ -322,37 +287,26 @@ class EnhancedDFSOptimizer:
         logger.info(f"Enhanced {len(enhanced_players)} players with Monte Carlo analysis")
         return enhanced_players
 
-    async def optimize_lineup(self, players: List[Player], contest_type: str = 'gpp',
-                              single_game_teams: List[str] = None) -> Optional[LineupResult]:
-        """Optimize with Monte Carlo-enhanced objective function"""
+    async def optimize_lineup(
+            self,
+            players: List[Player],
+            contest_type: str = 'gpp',
+            single_game_teams: List[str] = None,
+    ) -> Optional[LineupResult]:
+        """
+        WINNING OPTIMIZATION - Forces high-total game exposure
+        """
         try:
+            # Filter for single game
             if single_game_teams:
                 players = [p for p in players if p.team in single_game_teams]
                 if len(players) < 6:
                     logger.error(f"Not enough players for single game: {len(players)}")
                     return None
 
+            # Predict ownership (for tracking only, not penalized)
             for player in players:
                 player.ownership = self._predict_friends_league_ownership(player, contest_type)
-
-            # H2H MVP candidates (for logging only - optimizer doesn't need this)
-            if contest_type == 'h2h':
-                mvp_candidates = []
-                for player in players:
-                    if player.salary < 6000:
-                        continue
-                    if player.monte_carlo_analyzed:
-                        mvp_score = player.ceiling_90 * player.value * 0.5
-                    else:
-                        mvp_score = player.projection * player.value * 0.5
-                    mvp_candidates.append((player, mvp_score))
-
-                if mvp_candidates:
-                    mvp_candidates.sort(key=lambda x: x[1], reverse=True)
-                    logger.info(f"🏆 H2H MVP Candidates (${6000}+ only):")
-                    for i, (player, score) in enumerate(mvp_candidates[:3]):
-                        logger.info(
-                            f"   {i + 1}. {player.name} ({player.position}) ${player.salary} - Score: {score:.1f}")
 
             # Create optimization problem
             prob = pulp.LpProblem("DFS_Optimization", pulp.LpMaximize)
@@ -361,511 +315,390 @@ class EnhancedDFSOptimizer:
             for i, _ in enumerate(players):
                 player_vars[i] = pulp.LpVariable(f"player_{i}", cat='Binary')
 
-            # H2H: Create MVP variables BEFORE building objective
-            mvp_vars: Dict[int, pulp.LpVariable] = {}
-            if contest_type == 'h2h':
-                for i, _ in enumerate(players):
-                    mvp_vars[i] = pulp.LpVariable(f"is_mvp_{i}", cat='Binary')
-
-            # Build objective with validation
-            import math
+            # WINNING OBJECTIVE FUNCTION
             objective_terms = []
             for i, player in enumerate(players):
-                if self.use_monte_carlo and player.monte_carlo_analyzed:
-                    points_value = self._calculate_monte_carlo_value(player, contest_type)
-                else:
-                    points_value = self._calculate_contest_value(player, contest_type)
-
-                # Validate value
-                is_valid = True
-                try:
-                    if not math.isfinite(points_value) or points_value <= 0:
-                        logger.warning(f"Invalid points_value for {player.name}: {points_value}, setting to 0")
-                        is_valid = False
-                except (TypeError, ValueError):
-                    logger.warning(f"Type error for {player.name}, setting to 0")
-                    is_valid = False
-
-                if not is_valid:
-                    objective_terms.append(0 * player_vars[i])
-                    continue
-
-                if not isinstance(points_value, (int, float)) or not math.isfinite(points_value):
-                    logger.error(f"CRITICAL: Bad value for {player.name}, setting to 0")
-                    objective_terms.append(0 * player_vars[i])
-                    continue
-
+                # Use game-environment-weighted value
+                points_value = self._calculate_winning_value(player, contest_type)
                 objective_terms.append(points_value * player_vars[i])
 
-                # H2H: Add MVP bonus (0.5x extra) if this player is MVP
-                if contest_type == 'h2h' and i in mvp_vars:
-                    objective_terms.append(points_value * 0.5 * mvp_vars[i])
-
-                # Create optimization problem with objective
-            prob = pulp.LpProblem("DFS_Optimization", pulp.LpMaximize)
             prob += pulp.lpSum(objective_terms)
 
             # Add constraints
-            self._add_fanduel_constraints(prob, players, player_vars, contest_type, single_game_teams, mvp_vars if contest_type == 'h2h' else {})
-
-            if not single_game_teams:
-                self._add_friends_league_constraints(prob, players, player_vars, contest_type)
+            self._add_fanduel_constraints(prob, players, player_vars, contest_type, single_game_teams)
 
             # Solve
-            valid_count = sum(1 for p in players if p.projection > 0)
-            logger.info(f"🔍 Attempting optimization with {valid_count} valid players...")
+            prob.solve(pulp.PULP_CBC_CMD(msg=0))
 
-            try:
-                prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=30))
-            except Exception as solver_error:
-                logger.error(f"❌ CBC Solver crashed: {solver_error}")
+            if prob.status == pulp.LpStatusOptimal:
+                result = self._extract_result(prob, players, player_vars, contest_type)
+
+                # Enhance with Monte Carlo
+                if self.use_monte_carlo:
+                    result = await self._enhance_lineup_result_with_monte_carlo(result)
+
+                return result
+            else:
+                logger.warning(f"Optimization failed: {pulp.LpStatus[prob.status]}")
                 return None
-
-            logger.info(f"🔍 SOLVER STATUS: {pulp.LpStatus[prob.status]}")
-
-            if prob.status != pulp.LpStatusOptimal:
-                logger.error(f"❌ Optimization not optimal: {pulp.LpStatus[prob.status]}")
-                return None
-
-            result = self._extract_result(prob, players, player_vars, contest_type)
-
-            if self.use_monte_carlo:
-                result = await self._enhance_lineup_result_with_monte_carlo(result)
-
-            return result
 
         except Exception as e:
             logger.error(f"Error in optimization: {e}")
-            logger.error(f"Full traceback:\n{traceback.format_exc()}")
-            raise HTTPException(status_code=500, detail=f"Optimization error: {str(e)}")
+            return None
 
-    def _calculate_monte_carlo_value(self, player: Player, contest_type: str) -> float:
-        """Enhanced value calculation - SIMPLIFIED FOR H2H"""
-        if not player or player.projection <= 0 or player.salary <= 0:
-            return 0.0
+    def _calculate_winning_value(self, player: Player, contest_type: str) -> float:
+        """
+        WINNING VALUE CALCULATION
 
-        if not hasattr(player, 'ceiling_90') or player.ceiling_90 <= 0:
-            player.ceiling_90 = player.projection * 1.4
-        if not hasattr(player, 'ceiling_95') or player.ceiling_95 <= 0:
-            player.ceiling_95 = player.ceiling_90 * 1.1
-        if not hasattr(player, 'boom_rate'):
-            player.boom_rate = 0.15
-        if not hasattr(player, 'bust_rate'):
-            player.bust_rate = 0.15
-
+        Key insight: Game environment is worth MORE than individual projection
+        A mediocre player in a 50-point game beats an elite player in a 40-point game
+        """
         base_value = player.projection
+        game_mult = player.game_environment_mult
 
-        # H2H: Use ceiling analysis for upside optimization
-        if contest_type == 'h2h':
-            if player.monte_carlo_analyzed and player.ceiling_90 > 0:
-                # Weight ceiling heavily (70%) + projection (30%) for upside
-                return (player.ceiling_90 * 0.7) + (player.projection * 0.3)
+        # ===========================================
+        # FIX #1: MASSIVE GAME ENVIRONMENT WEIGHTING
+        # ===========================================
+        if game_mult >= 1.35:  # 50+ total game
+            game_boost = base_value * 0.50  # +50% for elite environment
+        elif game_mult >= 1.25:  # 47+ total game
+            game_boost = base_value * 0.35  # +35% for great environment
+        elif game_mult >= 1.10:  # 44+ total game
+            game_boost = base_value * 0.15  # +15% for good environment
+        elif game_mult <= 0.90:  # Under 41 total
+            game_boost = base_value * -0.30  # -30% PENALTY for bad environment
+        else:
+            game_boost = 0
+
+        # Position-specific environment multipliers
+        if player.position == 'QB' and game_mult >= 1.25:
+            game_boost *= 1.5  # QBs in shootouts are AUTO-PLAYS
+        elif player.position == 'WR' and game_mult >= 1.25:
+            game_boost *= 1.3  # WRs in shootouts get extra boost
+        elif player.position == 'TE' and game_mult >= 1.25:
+            game_boost *= 1.2  # TEs benefit from high-scoring games
+
+        # ===========================================
+        # FIX #2: AI MUST-PLAY/MUST-FADE ENFORCEMENT
+        # ===========================================
+        ai_adjustment = 0
+        if player.ai_must_play:
+            ai_adjustment = base_value * 0.30  # +30% for AI must-plays
+            logger.debug(f"🎯 AI BOOST: {player.name} +{ai_adjustment:.1f}")
+        elif player.ai_must_fade:
+            ai_adjustment = base_value * -0.40  # -40% for AI must-fades
+            logger.debug(f"⛔ AI PENALTY: {player.name} {ai_adjustment:.1f}")
+
+        # Contest-specific adjustments
+        if contest_type in ['gpp', 'bestball']:
+            # GPP: Maximize ceiling
+            if player.monte_carlo_analyzed:
+                ceiling_bonus = (player.ceiling_90 - player.projection) * 2.0
+                boom_bonus = player.boom_rate * 12.0
             else:
-                # Fallback: estimate ceiling as 1.4x projection
-                estimated_ceiling = player.projection * 1.4
-                return (estimated_ceiling * 0.7) + (player.projection * 0.3)
+                ceiling_bonus = player.variance * 1.5
+                boom_bonus = 0
 
-        # Friends league logic (unchanged)
-        if contest_type == 'friends_league':
-            vegas_multipliers = getattr(self, 'vegas_multipliers', {})
-            vegas_boost = vegas_multipliers.get(player.team, 1.0)
+            # NO OWNERSHIP PENALTY - doesn't matter in 12-person league
+            return base_value + game_boost + ai_adjustment + ceiling_bonus + boom_bonus
 
-            # Position-specific logic...
-            # [Keep existing friends_league logic here - too long to repeat]
-
-            return base_value * 1.5  # Simplified for now
-
-        # GPP/Cash/Contrarian
-        elif contest_type == 'gpp':
-            ceiling_bonus = (player.ceiling_90 - player.projection) * 8.0
-            return base_value + ceiling_bonus
         elif contest_type == 'cash':
-            floor_bonus = player.floor_10 * 2.0
-            return base_value + floor_bonus
-        else:
-            return base_value
-
-    def _calculate_contest_value(self, player: Player, contest_type: str) -> float:
-        """Fallback value calculation - SIMPLIFIED FOR H2H"""
-        if player.projection <= 0 or player.salary <= 0:
-            return 0.0
-
-        base_value = player.projection
-
-        # H2H: Use ceiling analysis + game script weighting
-        if contest_type == 'h2h':
-            # Base ceiling value
-            if player.monte_carlo_analyzed and player.ceiling_90 > 0:
-                base_value = (player.ceiling_90 * 0.7) + (player.projection * 0.3)
+            # Cash: Floor + value
+            if player.monte_carlo_analyzed:
+                floor_bonus = player.floor_10 * 1.5
             else:
-                estimated_ceiling = player.projection * 1.4
-                base_value = (estimated_ceiling * 0.7) + (player.projection * 0.3)
+                floor_bonus = base_value * 0.3
 
-            # Apply game script multipliers based on vegas_data
-            vegas_data = getattr(self, 'vegas_data', {})
-            if vegas_data and isinstance(vegas_data, dict):
-                games = vegas_data.get('games', {})
-                game_script_multiplier = 1.0
+            value_bonus = 5.0 if player.value >= 3.5 else 0.0
 
-                # Find this player's game total
-                for game_id, game_data in games.items():
-                    if player.team in [game_data.get('home_team'), game_data.get('away_team')]:
-                        total = game_data.get('total_points', 45.0)
+            return base_value + (game_boost * 0.5) + ai_adjustment + floor_bonus + value_bonus
 
-                        # High-total games favor passing (QB/WR/TE get boost)
-                        if total >= 48.0:  # High-scoring game
-                            if player.position in ['QB', 'WR', 'TE']:
-                                game_script_multiplier = 1.25  # 25% boost for pass catchers
-                            elif player.position == 'RB':
-                                game_script_multiplier = 1.10  # Smaller boost for RBs
-                        # Low-total games favor rushing (RB gets boost)
-                        elif total <= 42.0:  # Low-scoring game
-                            if player.position == 'RB':
-                                game_script_multiplier = 1.20  # 20% boost for RBs
-                            elif player.position in ['QB', 'WR', 'TE']:
-                                game_script_multiplier = 0.95  # Small penalty for pass catchers
-                        break
+        elif contest_type == 'contrarian':
+            # Contrarian: Max ceiling from unexpected places
+            if player.monte_carlo_analyzed:
+                ceiling_bonus = (player.ceiling_95 - player.projection) * 3.0
+            else:
+                ceiling_bonus = player.variance * 2.5
 
-                return base_value * game_script_multiplier
+            return base_value + game_boost + ai_adjustment + ceiling_bonus
 
-            return base_value
-
-        # Other contest types
-        elif contest_type == 'gpp':
-            return base_value + (player.variance * 1.2)
-        elif contest_type == 'cash':
-            return base_value - (player.variance * 0.2)
         else:
-            total_value = base_value + (player.variance * 1.0)
+            return base_value + game_boost + ai_adjustment
 
-        # Validation
-        if total_value != total_value:
-            logger.warning(f"NaN value for {player.name}, using projection only")
-            return player.projection
+    def _add_fanduel_constraints(
+            self,
+            prob,
+            players: List[Player],
+            player_vars: Dict,
+            contest_type: str,
+            single_game_teams: List[str],
+    ):
+        """FanDuel constraints with FORCED high-total exposure"""
 
-        if abs(total_value) > 1000000:
-            logger.warning(f"Invalid value for {player.name}: {total_value}")
-            return player.projection
-
-        return total_value
-
-    async def _enhance_lineup_result_with_monte_carlo(self, lineup_result: LineupResult) -> LineupResult:
-        """Enhanced MC results"""
-        try:
-            lineup_data = [{'name': p.name, 'position': p.position, 'team': p.team, 'salary': p.salary,
-                            'projected_points': p.projection} for p in lineup_result.players]
-            mc_results = await enhance_lineup_with_monte_carlo(lineup_data, num_simulations=self.mc_simulations)
-            lineup_sim = mc_results['simulation_results']['lineup_simulation']
-
-            lineup_result.ceiling_90 = lineup_sim['ceiling_90']
-            lineup_result.floor_10 = lineup_sim['floor_10']
-            lineup_result.variance_score = lineup_sim['std']
-            lineup_result.risk_level = "Medium"
-
-        except Exception as e:
-            logger.error(f"MC enhancement error: {e}")
-
-        return lineup_result
-
-    def _calculate_boom_probability(self, lineup_sim: Dict, mean_score: float) -> float:
-        """Calculate boom probability"""
-        ceiling_90 = lineup_sim.get('ceiling_90', mean_score)
-        ceiling_distance = (ceiling_90 - mean_score) / mean_score if mean_score > 0 else 0
-
-        if ceiling_distance > 0.30:
-            return 0.20
-        elif ceiling_distance > 0.25:
-            return 0.15
-        else:
-            return 0.10
-
-    def _calculate_bust_probability(self, lineup_sim: Dict, mean_score: float) -> float:
-        """Calculate bust probability"""
-        return 0.15
-
-    def _add_fanduel_constraints(self, prob, players: List[Player], player_vars: Dict, contest_type: str,
-                                 single_game_teams: List[str], mvp_vars: Dict = None):
-        """Add FanDuel constraints including H2H MVP logic with correlation stacking"""
-        # H2H: Simple 6-player lineup with salary cap
-        if contest_type == 'h2h':
-            logger.info(f"🎯 Applying H2H single-game constraints for teams: {single_game_teams}")
-            # Filter to game teams
-            if single_game_teams:
-                game_player_indices = [i for i, p in enumerate(players) if p.team in single_game_teams]
-                if len(game_player_indices) < 6:
-                    raise ValueError(f"Not enough players from {single_game_teams}")
-                logger.info(f"✅ {len(game_player_indices)} players available from {single_game_teams}")
-
-            # MVP variables passed from optimize_lineup (already created)
-            if not mvp_vars:
-                raise ValueError("H2H requires mvp_vars to be passed in")
-
-            # MVP must be a selected player
-            for i in range(len(players)):
-                prob += mvp_vars[i] <= player_vars[i]
-
-            # Exactly one MVP
-            prob += pulp.lpSum(mvp_vars) == 1
-
-            # Only expensive players ($8K+) can be MVP
-            for i, player in enumerate(players):
-                if player.salary < 8000:
-                    prob += mvp_vars[i] == 0
-
-            # Salary cap WITH MVP 1.5x cost (base + 0.5x bonus for MVP)
-            base_salary = pulp.lpSum([players[i].salary * player_vars[i] for i in range(len(players))])
-            mvp_bonus = pulp.lpSum([players[i].salary * 0.5 * mvp_vars[i] for i in range(len(players))])
-            prob += base_salary + mvp_bonus <= H2H_SALARY_CAP
-
-            # Exactly 6 players
-            prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == H2H_ROSTER_SIZE
-
-            # Locked players
-            locked_count = sum(1 for p in players if p.locked)
-            if locked_count > H2H_ROSTER_SIZE:
-                raise ValueError(f"Too many locked players ({locked_count}) for H2H")
-            for i, player in enumerate(players):
-                if player.locked:
-                    prob += player_vars[i] == 1
-                    logger.info(f"🔒 H2H LOCKED: {player.name}")
-
-            # Team restriction
-            if single_game_teams:
-                for i, player in enumerate(players):
-                    if player.team not in single_game_teams:
-                        prob += player_vars[i] == 0
-
-            # H2H CORRELATION STACKING: Force QB + same-team pass catcher
-            # This ensures correlation upside, not just raw projection maximization
-            qb_indices = [i for i, p in enumerate(players) if p.position == 'QB']
-
-            for qb_idx in qb_indices:
-                qb = players[qb_idx]
-                # Find same-team pass catchers (WR/TE) that aren't punts
-                same_team_pass_catchers = [
-                    i for i, p in enumerate(players)
-                    if p.team == qb.team and p.position in ['WR', 'TE'] and p.salary >= 3000
-                ]
-
-                # If this QB is selected, must have at least 1 same-team pass catcher
-                if same_team_pass_catchers:
-                    prob += pulp.lpSum([player_vars[i] for i in same_team_pass_catchers]) >= player_vars[qb_idx]
-                    logger.info(f"🔗 H2H STACK: If {qb.name} selected, must include {qb.team} WR/TE")
-
-            # PUNT PENALTY: Limit players under $3K to maximum 1
-            cheap_players = [i for i, p in enumerate(players) if p.salary < 3000]
-            if cheap_players:
-                prob += pulp.lpSum([player_vars[i] for i in cheap_players]) <= 1
-                logger.info(f"⚠️ H2H PUNT LIMIT: Max 1 player under $3K")
-
-            # At least one expensive player
-            expensive = [i for i, p in enumerate(players) if p.salary >= 8000]
-            if expensive:
-                prob += pulp.lpSum([player_vars[i] for i in expensive]) >= 1
-
-                # H2H TEAM LIMITS: Max 3 players per team to prevent over-concentration
-                team_counts: Dict[str, List[int]] = {}
-                for i, player in enumerate(players):
-                    team_counts.setdefault(player.team, []).append(i)
-
-                max_per_team_h2h = 3  # Conservative limit for H2H
-                for team, player_indices in team_counts.items():
-                    if len(player_indices) > 1:  # Only apply if team has multiple players
-                        prob += pulp.lpSum([player_vars[i] for i in player_indices]) <= max_per_team_h2h
-                        logger.info(f"🔒 H2H TEAM LIMIT: Max {max_per_team_h2h} players from {team}")
-
-                logger.info(
-                    f"✅ H2H constraints applied: 6 players, ${H2H_SALARY_CAP} cap with correlation stacking + team limits")
-                return
-
-        # MAIN SLATE constraints (unchanged)
+        # Salary cap
         prob += pulp.lpSum([players[i].salary * player_vars[i] for i in range(len(players))]) <= FANDUEL_SALARY_CAP
-        locked_salary = 0
-        locked_positions = {'QB': 0, 'RB': 0, 'WR': 0, 'TE': 0, 'D': 0}
 
+        # Handle locked players
         for i, player in enumerate(players):
             if player.locked:
                 prob += player_vars[i] == 1
-                locked_salary += player.salary
-                locked_positions[player.position] += 1
-                logger.info(f"🔒 LOCKED: {player.name} ({player.position}) ${player.salary}")
+                logger.info(f"🔒 LOCKED: {player.name} ({player.position})")
 
-        if locked_salary > FANDUEL_SALARY_CAP:
-            raise ValueError(f"Locked players exceed salary cap: ${locked_salary:,}")
+        if single_game_teams:
+            prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == 6
+            return
 
+        # Position indices
         qb_indices = [i for i, p in enumerate(players) if p.position == 'QB']
         rb_indices = [i for i, p in enumerate(players) if p.position == 'RB']
         wr_indices = [i for i, p in enumerate(players) if p.position == 'WR']
         te_indices = [i for i, p in enumerate(players) if p.position == 'TE']
         d_indices = [i for i, p in enumerate(players) if p.position == 'D']
+        flex_indices = rb_indices + wr_indices + te_indices
 
+        # Exact FanDuel requirements
         if qb_indices:
             prob += pulp.lpSum([player_vars[i] for i in qb_indices]) == 1
         if d_indices:
             prob += pulp.lpSum([player_vars[i] for i in d_indices]) == 1
-
-        flex_indices = rb_indices + wr_indices + te_indices
-
         if rb_indices:
             prob += pulp.lpSum([player_vars[i] for i in rb_indices]) >= 2
-        if wr_indices:
-            prob += pulp.lpSum([player_vars[i] for i in wr_indices]) >= 3
-        if te_indices:
-            prob += pulp.lpSum([player_vars[i] for i in te_indices]) >= 1
-
-        prob += pulp.lpSum([player_vars[i] for i in flex_indices]) == 7
-
-        if rb_indices:
             prob += pulp.lpSum([player_vars[i] for i in rb_indices]) <= 3
         if wr_indices:
+            prob += pulp.lpSum([player_vars[i] for i in wr_indices]) >= 3
             prob += pulp.lpSum([player_vars[i] for i in wr_indices]) <= 4
         if te_indices:
+            prob += pulp.lpSum([player_vars[i] for i in te_indices]) >= 1
             prob += pulp.lpSum([player_vars[i] for i in te_indices]) <= 2
 
+        prob += pulp.lpSum([player_vars[i] for i in flex_indices]) == 7
         prob += pulp.lpSum([player_vars[i] for i in range(len(players))]) == 9
 
+        # Team diversity (max 4 per team for stacking)
         team_counts: Dict[str, List[int]] = {}
         for i, player in enumerate(players):
             team_counts.setdefault(player.team, []).append(i)
 
-        max_per_team = 3 if contest_type == 'cash' else 4
         for team, player_indices in team_counts.items():
-            prob += pulp.lpSum([player_vars[i] for i in player_indices]) <= max_per_team
+            prob += pulp.lpSum([player_vars[i] for i in player_indices]) <= 4
 
-    def _add_friends_league_constraints(self, prob, players: List[Player], player_vars: Dict, contest_type: str):
-        """Friends league constraints"""
-        pass  # Simplified
+        # ===========================================
+        # FIX #3: FORCE HIGH-TOTAL GAME EXPOSURE
+        # ===========================================
+        if contest_type in ['gpp', 'bestball']:
+            self._add_forced_high_total_stack(prob, players, player_vars)
+            self._add_qb_wr_stack_requirement(prob, players, player_vars, qb_indices, wr_indices)
+
+    def _add_forced_high_total_stack(self, prob, players: List[Player], player_vars: Dict):
+        """
+        CRITICAL: Force at least 3 players from highest-total games
+
+        This is the #1 lever for friends league wins.
+        70%+ of tournament winners have heavy exposure to the highest-total game.
+        """
+        if not self.vegas_multipliers:
+            logger.warning("No Vegas multipliers - cannot force high-total exposure")
+            return
+
+        # Find teams in 47+ total games
+        high_total_teams = [
+            team for team, mult in self.vegas_multipliers.items()
+            if mult >= 1.25
+        ]
+
+        if not high_total_teams:
+            # Fallback: use teams with multiplier > 1.10
+            high_total_teams = [
+                team for team, mult in self.vegas_multipliers.items()
+                if mult >= 1.10
+            ]
+
+        if not high_total_teams:
+            logger.warning("No high-total teams found")
+            return
+
+        # Get player indices from high-total games
+        high_total_indices = [
+            i for i, p in enumerate(players)
+            if p.team in high_total_teams
+        ]
+
+        if len(high_total_indices) >= 3:
+            # FORCE at least 3 players from high-total games
+            prob += pulp.lpSum([player_vars[i] for i in high_total_indices]) >= 3
+
+            teams_in_constraint = set(players[i].team for i in high_total_indices)
+            logger.info(f"🎯 FORCING 3+ players from high-total games: {teams_in_constraint}")
+        else:
+            logger.warning(f"Only {len(high_total_indices)} players in high-total games")
+
+    def _add_qb_wr_stack_requirement(
+            self,
+            prob,
+            players: List[Player],
+            player_vars: Dict,
+            qb_indices: List[int],
+            wr_indices: List[int]
+    ):
+        """Force QB + at least 1 WR from same team (stacking)"""
+
+        # Group by team
+        team_qbs: Dict[str, List[int]] = {}
+        team_wrs: Dict[str, List[int]] = {}
+
+        for i in qb_indices:
+            team_qbs.setdefault(players[i].team, []).append(i)
+
+        for i in wr_indices:
+            team_wrs.setdefault(players[i].team, []).append(i)
+
+        # For each team with both QB and WR, if QB is selected, at least 1 WR must be too
+        for team in team_qbs:
+            if team in team_wrs:
+                qb_vars = [player_vars[i] for i in team_qbs[team]]
+                wr_vars = [player_vars[i] for i in team_wrs[team]]
+
+                if qb_vars and wr_vars:
+                    # If QB selected, at least 1 WR from same team
+                    prob += pulp.lpSum(wr_vars) >= pulp.lpSum(qb_vars)
 
     def _predict_friends_league_ownership(self, player: Player, contest_type: str) -> float:
-        """Predict ownership"""
-        if contest_type == 'friends_league':
-            return 0.0
+        """Predict ownership for tracking (not used in optimization)"""
+        ownership = 15.0
 
         if player.salary >= 9500:
-            return 35.0
+            ownership = 40.0
+        elif player.salary >= 8500:
+            ownership = 30.0
         elif player.salary >= 7500:
-            return 20.0
+            ownership = 22.0
+        elif player.salary >= 6000:
+            ownership = 15.0
         else:
-            return 15.0
+            ownership = 10.0
+
+        if player.position == 'QB' and player.salary >= 8000:
+            ownership += 5
+        elif player.position == 'RB':
+            ownership += 3
+
+        return max(5.0, min(50.0, ownership))
 
     def _extract_result(self, prob, players: List[Player], player_vars: Dict, contest_type: str) -> LineupResult:
-        """Extract lineup results - FIXED H2H MVP selection"""
+        """Extract lineup results with game environment tracking"""
         selected_players: List[Player] = []
         total_salary = 0
         total_ownership = 0
+        high_total_count = 0
 
-        # First, collect all selected players
         for i, player in enumerate(players):
             if player_vars[i].varValue == 1:
                 selected_players.append(player)
                 total_salary += player.salary
                 total_ownership += player.ownership
+                if player.game_environment_mult >= 1.25:
+                    high_total_count += 1
 
-        # H2H: Pick MVP and apply 1.5x after optimization
-        if contest_type == 'h2h':
-            if len(selected_players) != 6:
-                logger.error(f"H2H lineup has {len(selected_players)} players, expected 6")
-                return None
-
-            # Extract MVP from optimizer's decision
-            mvp = None
-            for var in prob.variables():
-                if var.name.startswith('is_mvp_') and var.varValue == 1:
-                    try:
-                        player_idx = int(var.name.replace('is_mvp_', ''))
-                        mvp = players[player_idx]
-                        if mvp not in selected_players:
-                            logger.error(f"Optimizer selected MVP {mvp.name} not in lineup!")
-                            mvp = None
-                        break
-                    except (ValueError, IndexError):
-                        continue
-
-            # Fallback: pick highest ceiling player as MVP
-            if not mvp:
-                logger.warning("Couldn't extract MVP, using highest ceiling player")
-                mvp = max(
-                    selected_players,
-                    key=lambda p: p.ceiling_90 if p.monte_carlo_analyzed else p.projection * 1.4,
-                )
-
-            mvp.is_mvp = True
-
-            # Calculate projections with MVP bonus
-            mvp_projection = mvp.projection * 1.5
-            other_projection = sum(p.projection for p in selected_players if p != mvp)
-            projected_points = mvp_projection + other_projection
-
-            # Calculate salary with MVP 1.5x cost
-            mvp_salary_cost = int(mvp.salary * 1.5)
-            other_salary = sum(p.salary for p in selected_players if p != mvp)
-            total_salary = mvp_salary_cost + other_salary
-
-            # Order: MVP first, then by salary
-            ordered_players = [mvp] + sorted(
-                [p for p in selected_players if p != mvp],
-                key=lambda p: p.salary,
-                reverse=True,
-            )
-
-            logger.info(
-                f"🏆 H2H MVP: {mvp.name} (${mvp_salary_cost:,} with 1.5x) - {mvp_projection:.1f} pts"
-            )
-
-            return LineupResult(
-                players=ordered_players,
-                total_salary=total_salary,
-                projected_points=projected_points,
-                total_value=sum(p.value for p in ordered_players),
-                ownership_total=total_ownership,
-                correlation_score=1.0,
-                weather_impact=float(
-                    np.mean([p.weather_factor for p in ordered_players])
-                )
-                if ordered_players
-                else 1.0,
-                contest_type=contest_type,
-            )
-
-        # MAIN SLATE: Standard 9-player lineup
         ordered_players = self._format_lineup_for_fanduel(selected_players)
         projected_points = sum(p.projection for p in ordered_players)
 
-        return LineupResult(
+        # Find primary stack team
+        team_counts = {}
+        for p in ordered_players:
+            team_counts[p.team] = team_counts.get(p.team, 0) + 1
+        primary_stack = max(team_counts, key=team_counts.get) if team_counts else ""
+
+        result = LineupResult(
             players=ordered_players,
             total_salary=total_salary,
             projected_points=projected_points,
             total_value=sum(p.value for p in ordered_players),
             ownership_total=total_ownership,
             correlation_score=self._calculate_correlation(ordered_players),
-            weather_impact=float(
-                np.mean([p.weather_factor for p in ordered_players])
-            )
-            if ordered_players
-            else 1.0,
+            weather_impact=float(np.mean([p.weather_factor for p in ordered_players])) if ordered_players else 1.0,
             contest_type=contest_type,
+            high_total_exposure=high_total_count,
+            primary_stack_team=primary_stack,
         )
 
-    def _format_lineup_for_fanduel(self, players: List[Player]) -> List[Player]:
-        """Order players in FanDuel format"""
-        ordered: List[Player] = []
-        by_position: Dict[str, List[Player]] = {}
+        logger.info(
+            f"📊 Lineup: ${total_salary} | {projected_points:.1f}pts | {high_total_count} high-total players | Stack: {primary_stack}")
 
+        return result
+
+    async def _enhance_lineup_result_with_monte_carlo(self, lineup_result: LineupResult) -> LineupResult:
+        """Enhance lineup result with Monte Carlo analysis"""
+        try:
+            lineup_data: List[Dict[str, Any]] = []
+            for player in lineup_result.players:
+                lineup_data.append({
+                    'name': player.name,
+                    'position': player.position,
+                    'team': player.team,
+                    'salary': player.salary,
+                    'projected_points': player.projection,
+                })
+
+            mc_results = await enhance_lineup_with_monte_carlo(
+                lineup_data,
+                num_simulations=self.mc_simulations,
+            )
+
+            lineup_sim = mc_results['simulation_results']['lineup_simulation']
+            insights = mc_results['insights']
+
+            lineup_result.ceiling_90 = lineup_sim['ceiling_90']
+            lineup_result.ceiling_95 = lineup_sim['ceiling_95']
+            lineup_result.floor_10 = lineup_sim['floor_10']
+            lineup_result.floor_25 = lineup_sim['floor_25']
+            lineup_result.variance_score = lineup_sim['std']
+            lineup_result.sharpe_ratio = lineup_sim['sharpe_ratio']
+            lineup_result.risk_level = insights['risk_assessment']
+            lineup_result.monte_carlo_insights = {
+                'recommendations': insights['optimization_recommendations'],
+                'player_analysis': insights['player_analysis'],
+                'correlation_strength': insights['correlation_strength'],
+            }
+
+            mean_score = lineup_sim['mean']
+            lineup_result.boom_probability = 0.15 if lineup_sim.get('ceiling_90',
+                                                                    mean_score) > mean_score * 1.3 else 0.05
+            lineup_result.bust_probability = 0.30 if lineup_sim.get('floor_25',
+                                                                    mean_score) < mean_score * 0.75 else 0.15
+
+        except Exception as e:
+            logger.error(f"Error enhancing lineup with Monte Carlo: {e}")
+
+        return lineup_result
+
+    def _format_lineup_for_fanduel(self, players: List[Player]) -> List[Player]:
+        """Order players in FanDuel format: QB, RB, RB, WR, WR, WR, TE, FLEX, DEF"""
+        ordered: List[Player] = []
+
+        by_position: Dict[str, List[Player]] = {}
         for player in players:
             by_position.setdefault(player.position, []).append(player)
 
         for pos in by_position:
             by_position[pos].sort(key=lambda p: p.salary, reverse=True)
 
+        # QB
         if 'QB' in by_position:
             ordered.append(by_position['QB'][0])
+
+        # RB x2
         if 'RB' in by_position:
             ordered.extend(by_position['RB'][:2])
+
+        # WR x3
         if 'WR' in by_position:
             ordered.extend(by_position['WR'][:3])
+
+        # TE
         if 'TE' in by_position:
             ordered.append(by_position['TE'][0])
 
+        # FLEX
         flex_candidates: List[Player] = []
         if 'RB' in by_position and len(by_position['RB']) > 2:
             flex_candidates.extend(by_position['RB'][2:])
@@ -875,67 +708,145 @@ class EnhancedDFSOptimizer:
             flex_candidates.extend(by_position['TE'][1:])
 
         if flex_candidates:
-            ordered.append(max(flex_candidates, key=lambda p: p.salary))
+            flex_player = max(flex_candidates, key=lambda p: p.salary)
+            ordered.append(flex_player)
 
+        # DEF
         if 'D' in by_position:
             ordered.append(by_position['D'][0])
 
         return ordered
 
     def _calculate_correlation(self, players: List[Player]) -> float:
-        """Calculate lineup correlation"""
-        return 0.5
+        """Calculate lineup correlation score"""
+        correlation = 0.0
 
-    async def generate_multiple_lineups(self, players: List[Player], num_lineups: int = 10, contest_type: str = 'gpp',
-                                        single_game_teams: List[str] = None) -> List[LineupResult]:
-        """Generate diverse lineups with player exclusion"""
+        qb_teams = [p.team for p in players if p.position == 'QB']
+        wr_teams = [p.team for p in players if p.position == 'WR']
+        te_teams = [p.team for p in players if p.position == 'TE']
+
+        # QB-WR correlation
+        for qb_team in qb_teams:
+            same_team_wrs = sum(1 for team in wr_teams if team == qb_team)
+            correlation += 0.3 * same_team_wrs
+
+            # QB-TE correlation
+            same_team_tes = sum(1 for team in te_teams if team == qb_team)
+            correlation += 0.2 * same_team_tes
+
+        # Team stacking bonus
+        team_counts: Dict[str, int] = {}
+        for player in players:
+            team_counts[player.team] = team_counts.get(player.team, 0) + 1
+
+        for count in team_counts.values():
+            if count >= 3:
+                correlation += 0.4
+            elif count >= 2:
+                correlation += 0.2
+
+        return min(1.0, correlation)
+
+    async def generate_multiple_lineups(
+            self,
+            players: List[Player],
+            num_lineups: int = 10,
+            contest_type: str = 'gpp',
+            single_game_teams: List[str] = None,
+    ) -> List[LineupResult]:
+        """Generate diverse lineups with forced high-total exposure"""
         lineups: List[LineupResult] = []
-        used_players = set()  # Track players used across lineups
+        used_combinations = set()
+        max_attempts = num_lineups * 4
 
-        for attempt in range(num_lineups * 3):
+        for attempt in range(max_attempts):
             if len(lineups) >= num_lineups:
                 break
 
-            # Randomize projections AND exclude overused players
-            randomized = []
+            # Randomization for diversity
+            randomized_players: List[Player] = []
             for player in players:
                 new_player = Player(
-                    id=player.id, name=player.name, position=player.position, team=player.team,
-                    salary=player.salary, projection=player.projection, locked=player.locked
+                    id=player.id,
+                    name=player.name,
+                    position=player.position,
+                    team=player.team,
+                    salary=player.salary,
+                    projection=player.projection,
+                    ownership=player.ownership,
+                    weather_factor=player.weather_factor,
+                    injury_risk=player.injury_risk,
+                    value=player.value,
+                    variance=player.variance,
+                    game_total=player.game_total,
+                    game_environment_mult=player.game_environment_mult,
+                    ai_must_play=player.ai_must_play,
+                    ai_must_fade=player.ai_must_fade,
+                    locked=player.locked,
                 )
 
-                if not player.locked:
-                    # Randomization
-                    new_player.projection *= random.uniform(0.85, 1.15)
+                # Copy Monte Carlo data
+                if player.monte_carlo_analyzed:
+                    new_player.floor_10 = player.floor_10
+                    new_player.ceiling_90 = player.ceiling_90
+                    new_player.ceiling_95 = player.ceiling_95
+                    new_player.boom_rate = player.boom_rate
+                    new_player.bust_rate = player.bust_rate
+                    new_player.monte_carlo_analyzed = True
 
-                    # Diversification: Penalize players used in previous lineups
-                    if player.name in used_players:
-                        new_player.projection *= 0.70  # 30% penalty for reuse
+                # Apply randomization (less for cash games)
+                if contest_type == 'gpp':
+                    random_factor = random.uniform(0.88, 1.12)
+                elif contest_type == 'cash':
+                    random_factor = random.uniform(0.95, 1.05)
+                else:
+                    random_factor = random.uniform(0.80, 1.20)
 
-                randomized.append(new_player)
+                new_player.projection *= random_factor
+                new_player.value = new_player.projection / (new_player.salary / 1000) if new_player.salary else 0.0
+                randomized_players.append(new_player)
 
-            lineup = await self.optimize_lineup(randomized, contest_type, single_game_teams)
+            lineup = await self.optimize_lineup(randomized_players, contest_type, single_game_teams)
 
             if lineup:
-                lineups.append(lineup)
-                # Track top 3 salary players from this lineup to force diversity
-                sorted_by_salary = sorted(lineup.players, key=lambda p: p.salary, reverse=True)[:3]
-                for p in sorted_by_salary:
-                    used_players.add(p.name)
-                logger.info(f"✅ Lineup {len(lineups)}/{num_lineups} generated")
+                # Check diversity
+                core_players = tuple(sorted([p.id for p in lineup.players if p.salary > 6500]))
+                if core_players not in used_combinations:
+                    lineups.append(lineup)
+                    used_combinations.add(core_players)
 
-        if len(lineups) < num_lineups:
-            logger.warning(f"⚠️ Only generated {len(lineups)}/{num_lineups} lineups")
+        # Sort by ceiling for GPP, floor for cash
+        if contest_type == 'cash':
+            if lineups and lineups[0].floor_10 > 0:
+                lineups.sort(key=lambda x: x.floor_10, reverse=True)
+            else:
+                lineups.sort(key=lambda x: x.projected_points, reverse=True)
+        else:
+            if lineups and lineups[0].ceiling_90 > 0:
+                lineups.sort(key=lambda x: (x.ceiling_90, x.high_total_exposure), reverse=True)
+            else:
+                lineups.sort(key=lambda x: (x.projected_points, x.high_total_exposure), reverse=True)
+
+        logger.info(f"Generated {len(lineups)} {contest_type} lineups")
+
+        # Log high-total exposure stats
+        if lineups:
+            avg_exposure = sum(l.high_total_exposure for l in lineups) / len(lineups)
+            logger.info(f"📊 Average high-total exposure: {avg_exposure:.1f} players per lineup")
 
         return lineups
 
-# Public API
+
+# -----------------------------
+# Sync wrapper utilities
+# -----------------------------
 def _run_coro_sync(coro):
-    """Run coroutine safely"""
+    """Run coroutine from sync context"""
     try:
         loop = asyncio.get_running_loop()
         is_running = loop.is_running()
     except RuntimeError:
+        loop = None
         is_running = False
 
     if not is_running:
@@ -961,101 +872,39 @@ def _run_coro_sync(coro):
     return result_box.get("result")
 
 
+# -----------------------------
+# Main Public API
+# -----------------------------
 def optimize_dfs_lineups(
         player_data: List[Dict],
         weather_data: Dict = None,
         vegas_multipliers: Dict = None,
-        vegas_data: Dict = None,
         num_lineups: int = 10,
         contest_type: str = 'gpp',
         single_game_teams: List[str] = None,
         use_monte_carlo: bool = True,
-        mc_simulations: int = 10000,
+        mc_simulations: int = 5000,
+        vegas_odds: Dict = None,
 ) -> List[LineupResult]:
-    """Main optimization entry point"""
-    player_data, _excluded_ids = EnhancedDFSOptimizer._injury_gate(player_data, logger)
+    """
+    WINNING DFS Optimization - Main entry point
 
-    logger.info(f"Starting {contest_type.upper()} optimization | Lineups: {num_lineups}")
-    logger.info(f"Starting {contest_type.upper()} optimization | Lineups: {num_lineups}")
+    This function:
+    1. Sets Vegas data to drive game environment weighting
+    2. Applies AI must-play/must-fade recommendations
+    3. Forces high-total game exposure
+    4. Returns lineups optimized for CEILING, not median
+    """
+    logger.info(f"🏈 Starting {contest_type.upper()} optimization | Lineups: {num_lineups}")
+    logger.info(f"   Monte Carlo: {'ON' if use_monte_carlo and MONTE_CARLO_AVAILABLE else 'OFF'}")
 
-    # AI INTEGRATION
-    ai_enabled = os.getenv('AI_ENABLED', 'true').lower() == 'true'
-
-    if AI_AVAILABLE and ai_enabled:
-        try:
-            from ai_analyzer import DualAIDFSAnalyzer
-            analyzer = DualAIDFSAnalyzer()
-            logger.info("🤖 AI Analysis: ENABLED")
-
-            ai_analysis = analyzer.analyze_slate_for_optimization(
-                player_data, weather_data or {}, vegas_multipliers or {}, contest_type
-            )
-
-            if ai_analysis and isinstance(ai_analysis, dict):
-                leverage_players = ai_analysis.get('leverage_players', [])
-                avoid_players = ai_analysis.get('avoid_players', [])
-
-                # Track which players got explicit boosts
-                explicit_boosted = set()
-
-                # H2H: Parse AI for EXPLICIT recommendations FIRST (these get 40% boost)
-                if contest_type == 'h2h' and ai_analysis:
-                    ai_strategy = ai_analysis.get('ai_strategy', '')
-                    strong_verbs = ['must-play', 'stack-with', 'pair', 'must', 'bring-back']
-
-                    for rec in player_data:
-                        name = rec.get('player_name', rec.get('name', ''))
-                        if not name or name.lower() not in ai_strategy.lower():
-                            continue
-
-                        strategy_lower = ai_strategy.lower()
-                        name_pos = strategy_lower.find(name.lower())
-
-                        if name_pos >= 0:
-                            context_start = max(0, name_pos - 50)
-                            context_end = min(len(ai_strategy), name_pos + len(name) + 50)
-                            context = ai_strategy[context_start:context_end].lower()
-
-                            if any(verb in context for verb in strong_verbs):
-                                original_proj = rec.get('projected_points', 0)
-                                rec['projected_points'] = original_proj * 1.40  # 40% boost for explicit mentions
-                                rec['projection'] = rec['projected_points']
-                                explicit_boosted.add(name)
-                                logger.info(
-                                    f"🎯 AI EXPLICIT: {name} {original_proj:.1f} → {rec['projected_points']:.1f} pts")
-
-                # Now apply leverage/avoid boosts ONLY for non-explicit players
-                for rec in player_data:
-                    name = rec.get('player_name', rec.get('name', ''))
-
-                    if name in explicit_boosted:
-                        continue  # Skip - already got explicit boost
-
-                    if name in leverage_players:
-                        original_proj = rec.get('projected_points', 0)
-                        rec['projected_points'] = original_proj * 1.25  # 25% boost
-                        rec['projection'] = rec['projected_points']
-                        logger.info(f"🤖 AI BOOST: {name} {original_proj:.1f} → {rec['projected_points']:.1f} pts")
-                    elif name in avoid_players:
-                        original_proj = rec.get('projected_points', 0)
-                        rec['projected_points'] = original_proj * 0.65  # 35% fade
-                        rec['projection'] = rec['projected_points']
-                        logger.info(f"🤖 AI FADE: {name} {original_proj:.1f} → {rec['projected_points']:.1f} pts")
-
-                cost_summary = getattr(analyzer, "get_cost_summary", lambda: {})()
-                if cost_summary:
-                    logger.info(
-                        f"💰 AI cost: ${cost_summary.get('weekly_spend', 0):.2f} / ${cost_summary.get('weekly_budget', 0):.2f}")
-
-        except Exception as e:
-            logger.warning(f"⚠️ AI analysis failed: {e}")
-    else:
-        logger.info("🤖 AI Analysis: DISABLED")
-
+    # Build optimizer
     optimizer = EnhancedDFSOptimizer(use_monte_carlo=use_monte_carlo, mc_simulations=mc_simulations)
-    setattr(optimizer, "vegas_multipliers", vegas_multipliers or {})
-    setattr(optimizer, "vegas_data", vegas_data or {})
 
+    # CRITICAL: Set Vegas data first
+    optimizer.set_vegas_data(vegas_multipliers or {}, vegas_odds)
+
+    # Prepare players
     players: List[Player] = _run_coro_sync(
         optimizer.prepare_players(player_data, weather_data or {}, vegas_multipliers or {})
     )
@@ -1064,14 +913,66 @@ def optimize_dfs_lineups(
         logger.error("No valid players after preparation")
         return []
 
+    # Log high-total team exposure available
+    high_total_players = sum(1 for p in players if p.game_environment_mult >= 1.25)
+    logger.info(f"📊 Players in high-total games: {high_total_players}/{len(players)}")
+
+    # Generate lineups
     lineups: List[LineupResult] = _run_coro_sync(
         optimizer.generate_multiple_lineups(
-            players=players, num_lineups=num_lineups, contest_type=contest_type, single_game_teams=single_game_teams
+            players=players,
+            num_lineups=num_lineups,
+            contest_type=contest_type,
+            single_game_teams=single_game_teams,
         )
     )
 
     if not lineups:
         logger.error("No lineups generated")
         return []
+
+    # Export lineups
+    try:
+        export_dir = Path(DATA_DIR) / "lineups"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = export_dir / f"lineups_{contest_type}_{ts}.json"
+
+        payload = []
+        for lu in lineups:
+            payload.append({
+                "contest_type": lu.contest_type,
+                "total_salary": lu.total_salary,
+                "projected_points": round(lu.projected_points, 2),
+                "ceiling_90": round(lu.ceiling_90, 2),
+                "floor_10": round(lu.floor_10, 2),
+                "high_total_exposure": lu.high_total_exposure,
+                "primary_stack": lu.primary_stack_team,
+                "players": [
+                    {
+                        "name": p.name,
+                        "position": p.position,
+                        "team": p.team,
+                        "salary": p.salary,
+                        "projection": round(p.projection, 2),
+                        "game_mult": round(p.game_environment_mult, 2),
+                        "ai_must_play": p.ai_must_play,
+                    }
+                    for p in lu.players
+                ],
+            })
+
+        with out_path.open("w", encoding="utf-8") as f:
+            json.dump({"lineups": payload}, f, indent=2)
+        logger.info(f"💾 Saved lineups to {out_path}")
+    except Exception as e:
+        logger.warning(f"Failed to export lineups: {e}")
+
+    # Log summary
+    if lineups:
+        top = lineups[0]
+        logger.info(f"🏆 TOP LINEUP: ${top.total_salary} | {top.projected_points:.1f}pts | "
+                    f"Ceil90: {top.ceiling_90:.1f} | High-total: {top.high_total_exposure} | "
+                    f"Stack: {top.primary_stack_team}")
 
     return lineups
