@@ -807,7 +807,8 @@ class EnhancedDFSOptimizer:
         """Generate diverse lineups with forced high-total exposure"""
         lineups: List[LineupResult] = []
         used_combinations = set()
-        max_attempts = num_lineups * 4
+        used_player_ids: Dict[str, int] = {}  # Track how many times each player is used
+        max_attempts = num_lineups * 6  # More attempts for better diversity
 
         for attempt in range(max_attempts):
             if len(lineups) >= num_lineups:
@@ -844,13 +845,20 @@ class EnhancedDFSOptimizer:
                     new_player.bust_rate = safe_float(player.bust_rate, 0.0)
                     new_player.monte_carlo_analyzed = True
 
-                # Apply randomization (less for cash games)
-                if contest_type == 'gpp':
-                    random_factor = random.uniform(0.88, 1.12)
+                # Apply randomization - STRONGER for diversity
+                # Also penalize players used too many times
+                if contest_type in ['gpp', 'friends_league']:
+                    random_factor = random.uniform(0.75, 1.25)  # Wider range
                 elif contest_type == 'cash':
-                    random_factor = random.uniform(0.95, 1.05)
+                    random_factor = random.uniform(0.92, 1.08)
                 else:
-                    random_factor = random.uniform(0.80, 1.20)
+                    random_factor = random.uniform(0.70, 1.30)
+
+                # Penalize overused players to force diversity
+                usage_count = used_player_ids.get(player.id, 0)
+                max_usage = max(2, num_lineups // 2)  # Allow player in at most half of lineups
+                if usage_count >= max_usage:
+                    random_factor *= 0.5  # Heavy penalty to force different player
 
                 new_player.projection = safe_float(new_player.projection * random_factor, 5.0)
                 new_player.value = safe_float(new_player.projection / (new_player.salary / 1000),
@@ -860,13 +868,23 @@ class EnhancedDFSOptimizer:
             lineup = await self.optimize_lineup(randomized_players, contest_type, single_game_teams)
 
             if lineup:
-                # Check diversity
-                core_players = tuple(sorted([p.id for p in lineup.players if p.salary > 6500]))
-                if core_players not in used_combinations:
-                    lineups.append(lineup)
-                    used_combinations.add(core_players)
+                # RELAXED diversity check - only look at top 3 expensive players
+                top_3_players = tuple(
+                    sorted([p.id for p in sorted(lineup.players, key=lambda x: x.salary, reverse=True)[:3]]))
 
-        # Sort by ceiling for GPP, floor for cash
+                if top_3_players not in used_combinations:
+                    lineups.append(lineup)
+                    used_combinations.add(top_3_players)
+
+                    # Track player usage for next iteration
+                    for p in lineup.players:
+                        used_player_ids[p.id] = used_player_ids.get(p.id, 0) + 1
+
+                    logger.debug(f"✅ Lineup {len(lineups)} accepted (attempt {attempt + 1})")
+                else:
+                    logger.debug(f"⏭️ Lineup rejected - duplicate core (attempt {attempt + 1})")
+
+        # Sort by ceiling for GPP/friends_league, floor for cash
         if contest_type == 'cash':
             if lineups and lineups[0].floor_10 > 0:
                 lineups.sort(key=lambda x: x.floor_10, reverse=True)
