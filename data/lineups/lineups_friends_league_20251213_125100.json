@@ -1,0 +1,96 @@
+{
+  "lineups": [
+    {
+      "contest_type": "friends_league",
+      "total_salary": 60000,
+      "projected_points": 194.78,
+      "ceiling_90": 224.72,
+      "floor_10": 165.37,
+      "high_total_exposure": 8,
+      "primary_stack": "DET",
+      "players": [
+        {
+          "name": "Matthew Stafford",
+          "position": "QB",
+          "team": "LAR",
+          "salary": 8300,
+          "projection": 32.23,
+          "game_mult": 1.47,
+          "ai_must_play": true
+        },
+        {
+          "name": "Jahmyr Gibbs",
+          "position": "RB",
+          "team": "DET",
+          "salary": 9500,
+          "projection": 39.18,
+          "game_mult": 1.47,
+          "ai_must_play": true
+        },
+        {
+          "name": "James Cook III",
+          "position": "RB",
+          "team": "BUF",
+          "salary": 8300,
+          "projection": 30.39,
+          "game_mult": 1.31,
+          "ai_must_play": true
+        },
+        {
+          "name": "Puka Nacua",
+          "position": "WR",
+          "team": "LAR",
+          "salary": 9700,
+          "projection": 36.42,
+          "game_mult": 1.47,
+          "ai_must_play": true
+        },
+        {
+          "name": "Amon-Ra St. Brown",
+          "position": "WR",
+          "team": "DET",
+          "salary": 8600,
+          "projection": 27.72,
+          "game_mult": 1.47,
+          "ai_must_play": true
+        },
+        {
+          "name": "Dominic Lovett",
+          "position": "WR",
+          "team": "DET",
+          "salary": 4000,
+          "projection": 7.13,
+          "game_mult": 1.47,
+          "ai_must_play": false
+        },
+        {
+          "name": "Blake Whiteheart",
+          "position": "TE",
+          "team": "CLE",
+          "salary": 4100,
+          "projection": 0.19,
+          "game_mult": 1.05,
+          "ai_must_play": false
+        },
+        {
+          "name": "Craig Reynolds",
+          "position": "RB",
+          "team": "NE",
+          "salary": 4200,
+          "projection": 11.06,
+          "game_mult": 1.31,
+          "ai_must_play": false
+        },
+        {
+          "name": "Detroit Lions",
+          "position": "D",
+          "team": "DET",
+          "salary": 3300,
+          "projection": 10.47,
+          "game_mult": 1.47,
+          "ai_must_play": false
+        }
+      ]
+    }
+  ]
+}

@@ -27,6 +27,7 @@ except ImportError:
 
 import pytz
 import numpy as np
+import math
 
 from config import (
     ESPN_ENDPOINTS, NFL_STADIUMS, WEATHER_API, DATA_DIR,
@@ -34,430 +35,331 @@ from config import (
 )
 
 
+def safe_float(val, default=0.0):
+    """Sanitize float values - replace NaN/inf with default"""
+    if val is None:
+        return default
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return default
+        return f
+    except (ValueError, TypeError):
+        return default
+
+
 class WinningAIAnalyzer:
     """
-    AI analyzer that identifies MUST PLAY and MUST FADE players
-    Integrated directly into data collection for seamless flow
+    AI analyzer that identifies:
+    - MUST PLAY players based on projection, game environment, role, injuries
+    - MUST FADE players based on risk, ownership, injuries, role uncertainty
+    - Provides adjusted projections to feed optimizer
     """
-
     def __init__(self):
-        self.openai_key = os.getenv('OPENAI_API_KEY', '')
-        self.anthropic_key = os.getenv('ANTHROPIC_API_KEY', '')
-        self.model = os.getenv('GPT_MODEL', 'gpt-4o-mini')
-        self.weekly_budget = float(os.getenv('AI_WEEKLY_BUDGET', '15.0'))
-        self.weekly_spend = 0.0
+        self.openai_api_key = os.getenv("OPENAI_API_KEY")
+        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+        self.ai_enabled = bool(self.openai_api_key or self.anthropic_api_key)
+        self.last_prompt_cost = 0.0
 
-    def analyze_for_winning_picks(
+        if self.ai_enabled:
+            logger.info("AI Analyzer initialized - projections will be enhanced")
+        else:
+            logger.warning("AI Analyzer disabled - missing API keys")
+
+    def _estimate_cost(self, prompt_tokens: int, model: str = "gpt-4o-mini") -> float:
+        """
+        Rough cost estimate so we don't burn your $15/week
+        """
+        # Very rough estimate in dollars
+        if "gpt-4o" in model and "mini" not in model:
+            return prompt_tokens * 0.000005  # $5 / 1M tokens
+        elif "gpt-4o-mini" in model:
+            return prompt_tokens * 0.00000015  # $0.15 / 1M tokens
+        elif "claude" in model:
+            return prompt_tokens * 0.000003  # $3 / 1M tokens
+        else:
+            return prompt_tokens * 0.000002
+
+    def should_use_ai(self, num_players: int, contest_type: str) -> bool:
+        """
+        Decide whether to use AI given cost constraints and slate size
+        """
+        if not self.ai_enabled:
+            return False
+
+        # Conservative: avoid huge prompts for large slates
+        estimated_tokens = num_players * 80  # rough guess: 80 tokens per player
+        est_cost = self._estimate_cost(estimated_tokens)
+
+        # If we're over $0.50 for a single run, that's too rich
+        if est_cost > 0.50:
+            logger.warning(f"Skipping AI (estimated single-prompt cost ${est_cost:.2f})")
+            return False
+
+        logger.info(f"AI analysis approved (estimated cost ${est_cost:.2f})")
+        self.last_prompt_cost = est_cost
+        return True
+
+    def _build_ai_prompt(self, players: List[Dict], vegas_data: Dict, contest_type: str) -> str:
+        """
+        Build a rich prompt that gives the model everything it needs to make
+        genuinely useful decisions.
+        """
+        lines = []
+        lines.append(
+            "You are an expert DFS tournament strategist for FanDuel NFL contests.\n"
+            "Your job is to identify MUST PLAY and MUST FADE players for a given slate.\n"
+            "You are optimizing for TOURNAMENT WINNING upside, not cash-game safety.\n"
+        )
+
+        # Explain contest type
+        if contest_type == "friends_league":
+            lines.append(
+                "Contest context: 12-person private friends league with a single optimal lineup.\n"
+                "You should focus on high-upside, correlated plays, but you do not need extreme contrarianism.\n"
+            )
+        elif contest_type == "h2h":
+            lines.append(
+                "Contest context: single-game head-to-head FanDuel contest.\n"
+                "You care more about median and ceiling combined for a single lineup, and correlation between QB and pass-catchers.\n"
+            )
+        else:
+            lines.append(
+                f"Contest context: {contest_type} tournament.\n"
+                "Assume large-field GPP dynamics: leverage, correlation, and ceiling matter more than raw median.\n"
+            )
+
+        # Vegas overview
+        avg_total = vegas_data.get("avg_total", 45.0)
+        lines.append(f"\nSlate average game total: {avg_total:.1f} points.\n")
+        high_total_games = vegas_data.get("high_total_games", [])
+        if high_total_games:
+            lines.append("High-total games (better environments):\n")
+            for g in high_total_games:
+                lines.append(
+                    f"- {g.get('away_team')} @ {g.get('home_team')}, "
+                    f"total={g.get('total_points')}, spread={g.get('spread')}\n"
+                )
+
+        lines.append(
+            "\nEach player below has: name, team, position, salary, projection, "
+            "ceiling, floor, game_total, game_environment_mult, injury_status, "
+            "and projected ownership.\n"
+        )
+        lines.append(
+            "Your task:\n"
+            "1. Identify ~8-15 MUST PLAY players who are high-ceiling, viable, and fit well in tournament lineups.\n"
+            "2. Identify ~8-15 MUST FADE players who are overpriced, fragile, or bad leverage.\n"
+            "3. Focus heavily on QBs and their WR/TE stacks in high-total games.\n"
+            "4. Look for injury situations where a cheap player gets a big role bump.\n"
+        )
+
+        # Player table
+        lines.append("\nPlayer data:\n")
+        for p in players:
+            lines.append(
+                f"- {p.get('name')} | {p.get('team')} | {p.get('position')} | "
+                f"salary={p.get('salary')} | proj={p.get('projection')} | "
+                f"ceil={p.get('ceiling')} | floor={p.get('floor')} | "
+                f"game_total={p.get('game_total')} | env_mult={p.get('game_environment_mult')} | "
+                f"injury={p.get('injury_status', 'healthy')} | own={p.get('ownership', 0)}\n"
+            )
+
+        lines.append(
+            "\nRespond ONLY in JSON with this structure:\n"
+            "{\n"
+            '  "must_play": ["Player Name 1", "Player Name 2", ...],\n'
+            '  "must_fade": ["Player Name 3", "Player Name 4", ...],\n'
+            '  "notes": "Any brief strategic notes about stacks, leverage, or injuries."\n'
+            "}\n"
+        )
+
+        return "".join(lines)
+
+    async def analyze_players(
         self,
         players: List[Dict],
         vegas_data: Dict,
-        contest_type: str = 'gpp'
+        contest_type: str = "gpp"
     ) -> Dict[str, Any]:
         """
-        Main AI analysis - returns must-play/must-fade recommendations
+        Run AI analysis on the player pool:
+        - Returns {must_play: [...], must_fade: [...], notes: "..."}
         """
-        high_total_games = vegas_data.get('high_total_games', [])
-        game_data = vegas_data.get('games', {})
+        if not players:
+            return {"must_play": [], "must_fade": [], "notes": ""}
 
-        # Categorize players by game environment
-        elite_env_players = []  # 48+ total
-        good_env_players = []   # 45-47 total
-        bad_env_players = []    # <42 total
+        if not self.should_use_ai(len(players), contest_type):
+            return {"must_play": [], "must_fade": [], "notes": "AI disabled or too expensive for this slate."}
 
-        for player in players:
-            team = player.get('team', '')
-            game_total = self._get_team_game_total(team, game_data)
+        prompt = self._build_ai_prompt(players, vegas_data, contest_type)
 
-            if game_total >= 48:
-                elite_env_players.append({**player, 'game_total': game_total})
-            elif game_total >= 45:
-                good_env_players.append({**player, 'game_total': game_total})
-            elif game_total <= 42:
-                bad_env_players.append({**player, 'game_total': game_total})
-
-        # Try AI analysis if available and affordable
-        if self.openai_key and self._can_afford_call():
+        # Try OpenAI first (new SDK syntax for openai>=1.0.0)
+        if self.openai_api_key:
             try:
-                return self._get_ai_recommendations(
-                    elite_env_players, good_env_players, bad_env_players,
-                    high_total_games, contest_type, players
+                from openai import AsyncOpenAI
+                client = AsyncOpenAI(api_key=self.openai_api_key)
+
+                logger.info("Calling OpenAI for MUST PLAY / MUST FADE analysis...")
+                response = await client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "You are an expert DFS NFL tournament optimizer. Always respond with valid JSON only."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.4,
                 )
+                content = response.choices[0].message.content
+                # Strip markdown code blocks if present
+                if content.startswith("```"):
+                    content = content.split("```")[1]
+                    if content.startswith("json"):
+                        content = content[4:]
+                content = content.strip()
+                data = json.loads(content)
+                logger.info(f"✅ OpenAI analysis complete: {len(data.get('must_play', []))} must-play, {len(data.get('must_fade', []))} must-fade")
+                return {
+                    "must_play": data.get("must_play", []),
+                    "must_fade": data.get("must_fade", []),
+                    "notes": data.get("notes", ""),
+                }
+
             except Exception as e:
-                logger.warning(f"AI analysis failed: {e}")
+                logger.error(f"Error during OpenAI analysis: {e}")
 
-        # Fall back to rule-based recommendations
-        return self._get_rule_based_recommendations(
-            elite_env_players, good_env_players, bad_env_players, contest_type
-        )
-
-    def _get_team_game_total(self, team: str, game_data: Dict) -> float:
-        """Get game total for a team"""
-        for game_id, data in game_data.items():
-            if team in [data.get('home_team'), data.get('away_team')]:
-                return data.get('total_points', 45.0)
-        return 45.0
-
-    def _can_afford_call(self) -> bool:
-        """Check budget"""
-        return (self.weekly_spend + 0.05) <= self.weekly_budget
-
-    def _get_ai_recommendations(
-        self,
-        elite_players: List[Dict],
-        good_players: List[Dict],
-        bad_players: List[Dict],
-        high_total_games: List[Dict],
-        contest_type: str,
-        all_players: List[Dict]
-    ) -> Dict[str, Any]:
-        """
-        Get AI-powered must-play/fade recommendations.
-
-        In addition to the existing high-total game context, enrich the prompt with
-        predicted ownership estimates and value plays. Ownership estimates are
-        approximated based on salary and position. Value plays highlight low-cost
-        players with strong projection-to-salary ratios and potential role increases
-        due to team injuries.
-        """
-        try:
-            import openai
-
-            # Build a detailed prompt with ownership and value data
-            prompt = self._build_prompt(elite_players, high_total_games, contest_type, all_players)
-
-            client = openai.OpenAI(api_key=self.openai_key)
-
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": """You are an elite DFS analyst for a 12-person friends league.
-Your job: identify MUST PLAY and MUST FADE players based on game environment and slate context.
-
-Rules:
-1. Players in 48+ total games are premium targets.
-2. QBs in shootouts (47+) are near-auto plays.
-3. Stack the QB with 1-2 WRs from the highest-total game.
-4. Fade players in games under 42 total.
-5. Use salary, injury context and ownership data to identify high-upside and contrarian plays.
-6. For friends leagues (small-field tournaments), emphasize ceiling and differentiation.
-7. For head-to-head, prioritize consistency and avoid volatile punts.
-
-Return ONLY valid JSON:
-{
-    "must_play": ["PlayerName|Position|Team|Reason"],
-    "must_fade": ["PlayerName|Position|Team|Reason"],
-    "stack_game": "AWAY@HOME",
-    "stack_qb": "QB Name",
-    "stack_receivers": ["WR1 Name", "WR2 Name"]
-}
-"""
-                    },
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=800,
-                temperature=0.2
-            )
-
-            # Track cost (GPT-4o pricing approximated)
-            usage = response.usage
-            cost = (usage.prompt_tokens * 0.00015 / 1000 + usage.completion_tokens * 0.0006 / 1000)
-            self.weekly_spend += cost
-            logger.info(f"💰 AI cost: ${cost:.4f} (weekly: ${self.weekly_spend:.2f})")
-
-            # Parse JSON content from response
-            content = response.choices[0].message.content
-            if '```json' in content:
-                content = content.split('```json')[1].split('```')[0]
-            elif '```' in content:
-                content = content.split('```')[1].split('```')[0]
-
-            recommendations = json.loads(content.strip())
-            recommendations['source'] = 'ai'
-
-            logger.info(f"🤖 AI MUST PLAYS: {len(recommendations.get('must_play', []))}")
-            logger.info(f"🤖 AI STACK: {recommendations.get('stack_game', 'None')}")
-
-            return recommendations
-
-        except Exception as e:
-            logger.error(f"AI recommendation failed: {e}")
-            return self._get_rule_based_recommendations(elite_players, [], [], contest_type)
-
-    def _build_prompt(
-        self,
-        elite_players: List[Dict],
-        high_total_games: List[Dict],
-        contest_type: str,
-        all_players: List[Dict]
-    ) -> str:
-        """
-        Construct a detailed prompt for the AI model.
-
-        In addition to listing the highest-total games and elite players, include:
-        - A section highlighting players projected to be highly owned ("Chalk") based on salary and position.
-        - A section of value plays and salary savers with strong projection-to-salary ratios.
-        - A section highlighting potential injury-driven opportunities (cheap players on teams with notable injuries).
-
-        These sections provide the model with additional context so it can make
-        more informed must-play and must-fade recommendations.
-        """
-        lines: List[str] = []
-
-        # Contest description
-        lines.append(f"Contest: 12-person friends league ({contest_type})")
-        lines.append("Goal: Build the highest-ceiling lineup using game environment, ownership and value.")
-        lines.append("")
-
-        # High-total games (limit to 5 for brevity)
-        lines.append("HIGH-TOTAL GAMES (47+):")
-        for game in high_total_games[:5]:
-            lines.append(f"  {game['game_id']}: {game['total']} total")
-        lines.append("")
-
-        # Elite players sorted by projection
-        lines.append("TOP PLAYERS IN ELITE GAMES (sorted by projection):")
-        sorted_elite = sorted(elite_players, key=lambda x: x.get('projected_points', 0), reverse=True)
-        for p in sorted_elite[:20]:
-            proj = p.get('projected_points', 0.0)
-            lines.append(
-                f"  {p['name']}|{p['position']}|{p['team']}|${p['salary']}|{proj:.1f}pts|{p.get('game_total', 45)} total"
-            )
-        lines.append("")
-
-        # Predicted ownership estimates (chalk)
-        def _predict_ownership(player: Dict) -> float:
-            """Approximate ownership based on salary and position (replicates optimizer logic)."""
-            salary = player.get('salary', 0)
-            position = player.get('position', '')
-            ownership = 15.0
-            if salary >= 9500:
-                ownership = 40.0
-            elif salary >= 8500:
-                ownership = 30.0
-            elif salary >= 7500:
-                ownership = 22.0
-            elif salary >= 6000:
-                ownership = 15.0
-            else:
-                ownership = 10.0
-            if position == 'QB' and salary >= 8000:
-                ownership += 5
-            elif position == 'RB':
-                ownership += 3
-            return max(5.0, min(50.0, ownership))
-
-        # Compute ownership for all players and select top 5
-        ownership_list = []
-        for p in all_players:
+        # Anthropic fallback (synchronous client - no await needed)
+        if self.anthropic_api_key:
             try:
-                own = _predict_ownership(p)
-                ownership_list.append((p, own))
-            except Exception:
-                continue
-        ownership_list.sort(key=lambda x: x[1], reverse=True)
-        top_chalk = ownership_list[:5]
+                import anthropic
+                client = anthropic.Anthropic(api_key=self.anthropic_api_key)
 
-        if top_chalk:
-            lines.append("CHALK (predicted high ownership):")
-            for p, own in top_chalk:
-                lines.append(
-                    f"  {p['name']}|{p['position']}|{p['team']}|${p['salary']}|{p.get('projected_points', 0):.1f}pts|{own:.1f}% predicted ownership"
+                logger.info("Calling Anthropic for MUST PLAY / MUST FADE analysis (fallback)...")
+                msg = client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=2000,
+                    temperature=0.4,
+                    system="You are an expert DFS NFL tournament optimizer. Always respond with valid JSON only.",
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ]
                 )
-            lines.append("")
+                content = msg.content[0].text
+                # Strip markdown code blocks if present
+                if content.startswith("```"):
+                    content = content.split("```")[1]
+                    if content.startswith("json"):
+                        content = content[4:]
+                content = content.strip()
+                data = json.loads(content)
+                logger.info(f"✅ Anthropic analysis complete: {len(data.get('must_play', []))} must-play, {len(data.get('must_fade', []))} must-fade")
+                return {
+                    "must_play": data.get("must_play", []),
+                    "must_fade": data.get("must_fade", []),
+                    "notes": data.get("notes", ""),
+                }
+            except Exception as e:
+                logger.error(f"Error during Anthropic analysis: {e}")
 
-        # Value plays and salary savers (projection per dollar)
-        value_candidates: List[tuple] = []
-        for p in all_players:
-            salary = p.get('salary', 0)
-            proj = p.get('projected_points', 0.0)
-            if salary > 0:
-                ratio = proj / salary
-                # consider players under 7000 salary as value pool
-                if salary <= 7000:
-                    value_candidates.append((p, ratio))
-        value_candidates.sort(key=lambda x: x[1], reverse=True)
-        top_values = value_candidates[:5]
-        if top_values:
-            lines.append("VALUE PLAYS & SALARY SAVERS:")
-            for p, ratio in top_values:
-                lines.append(
-                    f"  {p['name']}|{p['position']}|{p['team']}|${p['salary']}|{p.get('projected_points', 0):.1f}pts|{ratio*1000:.2f} pts/$1000"
-                )
-            lines.append("")
+        return {"must_play": [], "must_fade": [], "notes": "AI call failed; using base projections only."}
 
-        # Injury-driven opportunities: identify teams with out/IR/susp/NA and pick cheap players
-        injured_teams = set()
-        for p in all_players:
-            status = str(p.get('injury_status', '')).upper()
-            if any(flag in status for flag in ['IR', 'OUT', 'SUSP', 'NA']):
-                injured_teams.add(p.get('team', ''))
-        injury_candidates: List[tuple] = []
-        for p in all_players:
-            team = p.get('team', '')
-            salary = p.get('salary', 0)
-            proj = p.get('projected_points', 0.0)
-            if team in injured_teams and salary > 0 and salary <= 6500:
-                ratio = proj / salary
-                injury_candidates.append((p, ratio))
-        injury_candidates.sort(key=lambda x: x[1], reverse=True)
-        top_injury_vals = injury_candidates[:5]
-        if top_injury_vals:
-            lines.append("INJURY OPPORTUNITIES (cheap fill-ins with upside):")
-            for p, ratio in top_injury_vals:
-                lines.append(
-                    f"  {p['name']}|{p['position']}|{p['team']}|${p['salary']}|{p.get('projected_points', 0):.1f}pts|{ratio*1000:.2f} pts/$1000"
-                )
-            lines.append("")
+    def apply_to_players(self, players: List[Dict], ai_result: Dict[str, Any]) -> List[Dict]:
+        """
+        Adjust projections based on AI MUST PLAY / MUST FADE recommendations.
+        """
+        if not ai_result:
+            return players
 
-        # Instructions for the model
-        lines.append(
-            "Identify 3-4 must-play players and 1-2 must-fade players using the context above. "
-            "Focus on ceiling for tournaments and consistency for head-to-head, and choose the best QB+WR stack from a high-total game."
+        must_play = set(ai_result.get("must_play", []))
+        must_fade = set(ai_result.get("must_fade", []))
+
+        if not must_play and not must_fade:
+            return players
+
+        logger.info(
+            f"AI flags: {len(must_play)} MUST PLAY, {len(must_fade)} MUST FADE. "
+            f"Notes: {ai_result.get('notes', '')[:200]}..."
         )
 
-        return "\n".join(lines)
+        adjusted_players = []
+        for p in players:
+            name = p.get("name")
+            # Sanitize projection - this is critical to prevent NaN propagation
+            proj = safe_float(p.get("projection", p.get("projected_points", 0)), 5.0)
+            base_proj = proj
 
-    def _get_rule_based_recommendations(
-        self,
-        elite_players: List[Dict],
-        good_players: List[Dict],
-        bad_players: List[Dict],
-        contest_type: str
-    ) -> Dict[str, Any]:
-        """Rule-based fallback when AI unavailable"""
+            # Sanitize environment multiplier
+            env_mult = safe_float(p.get("game_environment_mult", 1.0), 1.0)
 
-        must_play = []
-        must_fade = []
+            if name in must_play:
+                # Big boost for must-plays
+                proj *= 1.20
+                p["ai_must_play"] = True
+            elif name in must_fade:
+                # Cut projection for must-fades
+                proj *= 0.80
+                p["ai_must_fade"] = True
+            else:
+                p["ai_must_play"] = False
+                p["ai_must_fade"] = False
 
-        # Sort elite players by projection
-        sorted_elite = sorted(elite_players, key=lambda x: x.get('projected_points', 0), reverse=True)
+            # Final projection with sanitization
+            final_proj = safe_float(proj * env_mult, base_proj)
+            p["projection"] = round(final_proj, 2)
+            p["projected_points"] = p["projection"]
+            p["projection_source"] = "ai_enhanced" if (name in must_play or name in must_fade) else "base+env"
+            p["base_projection"] = base_proj
 
-        # Find best QB in elite environment
-        elite_qbs = [p for p in sorted_elite if p.get('position') == 'QB']
-        stack_qb = None
-        stack_team = None
+            # Sanitize other float fields that will be used in optimizer
+            p["ceiling"] = safe_float(p.get("ceiling", final_proj * 1.5), final_proj * 1.5)
+            p["floor"] = safe_float(p.get("floor", final_proj * 0.5), final_proj * 0.5)
+            p["ownership"] = safe_float(p.get("ownership", 10.0), 10.0)
+            p["game_environment_mult"] = env_mult
 
-        if elite_qbs:
-            qb = elite_qbs[0]
-            stack_qb = qb['name']
-            stack_team = qb['team']
-            must_play.append(f"{qb['name']}|QB|{qb['team']}|Best QB in high-total game ({qb.get('game_total', 45)} total)")
+            adjusted_players.append(p)
 
-        # Find WRs to stack with QB
-        stack_receivers = []
-        if stack_team:
-            team_wrs = [p for p in sorted_elite if p.get('position') == 'WR' and p.get('team') == stack_team]
-            for wr in team_wrs[:2]:
-                stack_receivers.append(wr['name'])
-                must_play.append(f"{wr['name']}|WR|{wr['team']}|Stack with {stack_qb}")
-
-        # Find best non-stack players in elite environments
-        non_stack_elite = [p for p in sorted_elite if p.get('team') != stack_team]
-        for p in non_stack_elite[:2]:
-            if p['position'] in ['RB', 'WR', 'TE']:
-                must_play.append(f"{p['name']}|{p['position']}|{p['team']}|Elite game environment ({p.get('game_total', 45)} total)")
-
-        # Must fade: expensive players in bad environments
-        for p in bad_players:
-            if p.get('salary', 0) >= 7000:
-                must_fade.append(f"{p['name']}|{p['position']}|{p['team']}|Bad game environment ({p.get('game_total', 45)} total)")
-
-        return {
-            'must_play': must_play[:5],
-            'must_fade': must_fade[:5],
-            'stack_game': f"@{stack_team}" if stack_team else None,
-            'stack_qb': stack_qb,
-            'stack_receivers': stack_receivers,
-            'source': 'rule_based'
-        }
-
-    def apply_to_players(self, players: List[Dict], recommendations: Dict) -> List[Dict]:
-        """
-        Apply AI recommendations to player data
-        Must-play: +30% projection boost
-        Must-fade: -40% projection penalty
-        """
-        must_play_names = set()
-        must_fade_names = set()
-
-        # Parse must-play names
-        for entry in recommendations.get('must_play', []):
-            if '|' in str(entry):
-                name = entry.split('|')[0].strip().lower()
-                must_play_names.add(name)
-
-        # Parse must-fade names
-        for entry in recommendations.get('must_fade', []):
-            if '|' in str(entry):
-                name = entry.split('|')[0].strip().lower()
-                must_fade_names.add(name)
-
-        # Apply to players
-        modified = []
-        boost_count = 0
-        fade_count = 0
-
-        for player in players:
-            p = player.copy()
-            name_lower = p.get('name', '').lower()
-
-            if name_lower in must_play_names:
-                original = p.get('projected_points', 0)
-                p['projected_points'] = original * 1.30  # +30% boost
-                p['ai_must_play'] = True
-                boost_count += 1
-                logger.info(f"🎯 MUST PLAY: {p['name']} {original:.1f} → {p['projected_points']:.1f}")
-
-            elif name_lower in must_fade_names:
-                original = p.get('projected_points', 0)
-                p['projected_points'] = original * 0.60  # -40% penalty
-                p['ai_must_fade'] = True
-                fade_count += 1
-                logger.info(f"⛔ MUST FADE: {p['name']} {original:.1f} → {p['projected_points']:.1f}")
-
-            modified.append(p)
-
-        logger.info(f"✅ AI applied: {boost_count} boosted, {fade_count} faded")
-        return modified
+        return adjusted_players
 
 
 class EnhancedSlateManager:
-    """Manages REAL slate detection"""
-
+    """
+    Handles ESPN game data and time slots
+    """
     def __init__(self):
-        self.eastern = pytz.timezone('America/New_York')
+        self.tz = pytz.timezone("US/Eastern")
 
-    def get_current_nfl_week(self) -> int:
-        """Get current NFL week"""
-        try:
-            import requests
-            response = requests.get(
-                'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard',
-                timeout=10
-            )
-            if response.status_code == 200:
-                data = response.json()
-                if 'week' in data:
-                    if isinstance(data['week'], dict):
-                        return data['week'].get('number', self._calculate_week_from_date())
-                    return data.get('week', self._calculate_week_from_date())
-        except Exception as e:
-            logger.warning(f"ESPN API failed: {e}")
+    def get_current_time_et(self) -> datetime:
+        return datetime.now(self.tz)
 
-        return self._calculate_week_from_date()
+    def _calculate_week_from_date(self, ref_date: Optional[datetime] = None) -> int:
+        """
+        Very rough NFL week calculation if ESPN data fails
+        """
+        if ref_date is None:
+            ref_date = self.get_current_time_et()
 
-    def _calculate_week_from_date(self) -> int:
-        """Calculate NFL week from date"""
-        now = datetime.now(self.eastern)
-        season_start = datetime(2024, 9, 5, tzinfo=self.eastern)
-
-        if now < season_start:
+        # NFL regular season typically starts around early September
+        season_start = datetime(ref_date.year, 9, 1, tzinfo=self.tz)
+        delta_days = (ref_date - season_start).days
+        if delta_days < 0:
             return 1
 
-        days_since_start = (now - season_start).days
-        return max(1, min(18, (days_since_start // 7) + 1))
+        week = 1 + (delta_days // 7)
+        return max(1, min(18, week))
+
+    def bucket_games_by_time(self, games: List[Dict]) -> Dict[str, List[Dict]]:
+        """
+        Group games into main slate vs single games
+        """
+        buckets = {"main_slate": [], "single_games": [], "all_games": games}
+
+        for g in games:
+            slot = g.get("time_slot")
+            if slot in ("sunday_early", "sunday_late"):
+                buckets["main_slate"].append(g)
+            else:
+                buckets["single_games"].append(g)
+
+        return buckets
 
 
 class EnhancedDataCollector:
@@ -471,11 +373,11 @@ class EnhancedDataCollector:
     async def __aenter__(self):
         self.session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
-            headers={'User-Agent': WEATHER_API['user_agent']}
+            headers={'User-Agent': 'FanDuelWinningBot/1.0'}
         )
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type, exc, tb):
         if self.session:
             await self.session.close()
 
@@ -500,51 +402,57 @@ class EnhancedDataCollector:
                 if not all_games:
                     return self._get_fallback_games()
 
-                main_slate = [g for g in all_games if g['time_slot'] in ['sunday_early', 'sunday_late']]
-
-                logger.info(f"📅 Week {current_week}: {len(all_games)} games, {len(main_slate)} main slate")
-
-                return {
-                    'current_week': current_week,
-                    'all_games': all_games,
-                    'main_slate': main_slate,
-                    'single_games': all_games,
-                }
+                buckets = self.slate_manager.bucket_games_by_time(all_games)
+                buckets['current_week'] = current_week
+                return buckets
 
         except Exception as e:
-            logger.error(f"Error getting games: {e}")
+            logger.error(f"Error fetching ESPN games: {e}")
             return self._get_fallback_games()
 
     def _extract_week_number(self, data: Dict) -> int:
-        """Extract week from ESPN data"""
-        if 'week' in data:
-            week_data = data['week']
-            if isinstance(week_data, dict):
-                return week_data.get('number', self.slate_manager._calculate_week_from_date())
-            return week_data
+        """Extract week number from scoreboard data"""
+        try:
+            week_info = data.get('week', {})
+            num = week_info.get('number')
+            if num:
+                return int(num)
+        except Exception:
+            pass
         return self.slate_manager._calculate_week_from_date()
 
     def _parse_game_event(self, event: Dict) -> Optional[Dict]:
-        """Parse game event"""
+        """Parse a single ESPN game event"""
         try:
-            game_date = event.get('date', '')
-            if not game_date:
+            competitions = event.get('competitions', [])
+            if not competitions:
                 return None
 
-            game_datetime = datetime.fromisoformat(game_date.replace('Z', '+00:00'))
-            game_et = game_datetime.astimezone(self.slate_manager.eastern)
+            competition = competitions[0]
+            status = competition.get('status', {})
+            game_clock = status.get('displayClock')
+            game_status = status.get('type', {}).get('name')
 
-            competition = event.get('competitions', [{}])[0]
+            start_time_str = competition.get('date')
+            game_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00'))
+            game_et = game_time.astimezone(self.slate_manager.tz)
+
             competitors = competition.get('competitors', [])
 
             if len(competitors) < 2:
                 return None
 
             teams = []
+            home_team = None
+            away_team = None
             for comp in competitors:
                 abbrev = comp.get('team', {}).get('abbreviation', '')
                 if abbrev:
                     teams.append(abbrev)
+                    if comp.get('homeAway') == 'home':
+                        home_team = abbrev
+                    else:
+                        away_team = abbrev
 
             if len(teams) != 2:
                 return None
@@ -567,24 +475,26 @@ class EnhancedDataCollector:
                 time_slot = 'other'
 
             return {
-                'id': f"{teams[0]}_vs_{teams[1]}",
+                'id': event.get('id'),
                 'teams': teams,
+                'home_team': home_team,
+                'away_team': away_team,
                 'time_slot': time_slot,
-                'time': game_et.strftime('%A %I:%M %p ET'),
-                'game_datetime': game_et,
+                'time': game_et.strftime("%A %I:%M %p ET"),
+                'game_clock': game_clock,
+                'game_status': game_status,
             }
-
-        except Exception as e:
+        except Exception:
             return None
 
     def _get_fallback_games(self):
         """Fallback games"""
         week = self.slate_manager._calculate_week_from_date()
         games = [
-            {'id': 'BUF_vs_MIA', 'teams': ['BUF', 'MIA'], 'time_slot': 'sunday_early', 'time': 'Sunday 1:00 PM ET'},
-            {'id': 'PHI_vs_WAS', 'teams': ['PHI', 'WAS'], 'time_slot': 'sunday_early', 'time': 'Sunday 1:00 PM ET'},
+            {'id': 'BUF_vs_MIA', 'teams': ['BUF', 'MIA'], 'home_team': 'MIA', 'away_team': 'BUF', 'time_slot': 'sunday_early', 'time': 'Sunday 1:00 PM ET'},
+            {'id': 'PHI_vs_WAS', 'teams': ['PHI', 'WAS'], 'home_team': 'WAS', 'away_team': 'PHI', 'time_slot': 'sunday_early', 'time': 'Sunday 1:00 PM ET'},
         ]
-        return {'current_week': week, 'all_games': games, 'main_slate': games, 'single_games': games}
+        return {'current_week': week, 'all_games': games, 'main_slate': games, 'single_games': []}
 
     async def get_vegas_odds_data(self) -> Dict[str, Any]:
         """Get Vegas odds data"""
@@ -593,19 +503,13 @@ class EnhancedDataCollector:
             collector = VegasDataCollector()
             vegas_data = await collector.get_nfl_odds_data()
 
-            if vegas_data and vegas_data.get('games'):
-                high_total_count = len(vegas_data.get('high_total_games', []))
-                logger.info(f"🎰 VEGAS: {len(vegas_data['games'])} games, {high_total_count} high-total (47+)")
+            if not vegas_data or not vegas_data.get('games'):
+                logger.warning("Vegas data empty, falling back")
+                return self._get_fallback_vegas()
 
-                for game in vegas_data.get('high_total_games', []):
-                    logger.info(f"   🔥 {game['game_id']}: {game['total']} total")
-
-                return vegas_data
-
-            return self._get_fallback_vegas()
-
+            return vegas_data
         except Exception as e:
-            logger.error(f"Vegas data failed: {e}")
+            logger.error(f"Error fetching Vegas odds: {e}")
             return self._get_fallback_vegas()
 
     def _get_fallback_vegas(self) -> Dict[str, Any]:
@@ -631,135 +535,273 @@ class EnhancedDataCollector:
             # Total multiplier
             if total >= 50:
                 total_mult = 1.40
-            elif total >= 48:
-                total_mult = 1.30
-            elif total >= 46:
-                total_mult = 1.20
+            elif total >= 47:
+                total_mult = 1.25
             elif total >= 44:
                 total_mult = 1.10
-            elif total <= 40:
-                total_mult = 0.80
             else:
                 total_mult = 1.0
 
-            # Spread multiplier
+            # Spread multiplier (very modest, we care more about totals)
             if spread <= 3:
-                spread_mult = 1.10
-            elif spread >= 10:
-                spread_mult = 0.90
+                spread_mult = 1.05
+            elif spread <= 6:
+                spread_mult = 1.02
             else:
-                spread_mult = 1.0
+                spread_mult = 0.98
 
-            final_mult = total_mult * spread_mult
+            env_mult = total_mult * spread_mult
 
             if home_team:
-                multipliers[home_team] = final_mult
+                multipliers[home_team] = env_mult
             if away_team:
-                multipliers[away_team] = final_mult
+                multipliers[away_team] = env_mult
 
-        logger.info(f"📊 Vegas multipliers for {len(multipliers)} teams")
         return multipliers
 
-    async def get_weather_for_games(self, games_info: Dict) -> Dict[str, Dict]:
-        """Get weather data"""
-        weather_data = {}
+    def _validate_player(self, player: Dict, contest_type: str) -> bool:
+        """
+        Basic guardrails to avoid garbage in optimization
+        """
+        salary = player.get('salary', 0)
+        position = player.get('position')
+        fppg = player.get('projection', player.get('projected_points', 0))
 
-        for game in games_info.get('all_games', []):
-            for team in game.get('teams', []):
-                stadium = NFL_STADIUMS.get(team, {})
-                if not stadium.get('dome', True):
-                    weather_data[team] = {
-                        'temperature': 65,
-                        'wind_speed': '10 mph',
-                        'conditions': 'Clear',
-                        'factor': 1.0
-                    }
-
-        return weather_data
-
-    def _is_viable_player(self, player_data: Dict) -> bool:
-        """Filter non-viable players"""
-        name = player_data.get('name', '')
-        position = player_data.get('position', '')
-        salary = player_data.get('salary', 0)
-        fppg = player_data.get('projected_points', 0)
-        injury_status = player_data.get('injury_status', '').upper()
-
-        # Definitively unavailable
-        if any(x in injury_status for x in ['IR', 'OUT', 'SUSP']):
+        if not position or not player.get('name') or not player.get('team'):
             return False
 
-        # Basic validation
-        if not name or len(name.strip()) < 2:
+        if salary < 3000:
             return False
 
-        # Position-specific thresholds
         if position == 'QB':
             return salary >= 6000 or fppg >= 10
         elif position == 'RB':
-            return salary >= 4500 or fppg >= 5
+            return salary >= 5000 or fppg >= 7
         elif position == 'WR':
             return salary >= 4500 or fppg >= 4
         elif position == 'TE':
             return salary >= 4000 or fppg >= 3
-        elif position == 'D':
+        elif position in ('D', 'DEF'):
             return salary >= 3000
 
         return False
 
+    def _estimate_ownership(self, salary: int, projection: float, position: str) -> float:
+        """Estimate ownership based on salary and value"""
+        if salary <= 0:
+            return 5.0
+
+        projection = safe_float(projection, 5.0)
+        value = safe_float(projection / (salary / 1000), 1.0) if salary > 0 else 0
+
+        # Higher salary + good value = higher ownership
+        base_own = 5.0
+        if salary >= 9000:
+            base_own = 15.0
+        elif salary >= 7500:
+            base_own = 10.0
+        elif salary >= 6000:
+            base_own = 7.0
+
+        # Adjust for value
+        if value >= 3.0:
+            base_own *= 1.5
+        elif value >= 2.5:
+            base_own *= 1.2
+        elif value < 2.0:
+            base_own *= 0.8
+
+        return safe_float(min(base_own, 40.0), 10.0)
+
     async def collect_players_for_slate(self, games_info: Dict, contest_type: str = 'gpp') -> List[Dict]:
-        """Collect and filter players"""
+        """Collect and filter players from FanDuel CSV"""
+
         playing_teams = set()
-        for game in games_info.get('main_slate', []):
-            playing_teams.update(game.get('teams', []))
+
+        # Use different game buckets depending on contest type
+        if contest_type == 'h2h':
+            for game in games_info.get('single_games', []):
+                playing_teams.update(game.get('teams', []))
+        else:
+            for game in games_info.get('main_slate', []):
+                playing_teams.update(game.get('teams', []))
 
         if not playing_teams:
             playing_teams = None
 
         try:
-            from fanduel_salary_scraper import get_fanduel_salaries
-            salary_data = await get_fanduel_salaries()
+            # Determine which CSV to use
+            manual_csv = DATA_DIR / "fanduel_salaries_manual.csv"
+            h2h_csv = DATA_DIR / "fanduel_h2h_salaries.csv"
 
-            if not salary_data:
-                logger.error("No FanDuel salary data")
+            csv_path = None
+            if contest_type == 'h2h' and h2h_csv.exists():
+                csv_path = h2h_csv
+                logger.info(f"Using H2H salary CSV: {h2h_csv}")
+            elif manual_csv.exists():
+                csv_path = manual_csv
+                logger.info(f"Using manual salary CSV: {manual_csv}")
+
+            if not csv_path or not csv_path.exists():
+                logger.error("No FanDuel salary CSV found")
                 return []
 
-            # Filter viable players
+            # Read the CSV
+            salary_df = pd.read_csv(csv_path)
+            logger.info(f"Loaded {len(salary_df)} rows from CSV")
+
+            # Convert FanDuel CSV format to player dicts
             players = []
-            for p in salary_data:
-                if not self._is_viable_player(p):
+            for _, row in salary_df.iterrows():
+                try:
+                    # Extract position (normalize D to DEF)
+                    position = str(row.get('Position', '')).strip().upper()
+                    if position == 'D':
+                        position = 'DEF'
+
+                    # Build player name
+                    nickname = row.get('Nickname', '')
+                    first_name = row.get('First Name', '')
+                    last_name = row.get('Last Name', '')
+
+                    if nickname and str(nickname).strip():
+                        name = str(nickname).strip()
+                    else:
+                        name = f"{first_name} {last_name}".strip()
+
+                    if not name or name == ' ':
+                        continue
+
+                    # Get salary
+                    salary = int(row.get('Salary', 0))
+                    if salary < 3000:
+                        continue
+
+                    # Get team
+                    team = str(row.get('Team', '')).strip().upper()
+                    if not team:
+                        continue
+
+                    # Filter by playing teams if we have that info
+                    if playing_teams and team not in playing_teams:
+                        continue
+
+                    # Get opponent
+                    opponent = str(row.get('Opponent', '')).strip().upper()
+
+                    # Get projection (FPPG from FanDuel) - sanitize to prevent NaN
+                    fppg = safe_float(row.get('FPPG', 0), 0.0)
+
+                    # Estimate projection if missing
+                    if fppg <= 0:
+                        if position == 'QB':
+                            fppg = salary / 550
+                        elif position == 'RB':
+                            fppg = salary / 650
+                        elif position == 'WR':
+                            fppg = salary / 700
+                        elif position == 'TE':
+                            fppg = salary / 750
+                        elif position == 'DEF':
+                            fppg = salary / 600
+
+                    # Ensure fppg is valid
+                    fppg = safe_float(fppg, 5.0)
+
+                    # Get injury info
+                    injury_indicator = str(row.get('Injury Indicator', '') or '').strip()
+                    injury_details = str(row.get('Injury Details', '') or '').strip()
+
+                    # Skip IR players
+                    if 'IR' in injury_indicator.upper() or 'OUT' in injury_indicator.upper():
+                        continue
+
+                    # Get game info
+                    game_str = str(row.get('Game', '')).strip()
+
+                    # Build player dict with sanitized float values
+                    player = {
+                        'id': str(row.get('Id', '')),
+                        'name': name,
+                        'position': position,
+                        'team': team,
+                        'opponent': opponent,
+                        'salary': salary,
+                        'projection': safe_float(fppg, 5.0),
+                        'projected_points': safe_float(fppg, 5.0),
+                        'fppg': safe_float(fppg, 5.0),
+                        'ceiling': safe_float(fppg * 1.5, 7.5),
+                        'floor': safe_float(fppg * 0.5, 2.5),
+                        'game': game_str,
+                        'injury_status': injury_indicator if injury_indicator else 'healthy',
+                        'injury_details': injury_details,
+                        'ownership': safe_float(self._estimate_ownership(salary, fppg, position), 10.0),
+                        'is_confirmed_starter': True,
+                        'snap_percentage': 80.0,
+                    }
+
+                    # Validate player meets minimum thresholds
+                    if self._validate_player(player, contest_type):
+                        players.append(player)
+
+                except Exception as e:
+                    logger.debug(f"Skipping row due to error: {e}")
                     continue
 
-                team = p.get('team', '').upper()
-                if playing_teams and team not in playing_teams:
-                    continue
+            logger.info(f"✅ Converted {len(players)} valid players for {contest_type}")
 
-                fppg = p.get('projected_points', 0)
-                if fppg <= 0:
-                    continue
+            # Log position breakdown
+            from collections import Counter
+            pos_counts = Counter(p['position'] for p in players)
+            logger.info(f"📊 Position breakdown: {dict(pos_counts)}")
 
-                player = {
-                    'player_id': f"fd_{p.get('id', p.get('name', ''))}",
-                    'name': p.get('name', ''),
-                    'position': p.get('position', ''),
-                    'team': team,
-                    'salary': int(p.get('salary', 5000)),
-                    'projected_points': round(fppg, 2),
-                    'projection': round(fppg, 2),
-                    'ceiling': round(fppg * 1.4, 2),
-                    'floor': round(fppg * 0.7, 2),
-                    'ownership': np.random.uniform(5.0, 35.0),
-                    'opponent': p.get('opponent', ''),
-                    'injury_status': p.get('injury_status', ''),
-                }
-                players.append(player)
-
-            logger.info(f"📋 Collected {len(players)} viable players")
             return players
 
         except Exception as e:
             logger.error(f"Error collecting players: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
+
+    async def get_weather_for_games(self, games_info: Dict) -> Dict[str, Any]:
+        """Get weather data for outdoor stadium games"""
+        weather_data = {}
+
+        # Outdoor stadiums (dome teams excluded)
+        dome_teams = {'ARI', 'ATL', 'DAL', 'DET', 'HOU', 'IND', 'LAC', 'LAR', 'LV', 'MIN', 'NO', 'NYJ'}
+
+        try:
+            all_games = games_info.get('main_slate', []) + games_info.get('single_games', [])
+
+            for game in all_games:
+                home_team = game.get('home_team', '')
+                away_team = game.get('away_team', '')
+
+                # Skip dome games
+                if home_team in dome_teams:
+                    weather_data[home_team] = {'is_dome': True, 'weather_factor': 1.0}
+                    if away_team:
+                        weather_data[away_team] = {'is_dome': True, 'weather_factor': 1.0}
+                    continue
+
+                # Default outdoor weather (neutral)
+                if home_team:
+                    weather_data[home_team] = {
+                        'is_dome': False,
+                        'weather_factor': 1.0,
+                        'conditions': 'normal'
+                    }
+                if away_team:
+                    weather_data[away_team] = {
+                        'is_dome': False,
+                        'weather_factor': 1.0,
+                        'conditions': 'normal'
+                    }
+
+        except Exception as e:
+            logger.error(f"Error getting weather data: {e}")
+
+        return weather_data
 
     async def get_breaking_news_impact(self, players: List[Dict]) -> Dict[str, Any]:
         """Get breaking news"""
@@ -770,11 +812,11 @@ class EnhancedDataCollector:
             news_events = await get_breaking_news()
             return {
                 'news_events': news_events,
-                'news_count': len(news_events)
+                'impact_analysis': {}
             }
         except Exception as e:
-            logger.error(f"News error: {e}")
-            return {'news_events': [], 'news_count': 0}
+            logger.error(f"Error fetching breaking news: {e}")
+            return {'news_events': [], 'impact_analysis': {}}
 
 
 async def get_fresh_data(contest_type: str = 'gpp') -> Dict[str, Any]:
@@ -803,31 +845,24 @@ async def get_fresh_data(contest_type: str = 'gpp') -> Dict[str, Any]:
         vegas_data = await collector.get_vegas_odds_data()
         vegas_multipliers = collector.calculate_vegas_multipliers(vegas_data)
 
-        # Attach game totals to players
-        for player in players:
-            team = player['team']
-            for game_id, game_info in vegas_data.get('games', {}).items():
-                if team in [game_info.get('home_team'), game_info.get('away_team')]:
-                    player['game_total'] = game_info.get('total_points', 45)
-                    player['game_environment_mult'] = vegas_multipliers.get(team, 1.0)
-                    break
-            else:
-                player['game_total'] = 45.0
-                player['game_environment_mult'] = 1.0
+        # Attach game environment multipliers
+        for p in players:
+            team = p.get('team')
+            p['game_environment_mult'] = vegas_multipliers.get(team, 1.0)
+            p['game_total'] = vegas_data.get('games', {}).get(
+                f"{team}_game_total", vegas_data.get('avg_total', 45.0)
+            )
 
-        # =============================================
-        # AI ANALYSIS: Identify must-play/must-fade
-        # =============================================
-        logger.info("🤖 Running AI analysis for must-play/must-fade...")
-        ai_recommendations = collector.ai_analyzer.analyze_for_winning_picks(
-            players, vegas_data, contest_type
-        )
-
-        # Apply AI recommendations to player projections
-        enhanced_players = collector.ai_analyzer.apply_to_players(players, ai_recommendations)
-
-        # Get other data
+        # Get weather data
         weather_data = await collector.get_weather_for_games(games_info)
+
+        # Run AI analysis
+        ai_result = await collector.ai_analyzer.analyze_players(players, vegas_data, contest_type)
+
+        # Apply AI recommendations
+        enhanced_players = collector.ai_analyzer.apply_to_players(players, ai_result)
+
+        # Get news impact
         news_impact = await collector.get_breaking_news_impact(enhanced_players)
 
         # Summary stats
@@ -840,25 +875,27 @@ async def get_fresh_data(contest_type: str = 'gpp') -> Dict[str, Any]:
         logger.info(f"   ⛔ Must-fade: {must_fade_count}")
         logger.info(f"   🔥 In high-total games: {high_total_count}")
 
+        # Build data quality summary
+        from collections import Counter
+        pos_counts = Counter(p['position'] for p in enhanced_players)
+        team_set = set(p['team'] for p in enhanced_players)
+        real_proj_count = sum(1 for p in enhanced_players if p.get('fppg', 0) > 0)
+
+        data_quality = {
+            'current_week': games_info.get('current_week', 'Unknown'),
+            'main_slate_games': len(games_info.get('main_slate', [])),
+            'real_projections': real_proj_count,
+            'teams_in_slate': list(team_set),
+            'position_counts': dict(pos_counts),
+        }
+
         return {
             'players': enhanced_players,
             'games_info': games_info,
-            'weather': weather_data,
-            'vegas_odds': vegas_data,
+            'vegas_data': vegas_data,
+            'vegas_odds': vegas_data,  # Alias for compatibility
             'vegas_multipliers': vegas_multipliers,
-            'ai_recommendations': ai_recommendations,
-            'breaking_news': news_impact,
-            'last_updated': datetime.now().isoformat(),
-            'data_quality': {
-                'player_count': len(enhanced_players),
-                'total_games': len(games_info['all_games']),
-                'main_slate_games': len(games_info['main_slate']),
-                'current_week': games_info['current_week'],
-                'must_play_count': must_play_count,
-                'must_fade_count': must_fade_count,
-                'high_total_players': high_total_count,
-                'vegas_games': len(vegas_data.get('games', {})),
-                'ai_source': ai_recommendations.get('source', 'none'),
-                'teams_in_slate': sorted(set(p['team'] for p in enhanced_players)),
-            }
+            'weather': weather_data,
+            'news': news_impact,
+            'data_quality': data_quality,
         }

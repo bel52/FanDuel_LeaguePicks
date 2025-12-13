@@ -8,6 +8,7 @@ Fixes the 3 core problems:
 """
 import asyncio
 import json
+import math
 import random
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -25,6 +26,20 @@ from config import (
     FANDUEL_SALARY_CAP,
     OPTIMIZATION_CONFIG,
 )
+
+
+def safe_float(val, default=0.0):
+    """Sanitize float values - replace NaN/inf with default. CRITICAL for PuLP."""
+    if val is None:
+        return default
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return default
+        return f
+    except (ValueError, TypeError):
+        return default
+
 
 # Import the Monte Carlo engine
 try:
@@ -83,9 +98,30 @@ class Player:
     locked: bool = False
 
     def __post_init__(self):
-        self.value = self.projection / (self.salary / 1000) if self.salary > 0 else 0
+        # CRITICAL: Sanitize ALL float fields to prevent NaN/inf from breaking PuLP
+        self.projection = safe_float(self.projection, 5.0)
+        self.ownership = safe_float(self.ownership, 10.0)
+        self.weather_factor = safe_float(self.weather_factor, 1.0)
+        self.injury_risk = safe_float(self.injury_risk, 0.0)
+        self.variance = safe_float(self.variance, 0.0)
+        self.floor_10 = safe_float(self.floor_10, 0.0)
+        self.ceiling_90 = safe_float(self.ceiling_90, self.projection)
+        self.ceiling_95 = safe_float(self.ceiling_95, self.projection)
+        self.boom_rate = safe_float(self.boom_rate, 0.0)
+        self.bust_rate = safe_float(self.bust_rate, 0.0)
+        self.game_total = safe_float(self.game_total, 45.0)
+        self.game_environment_mult = safe_float(self.game_environment_mult, 1.0)
+
+        # Calculate derived values safely
+        if self.salary > 0 and self.projection > 0:
+            self.value = safe_float(self.projection / (self.salary / 1000), 0.0)
+        else:
+            self.value = 0.0
+
+        # Calculate variance if not set
         variance_multipliers = {'QB': 0.28, 'RB': 0.35, 'WR': 0.45, 'TE': 0.38, 'D': 0.42}
-        self.variance = self.projection * variance_multipliers.get(self.position, 0.35)
+        if self.variance == 0 and self.projection > 0:
+            self.variance = safe_float(self.projection * variance_multipliers.get(self.position, 0.35), 0.0)
 
 
 @dataclass
@@ -153,13 +189,13 @@ class EnhancedDFSOptimizer:
         # Identify high-total teams
         self.high_total_teams = [
             team for team, mult in self.vegas_multipliers.items()
-            if mult >= 1.25  # 47+ total games
+            if safe_float(mult, 1.0) >= 1.25  # 47+ total games
         ]
 
         # Extract actual game totals if available
         if vegas_odds and 'games' in vegas_odds:
             for game_id, game_data in vegas_odds['games'].items():
-                total = game_data.get('total_points', 45)
+                total = safe_float(game_data.get('total_points', 45), 45.0)
                 home = game_data.get('home_team')
                 away = game_data.get('away_team')
                 if home:
@@ -184,7 +220,7 @@ class EnhancedDFSOptimizer:
             self.vegas_multipliers = vegas_multipliers
             self.high_total_teams = [
                 team for team, mult in vegas_multipliers.items()
-                if mult >= 1.25
+                if safe_float(mult, 1.0) >= 1.25
             ]
 
         for data in player_data:
@@ -193,19 +229,19 @@ class EnhancedDFSOptimizer:
                 position = data.get('position', '')
                 team = data.get('team', '')
                 salary = int(data.get('salary', 5000))
-                projection = float(data.get('projection', data.get('projected_points', 0)))
+                projection = safe_float(data.get('projection', data.get('projected_points', 0)), 0.0)
 
                 # Basic filtering
-                if not player_name or len(player_name.strip()) < 2 or projection < 0:
+                if not player_name or len(player_name.strip()) < 2 or projection <= 0:
                     continue
 
                 # Normalize defense position
                 if position in ['DST', 'DEF', 'D/ST']:
                     position = 'D'
 
-                # Get game environment data
-                game_mult = self.vegas_multipliers.get(team, 1.0)
-                game_total = self.game_totals.get(team, 45.0)
+                # Get game environment data - sanitized
+                game_mult = safe_float(self.vegas_multipliers.get(team, 1.0), 1.0)
+                game_total = safe_float(self.game_totals.get(team, 45.0), 45.0)
 
                 # Create player with game environment
                 player = Player(
@@ -224,9 +260,9 @@ class EnhancedDFSOptimizer:
 
                 # Apply weather adjustments
                 if weather_data and team in weather_data:
-                    weather_factor = weather_data[team].get('factor', 1.0)
+                    weather_factor = safe_float(weather_data[team].get('factor', 1.0), 1.0)
                     player.weather_factor = weather_factor
-                    player.projection *= weather_factor
+                    player.projection = safe_float(player.projection * weather_factor, player.projection)
 
                 players.append(player)
 
@@ -275,12 +311,13 @@ class EnhancedDFSOptimizer:
             batch_results = await asyncio.gather(*sim_tasks)
 
             for player, sim_result in zip(batch_players, batch_results):
-                player.floor_10 = sim_result.get('floor_10', 0.0)
-                player.ceiling_90 = sim_result.get('ceiling_90', player.projection)
-                player.ceiling_95 = sim_result.get('ceiling_95', player.ceiling_90)
-                player.boom_rate = sim_result.get('boom_rate', 0.0)
-                player.bust_rate = sim_result.get('bust_rate', 0.0)
-                player.variance = sim_result.get('std', player.variance)
+                # CRITICAL: Sanitize ALL Monte Carlo results to prevent NaN/inf
+                player.floor_10 = safe_float(sim_result.get('floor_10', 0.0), 0.0)
+                player.ceiling_90 = safe_float(sim_result.get('ceiling_90', player.projection), player.projection)
+                player.ceiling_95 = safe_float(sim_result.get('ceiling_95', player.ceiling_90), player.ceiling_90)
+                player.boom_rate = safe_float(sim_result.get('boom_rate', 0.0), 0.0)
+                player.bust_rate = safe_float(sim_result.get('bust_rate', 0.0), 0.0)
+                player.variance = safe_float(sim_result.get('std', player.variance), player.variance)
                 player.monte_carlo_analyzed = True
                 enhanced_players.append(player)
 
@@ -318,7 +355,7 @@ class EnhancedDFSOptimizer:
             # WINNING OBJECTIVE FUNCTION
             objective_terms = []
             for i, player in enumerate(players):
-                # Use game-environment-weighted value
+                # Use game-environment-weighted value - SANITIZED
                 points_value = self._calculate_winning_value(player, contest_type)
                 objective_terms.append(points_value * player_vars[i])
 
@@ -353,8 +390,13 @@ class EnhancedDFSOptimizer:
         Key insight: Game environment is worth MORE than individual projection
         A mediocre player in a 50-point game beats an elite player in a 40-point game
         """
-        base_value = player.projection
-        game_mult = player.game_environment_mult
+        # CRITICAL: Sanitize inputs to prevent NaN/inf in PuLP
+        base_value = safe_float(player.projection, 5.0)
+        game_mult = safe_float(player.game_environment_mult, 1.0)
+
+        # Skip players with invalid data
+        if base_value <= 0:
+            return 0.0
 
         # ===========================================
         # FIX #1: MASSIVE GAME ENVIRONMENT WEIGHTING
@@ -390,40 +432,45 @@ class EnhancedDFSOptimizer:
             logger.debug(f"⛔ AI PENALTY: {player.name} {ai_adjustment:.1f}")
 
         # Contest-specific adjustments
-        if contest_type in ['gpp', 'bestball']:
-            # GPP: Maximize ceiling
+        # FIX: friends_league now uses GPP ceiling logic!
+        if contest_type in ['gpp', 'bestball', 'friends_league']:
+            # GPP/Friends: Maximize ceiling
             if player.monte_carlo_analyzed:
-                ceiling_bonus = (player.ceiling_90 - player.projection) * 2.0
-                boom_bonus = player.boom_rate * 12.0
+                ceiling_90 = safe_float(player.ceiling_90, player.projection)
+                ceiling_bonus = safe_float((ceiling_90 - player.projection) * 2.0, 0.0)
+                boom_bonus = safe_float(player.boom_rate * 12.0, 0.0)
             else:
-                ceiling_bonus = player.variance * 1.5
+                variance = safe_float(player.variance, base_value * 0.35)
+                ceiling_bonus = variance * 1.5
                 boom_bonus = 0
 
             # NO OWNERSHIP PENALTY - doesn't matter in 12-person league
-            return base_value + game_boost + ai_adjustment + ceiling_bonus + boom_bonus
+            return safe_float(base_value + game_boost + ai_adjustment + ceiling_bonus + boom_bonus, base_value)
 
         elif contest_type == 'cash':
             # Cash: Floor + value
             if player.monte_carlo_analyzed:
-                floor_bonus = player.floor_10 * 1.5
+                floor_bonus = safe_float(player.floor_10 * 1.5, 0.0)
             else:
                 floor_bonus = base_value * 0.3
 
-            value_bonus = 5.0 if player.value >= 3.5 else 0.0
+            value_bonus = 5.0 if safe_float(player.value, 0.0) >= 3.5 else 0.0
 
-            return base_value + (game_boost * 0.5) + ai_adjustment + floor_bonus + value_bonus
+            return safe_float(base_value + (game_boost * 0.5) + ai_adjustment + floor_bonus + value_bonus, base_value)
 
         elif contest_type == 'contrarian':
             # Contrarian: Max ceiling from unexpected places
             if player.monte_carlo_analyzed:
-                ceiling_bonus = (player.ceiling_95 - player.projection) * 3.0
+                ceiling_95 = safe_float(player.ceiling_95, player.projection)
+                ceiling_bonus = safe_float((ceiling_95 - player.projection) * 3.0, 0.0)
             else:
-                ceiling_bonus = player.variance * 2.5
+                variance = safe_float(player.variance, base_value * 0.35)
+                ceiling_bonus = variance * 2.5
 
-            return base_value + game_boost + ai_adjustment + ceiling_bonus
+            return safe_float(base_value + game_boost + ai_adjustment + ceiling_bonus, base_value)
 
         else:
-            return base_value + game_boost + ai_adjustment
+            return safe_float(base_value + game_boost + ai_adjustment, base_value)
 
     def _add_fanduel_constraints(
             self,
@@ -485,7 +532,8 @@ class EnhancedDFSOptimizer:
         # ===========================================
         # FIX #3: FORCE HIGH-TOTAL GAME EXPOSURE
         # ===========================================
-        if contest_type in ['gpp', 'bestball']:
+        # FIX: friends_league now gets high-total forcing too!
+        if contest_type in ['gpp', 'bestball', 'friends_league']:
             self._add_forced_high_total_stack(prob, players, player_vars)
             self._add_qb_wr_stack_requirement(prob, players, player_vars, qb_indices, wr_indices)
 
@@ -503,14 +551,14 @@ class EnhancedDFSOptimizer:
         # Find teams in 47+ total games
         high_total_teams = [
             team for team, mult in self.vegas_multipliers.items()
-            if mult >= 1.25
+            if safe_float(mult, 1.0) >= 1.25
         ]
 
         if not high_total_teams:
             # Fallback: use teams with multiplier > 1.10
             high_total_teams = [
                 team for team, mult in self.vegas_multipliers.items()
-                if mult >= 1.10
+                if safe_float(mult, 1.0) >= 1.10
             ]
 
         if not high_total_teams:
@@ -595,12 +643,12 @@ class EnhancedDFSOptimizer:
             if player_vars[i].varValue == 1:
                 selected_players.append(player)
                 total_salary += player.salary
-                total_ownership += player.ownership
-                if player.game_environment_mult >= 1.25:
+                total_ownership += safe_float(player.ownership, 10.0)
+                if safe_float(player.game_environment_mult, 1.0) >= 1.25:
                     high_total_count += 1
 
         ordered_players = self._format_lineup_for_fanduel(selected_players)
-        projected_points = sum(p.projection for p in ordered_players)
+        projected_points = safe_float(sum(p.projection for p in ordered_players), 0.0)
 
         # Find primary stack team
         team_counts = {}
@@ -612,10 +660,11 @@ class EnhancedDFSOptimizer:
             players=ordered_players,
             total_salary=total_salary,
             projected_points=projected_points,
-            total_value=sum(p.value for p in ordered_players),
+            total_value=safe_float(sum(p.value for p in ordered_players), 0.0),
             ownership_total=total_ownership,
             correlation_score=self._calculate_correlation(ordered_players),
-            weather_impact=float(np.mean([p.weather_factor for p in ordered_players])) if ordered_players else 1.0,
+            weather_impact=safe_float(float(np.mean([p.weather_factor for p in ordered_players])),
+                                      1.0) if ordered_players else 1.0,
             contest_type=contest_type,
             high_total_exposure=high_total_count,
             primary_stack_team=primary_stack,
@@ -647,12 +696,13 @@ class EnhancedDFSOptimizer:
             lineup_sim = mc_results['simulation_results']['lineup_simulation']
             insights = mc_results['insights']
 
-            lineup_result.ceiling_90 = lineup_sim['ceiling_90']
-            lineup_result.ceiling_95 = lineup_sim['ceiling_95']
-            lineup_result.floor_10 = lineup_sim['floor_10']
-            lineup_result.floor_25 = lineup_sim['floor_25']
-            lineup_result.variance_score = lineup_sim['std']
-            lineup_result.sharpe_ratio = lineup_sim['sharpe_ratio']
+            # Sanitize all Monte Carlo results
+            lineup_result.ceiling_90 = safe_float(lineup_sim['ceiling_90'], lineup_result.projected_points)
+            lineup_result.ceiling_95 = safe_float(lineup_sim['ceiling_95'], lineup_result.projected_points)
+            lineup_result.floor_10 = safe_float(lineup_sim['floor_10'], 0.0)
+            lineup_result.floor_25 = safe_float(lineup_sim['floor_25'], 0.0)
+            lineup_result.variance_score = safe_float(lineup_sim['std'], 0.0)
+            lineup_result.sharpe_ratio = safe_float(lineup_sim['sharpe_ratio'], 0.0)
             lineup_result.risk_level = insights['risk_assessment']
             lineup_result.monte_carlo_insights = {
                 'recommendations': insights['optimization_recommendations'],
@@ -660,11 +710,11 @@ class EnhancedDFSOptimizer:
                 'correlation_strength': insights['correlation_strength'],
             }
 
-            mean_score = lineup_sim['mean']
-            lineup_result.boom_probability = 0.15 if lineup_sim.get('ceiling_90',
-                                                                    mean_score) > mean_score * 1.3 else 0.05
-            lineup_result.bust_probability = 0.30 if lineup_sim.get('floor_25',
-                                                                    mean_score) < mean_score * 0.75 else 0.15
+            mean_score = safe_float(lineup_sim['mean'], lineup_result.projected_points)
+            lineup_result.boom_probability = 0.15 if safe_float(lineup_sim.get('ceiling_90', mean_score),
+                                                                mean_score) > mean_score * 1.3 else 0.05
+            lineup_result.bust_probability = 0.30 if safe_float(lineup_sim.get('floor_25', mean_score),
+                                                                mean_score) < mean_score * 0.75 else 0.15
 
         except Exception as e:
             logger.error(f"Error enhancing lineup with Monte Carlo: {e}")
@@ -772,26 +822,26 @@ class EnhancedDFSOptimizer:
                     position=player.position,
                     team=player.team,
                     salary=player.salary,
-                    projection=player.projection,
-                    ownership=player.ownership,
-                    weather_factor=player.weather_factor,
-                    injury_risk=player.injury_risk,
-                    value=player.value,
-                    variance=player.variance,
-                    game_total=player.game_total,
-                    game_environment_mult=player.game_environment_mult,
+                    projection=safe_float(player.projection, 5.0),
+                    ownership=safe_float(player.ownership, 10.0),
+                    weather_factor=safe_float(player.weather_factor, 1.0),
+                    injury_risk=safe_float(player.injury_risk, 0.0),
+                    value=safe_float(player.value, 0.0),
+                    variance=safe_float(player.variance, 0.0),
+                    game_total=safe_float(player.game_total, 45.0),
+                    game_environment_mult=safe_float(player.game_environment_mult, 1.0),
                     ai_must_play=player.ai_must_play,
                     ai_must_fade=player.ai_must_fade,
                     locked=player.locked,
                 )
 
-                # Copy Monte Carlo data
+                # Copy Monte Carlo data - sanitized
                 if player.monte_carlo_analyzed:
-                    new_player.floor_10 = player.floor_10
-                    new_player.ceiling_90 = player.ceiling_90
-                    new_player.ceiling_95 = player.ceiling_95
-                    new_player.boom_rate = player.boom_rate
-                    new_player.bust_rate = player.bust_rate
+                    new_player.floor_10 = safe_float(player.floor_10, 0.0)
+                    new_player.ceiling_90 = safe_float(player.ceiling_90, player.projection)
+                    new_player.ceiling_95 = safe_float(player.ceiling_95, player.projection)
+                    new_player.boom_rate = safe_float(player.boom_rate, 0.0)
+                    new_player.bust_rate = safe_float(player.bust_rate, 0.0)
                     new_player.monte_carlo_analyzed = True
 
                 # Apply randomization (less for cash games)
@@ -802,8 +852,9 @@ class EnhancedDFSOptimizer:
                 else:
                     random_factor = random.uniform(0.80, 1.20)
 
-                new_player.projection *= random_factor
-                new_player.value = new_player.projection / (new_player.salary / 1000) if new_player.salary else 0.0
+                new_player.projection = safe_float(new_player.projection * random_factor, 5.0)
+                new_player.value = safe_float(new_player.projection / (new_player.salary / 1000),
+                                              0.0) if new_player.salary else 0.0
                 randomized_players.append(new_player)
 
             lineup = await self.optimize_lineup(randomized_players, contest_type, single_game_teams)
@@ -914,7 +965,7 @@ def optimize_dfs_lineups(
         return []
 
     # Log high-total team exposure available
-    high_total_players = sum(1 for p in players if p.game_environment_mult >= 1.25)
+    high_total_players = sum(1 for p in players if safe_float(p.game_environment_mult, 1.0) >= 1.25)
     logger.info(f"📊 Players in high-total games: {high_total_players}/{len(players)}")
 
     # Generate lineups
@@ -943,9 +994,9 @@ def optimize_dfs_lineups(
             payload.append({
                 "contest_type": lu.contest_type,
                 "total_salary": lu.total_salary,
-                "projected_points": round(lu.projected_points, 2),
-                "ceiling_90": round(lu.ceiling_90, 2),
-                "floor_10": round(lu.floor_10, 2),
+                "projected_points": round(safe_float(lu.projected_points, 0.0), 2),
+                "ceiling_90": round(safe_float(lu.ceiling_90, 0.0), 2),
+                "floor_10": round(safe_float(lu.floor_10, 0.0), 2),
                 "high_total_exposure": lu.high_total_exposure,
                 "primary_stack": lu.primary_stack_team,
                 "players": [
@@ -954,8 +1005,8 @@ def optimize_dfs_lineups(
                         "position": p.position,
                         "team": p.team,
                         "salary": p.salary,
-                        "projection": round(p.projection, 2),
-                        "game_mult": round(p.game_environment_mult, 2),
+                        "projection": round(safe_float(p.projection, 0.0), 2),
+                        "game_mult": round(safe_float(p.game_environment_mult, 1.0), 2),
                         "ai_must_play": p.ai_must_play,
                     }
                     for p in lu.players
