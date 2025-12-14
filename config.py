@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import List, Dict
 from datetime import datetime
+os.environ.setdefault("DOTENV_PATH", str(Path.home() / ".config" / "fanduel" / ".env"))
 
 # ENHANCED environment loading with validation
 def load_environment_variables():
@@ -20,7 +21,8 @@ def load_environment_variables():
         env_files = [
             project_dir / ".env",
             project_dir / ".env.local",
-            Path.home() / "fanduel" / ".env"
+            Path.home() / ".config" / "fanduel" / ".env",   # ✅ canonical location
+            Path.home() / "fanduel" / ".env",               # legacy fallback
         ]
 
         for env_file in env_files:
