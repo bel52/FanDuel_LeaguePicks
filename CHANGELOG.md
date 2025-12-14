@@ -1,6 +1,6 @@
 # Changelog
 
-## [v5.0.0] - 2025-09-28
+## [v5.2.0-dev]
 
 ### Highlights
 - Monte Carlo integrated across player prep and lineup results.

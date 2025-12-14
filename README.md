@@ -1,4 +1,4 @@
-# 🏈 FanDuel NFL DFS Optimizer v2.1
+# 🏈 FanDuel NFL DFS Optimizer v5.2.0-dev
 **An AI-Enhanced Daily Fantasy Sports System for Tournament Winning**
 
 > **Status: Active Development** - Built for a 12-person friends league with tournament-winning strategies
