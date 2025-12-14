@@ -45,3 +45,25 @@ cache/
 .env.*
 *.env
 !.env.example
+
+# run artifacts
+data/**/*.csv
+data/**/*.json
+data/**/*.db
+data/output/
+data/lineups/
+!data/fanduel_salary_template.csv         # keep the template if you want
+
+# track only the placeholder in logs
+logs/
+!logs/.gitkeep
+
+# build/run detritus
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+.DS_Store
+.vscode/
+.idea/
+.notebooks/
