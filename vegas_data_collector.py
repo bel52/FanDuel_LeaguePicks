@@ -4,6 +4,7 @@ load_dotenv()
 FIXED: Real Vegas lines integration for tournament-winning DFS
 High-total games (47+ points) produce 70%+ of tournament winners
 SCALABLE: Works for any week of any season without hardcoded matchups
+FIX: Handle None values for spread properly
 """
 import aiohttp
 import asyncio
@@ -11,6 +12,16 @@ from typing import Dict, List, Any, Optional
 from loguru import logger
 from datetime import datetime
 import os
+
+
+def safe_float(val, default=0.0):
+    """Safely convert to float, handling None"""
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
 
 
 class VegasDataCollector:
@@ -39,12 +50,12 @@ class VegasDataCollector:
         params = {
             "apiKey": api_key,
             "regions": "us",
-            "markets": "h2h,totals",
+            "markets": "h2h,totals,spreads",  # Added spreads explicitly
             "oddsFormat": "american",
         }
 
         try:
-            timeout = aiohttp.ClientTimeout(total=10)
+            timeout = aiohttp.ClientTimeout(total=15)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url, params=params) as response:
                     if response.status != 200:
@@ -94,7 +105,7 @@ class VegasDataCollector:
                     'away_team': away_team,
                     'commence_time': commence_time,
                     'total_points': None,
-                    'spread': None,
+                    'spread': 0.0,  # Default to 0, not None
                     'home_moneyline': None,
                     'away_moneyline': None
                 }
@@ -113,16 +124,16 @@ class VegasDataCollector:
                             # TOTALS - Critical for DFS success
                             if market_key == 'totals' and outcomes:
                                 total_point = outcomes[0].get('point')
-                                if total_point:
-                                    game_data['total_points'] = float(total_point)
+                                if total_point is not None:
+                                    game_data['total_points'] = safe_float(total_point, 45.0)
 
                             # SPREADS
                             elif market_key == 'spreads' and len(outcomes) >= 2:
                                 for outcome in outcomes:
                                     if home_team.upper() in outcome.get('name', '').upper():
                                         spread = outcome.get('point')
-                                        if spread:
-                                            game_data['spread'] = float(spread)
+                                        if spread is not None:
+                                            game_data['spread'] = safe_float(spread, 0.0)
                                             break
 
                             # MONEYLINES
@@ -186,19 +197,8 @@ class VegasDataCollector:
 
     def _calculate_implied_scores(self, game_data: Dict):
         """Calculate implied team scores from total and spread"""
-        total = game_data.get('total_points', 45.5)
-        spread = game_data.get('spread', 0)
-
-        # Handle None spread
-        if spread is None:
-            spread = 0
-
-        try:
-            spread = float(spread)
-            total = float(total)
-        except (ValueError, TypeError):
-            spread = 0
-            total = 45.5
+        total = safe_float(game_data.get('total_points'), 45.5)
+        spread = safe_float(game_data.get('spread'), 0.0)
 
         # Calculate implied scores
         home_implied = (total - spread) / 2
@@ -272,8 +272,10 @@ class VegasDataCollector:
         avg_total = vegas_data.get('avg_total', 45.5)
 
         for game_id, game_data in games.items():
-            total = game_data.get('total_points', avg_total)
-            spread = abs(game_data.get('spread', 0))
+            # FIXED: Use safe_float to handle None values
+            total = safe_float(game_data.get('total_points'), avg_total)
+            spread = safe_float(game_data.get('spread'), 0.0)
+            spread = abs(spread)  # Now safe since we know spread is a float
 
             # TOTAL FACTOR: Higher totals = higher DFS scoring potential
             total_factor = 1.0

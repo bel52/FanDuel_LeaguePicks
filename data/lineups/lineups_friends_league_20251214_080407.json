@@ -1,0 +1,311 @@
+{
+  "generated_at": "2025-12-14T08:04:07.228527",
+  "lineups": [
+    {
+      "contest_type": "friends_league",
+      "total_salary": 60000,
+      "projected_points": 153.4,
+      "ceiling_90": 219.14,
+      "floor_10": 92.95,
+      "ownership_total": 204.0,
+      "high_total_exposure": 0,
+      "primary_stack": "NYG",
+      "players": [
+        {
+          "name": "Jameis Winston",
+          "position": "QB",
+          "team": "NYG",
+          "salary": 6000,
+          "projection": 22.4,
+          "ceiling_90": 30.74,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Jonathan Taylor",
+          "position": "RB",
+          "team": "IND",
+          "salary": 9300,
+          "projection": 26.23,
+          "ceiling_90": 31.77,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Christian McCaffrey",
+          "position": "RB",
+          "team": "SF",
+          "salary": 9000,
+          "projection": 22.65,
+          "ceiling_90": 31.07,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Jaxon Smith-Njigba",
+          "position": "WR",
+          "team": "SEA",
+          "salary": 10000,
+          "projection": 18.92,
+          "ceiling_90": 29.71,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Puka Nacua",
+          "position": "WR",
+          "team": "LAR",
+          "salary": 9700,
+          "projection": 16.7,
+          "ceiling_90": 27.15,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Malik Nabers",
+          "position": "WR",
+          "team": "NYG",
+          "salary": 4000,
+          "projection": 12.04,
+          "ceiling_90": 18.61,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Tucker Kraft",
+          "position": "TE",
+          "team": "GB",
+          "salary": 4000,
+          "projection": 13.77,
+          "ceiling_90": 18.03,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Cam Skattebo",
+          "position": "RB",
+          "team": "NYG",
+          "salary": 4000,
+          "projection": 13.7,
+          "ceiling_90": 19.72,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Los Angeles Rams",
+          "position": "D",
+          "team": "LAR",
+          "salary": 4000,
+          "projection": 6.99,
+          "ceiling_90": 12.35,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        }
+      ]
+    },
+    {
+      "contest_type": "friends_league",
+      "total_salary": 60000,
+      "projected_points": 129.82,
+      "ceiling_90": 201.83,
+      "floor_10": 84.22,
+      "ownership_total": 194.0,
+      "high_total_exposure": 0,
+      "primary_stack": "KC",
+      "players": [
+        {
+          "name": "Chris Oladokun",
+          "position": "QB",
+          "team": "KC",
+          "salary": 6000,
+          "projection": 0.22,
+          "ceiling_90": 11.58,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Jonathan Taylor",
+          "position": "RB",
+          "team": "IND",
+          "salary": 9300,
+          "projection": 24.67,
+          "ceiling_90": 31.77,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Christian McCaffrey",
+          "position": "RB",
+          "team": "SF",
+          "salary": 9000,
+          "projection": 20.16,
+          "ceiling_90": 31.07,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Jaxon Smith-Njigba",
+          "position": "WR",
+          "team": "SEA",
+          "salary": 10000,
+          "projection": 19.28,
+          "ceiling_90": 29.71,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Rashee Rice",
+          "position": "WR",
+          "team": "KC",
+          "salary": 8700,
+          "projection": 17.19,
+          "ceiling_90": 24.07,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Malik Nabers",
+          "position": "WR",
+          "team": "NYG",
+          "salary": 4000,
+          "projection": 10.89,
+          "ceiling_90": 18.61,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Tucker Kraft",
+          "position": "TE",
+          "team": "GB",
+          "salary": 4000,
+          "projection": 10.92,
+          "ceiling_90": 18.03,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Cam Skattebo",
+          "position": "RB",
+          "team": "NYG",
+          "salary": 4000,
+          "projection": 15.61,
+          "ceiling_90": 19.72,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Seattle Seahawks",
+          "position": "D",
+          "team": "SEA",
+          "salary": 5000,
+          "projection": 10.87,
+          "ceiling_90": 17.27,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        }
+      ]
+    },
+    {
+      "contest_type": "friends_league",
+      "total_salary": 59900,
+      "projected_points": 121.91,
+      "ceiling_90": 198.14,
+      "floor_10": 83.75,
+      "ownership_total": 194.0,
+      "high_total_exposure": 0,
+      "primary_stack": "DET",
+      "players": [
+        {
+          "name": "Malik Cunningham",
+          "position": "QB",
+          "team": "DET",
+          "salary": 6000,
+          "projection": 0.11,
+          "ceiling_90": 11.56,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Jonathan Taylor",
+          "position": "RB",
+          "team": "IND",
+          "salary": 9300,
+          "projection": 20.25,
+          "ceiling_90": 31.77,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Christian McCaffrey",
+          "position": "RB",
+          "team": "SF",
+          "salary": 9000,
+          "projection": 23.13,
+          "ceiling_90": 31.07,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Jaxon Smith-Njigba",
+          "position": "WR",
+          "team": "SEA",
+          "salary": 10000,
+          "projection": 18.25,
+          "ceiling_90": 29.71,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Amon-Ra St. Brown",
+          "position": "WR",
+          "team": "DET",
+          "salary": 8600,
+          "projection": 13.9,
+          "ceiling_90": 22.34,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Garrett Wilson",
+          "position": "WR",
+          "team": "NYJ",
+          "salary": 4000,
+          "projection": 10.98,
+          "ceiling_90": 16.68,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Tucker Kraft",
+          "position": "TE",
+          "team": "GB",
+          "salary": 4000,
+          "projection": 12.18,
+          "ceiling_90": 18.03,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Cam Skattebo",
+          "position": "RB",
+          "team": "NYG",
+          "salary": 4000,
+          "projection": 13.41,
+          "ceiling_90": 19.72,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        },
+        {
+          "name": "Seattle Seahawks",
+          "position": "D",
+          "team": "SEA",
+          "salary": 5000,
+          "projection": 9.71,
+          "ceiling_90": 17.27,
+          "game_mult": 1.0,
+          "ai_must_play": false
+        }
+      ]
+    }
+  ]
+}
