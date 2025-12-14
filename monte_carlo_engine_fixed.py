@@ -68,7 +68,7 @@ class MonteCarloEngine:
 
         scores = []
         base_proj = max(1.0, player.base_projection)  # Avoid zero projections
-
+        
         # Position-specific variance (friends league = reduced variance)
         variance_mult = {
             'QB': 0.22, 'RB': 0.28, 'WR': 0.35, 'TE': 0.28, 'D': 0.35, 'DEF': 0.35
@@ -78,7 +78,7 @@ class MonteCarloEngine:
         # Game environment affects variance - high total games have more upside
         if player.game_environment_mult >= 1.25:
             variance *= 1.15  # More variance in shootouts
-
+            
         for _ in range(num_sims):
             # Normal distribution centered on projection
             score = np.random.normal(base_proj, variance)
@@ -135,9 +135,9 @@ class MonteCarloEngine:
         Returns dict mapping player name -> simulation results
         """
         results = {}
-
+        
         logger.info(f"🎲 Running Monte Carlo simulation on {len(players)} players...")
-
+        
         for player in players:
             try:
                 sim_result = self.simulate_player(player)
@@ -155,7 +155,7 @@ class MonteCarloEngine:
                     'bust_rate': 0.20,
                     'zero_rate': 0.02
                 }
-
+        
         logger.info(f"✅ Monte Carlo complete: {len(results)} players analyzed")
         return results
 
@@ -169,7 +169,7 @@ class MonteCarloEngine:
                 'boom_rate': stats.get('boom_rate', 0),
                 'mean': stats.get('mean', 0)
             })
-
+        
         # Sort by ceiling
         players.sort(key=lambda x: x['ceiling_90'], reverse=True)
         return players[:n]
@@ -184,44 +184,44 @@ class MonteCarloEngine:
                 'bust_rate': stats.get('bust_rate', 1),
                 'mean': stats.get('mean', 0)
             })
-
+        
         # Sort by floor (highest first) and bust rate (lowest first)
         players.sort(key=lambda x: (x['floor_10'], -x['bust_rate']), reverse=True)
         return players[:n]
 
 
 def convert_player_data_to_simulation(
-    player_data: List[Dict],
+    player_data: List[Dict], 
     weather_data: Dict = None,
     vegas_data: Dict = None,
     vegas_multipliers: Dict = None
 ) -> List[PlayerSimulation]:
     """Convert standard player data to PlayerSimulation objects"""
-
+    
     simulations = []
-
+    
     for player in player_data:
         name = player.get('name', player.get('player_name', ''))
         team = player.get('team', '')
         position = player.get('position', '')
-
+        
         # Normalize defense position
         if position in ['DST', 'D/ST', 'DEF']:
             position = 'D'
-
+        
         # Get weather impact
         weather_impact = 1.0
         if weather_data and team in weather_data:
-            weather_impact = weather_data[team].get('weather_factor',
+            weather_impact = weather_data[team].get('weather_factor', 
                            weather_data[team].get('factor', 1.0))
-
+        
         # Get game environment from vegas
         game_total = player.get('game_total', 45.0)
         game_mult = player.get('game_environment_mult', 1.0)
-
+        
         if vegas_multipliers and team in vegas_multipliers:
             game_mult = vegas_multipliers[team]
-
+        
         sim_player = PlayerSimulation(
             name=name,
             position=position,
@@ -233,9 +233,9 @@ def convert_player_data_to_simulation(
             game_environment_mult=game_mult,
             injury_risk=0.02
         )
-
+        
         simulations.append(sim_player)
-
+    
     return simulations
 
 
@@ -254,11 +254,11 @@ def run_monte_carlo_sync(
     sim_players = convert_player_data_to_simulation(
         player_data, weather_data, vegas_data, vegas_multipliers
     )
-
+    
     # Run simulations
     engine = MonteCarloEngine(num_simulations=num_simulations)
     results = engine.simulate_all_players(sim_players)
-
+    
     return results
 
 
@@ -277,7 +277,7 @@ def enhance_players_with_monte_carlo(
     mc_results = run_monte_carlo_sync(
         players, weather_data, vegas_data, vegas_multipliers, num_simulations
     )
-
+    
     # Merge results back into player dicts
     for player in players:
         name = player.get('name', player.get('player_name', ''))
@@ -291,5 +291,5 @@ def enhance_players_with_monte_carlo(
             player['monte_carlo_analyzed'] = True
             player['mc_mean'] = mc.get('mean', player.get('projection', 10))
             player['mc_std'] = mc.get('std', 3.0)
-
+    
     return players

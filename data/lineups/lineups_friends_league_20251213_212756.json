@@ -1,0 +1,311 @@
+{
+  "generated_at": "2025-12-13T21:27:56.051568",
+  "lineups": [
+    {
+      "contest_type": "friends_league",
+      "total_salary": 59900,
+      "projected_points": 207.95,
+      "ceiling_90": 305.49,
+      "floor_10": 101.83,
+      "ownership_total": 208.0,
+      "high_total_exposure": 9,
+      "primary_stack": "DET",
+      "players": [
+        {
+          "name": "Matthew Stafford",
+          "position": "QB",
+          "team": "LAR",
+          "salary": 8300,
+          "projection": 37.94,
+          "ceiling_90": 54.78,
+          "game_mult": 1.47,
+          "ai_must_play": true
+        },
+        {
+          "name": "Jahmyr Gibbs",
+          "position": "RB",
+          "team": "DET",
+          "salary": 9500,
+          "projection": 38.26,
+          "ceiling_90": 59.14,
+          "game_mult": 1.47,
+          "ai_must_play": true
+        },
+        {
+          "name": "James Cook III",
+          "position": "RB",
+          "team": "BUF",
+          "salary": 8300,
+          "projection": 31.11,
+          "ceiling_90": 43.8,
+          "game_mult": 1.31,
+          "ai_must_play": true
+        },
+        {
+          "name": "Puka Nacua",
+          "position": "WR",
+          "team": "LAR",
+          "salary": 9700,
+          "projection": 35.51,
+          "ceiling_90": 49.48,
+          "game_mult": 1.47,
+          "ai_must_play": true
+        },
+        {
+          "name": "Amon-Ra St. Brown",
+          "position": "WR",
+          "team": "DET",
+          "salary": 8600,
+          "projection": 25.75,
+          "ceiling_90": 41.12,
+          "game_mult": 1.47,
+          "ai_must_play": true
+        },
+        {
+          "name": "Scotty Washington",
+          "position": "WR",
+          "team": "BAL",
+          "salary": 4000,
+          "projection": 6.75,
+          "ceiling_90": 12.6,
+          "game_mult": 1.47,
+          "ai_must_play": false
+        },
+        {
+          "name": "Zach Horton",
+          "position": "TE",
+          "team": "DET",
+          "salary": 4000,
+          "projection": 7.02,
+          "ceiling_90": 11.76,
+          "game_mult": 1.47,
+          "ai_must_play": false
+        },
+        {
+          "name": "Craig Reynolds",
+          "position": "RB",
+          "team": "NE",
+          "salary": 4200,
+          "projection": 14.61,
+          "ceiling_90": 18.9,
+          "game_mult": 1.31,
+          "ai_must_play": false
+        },
+        {
+          "name": "Detroit Lions",
+          "position": "D",
+          "team": "DET",
+          "salary": 3300,
+          "projection": 11.0,
+          "ceiling_90": 13.9,
+          "game_mult": 1.47,
+          "ai_must_play": false
+        }
+      ]
+    },
+    {
+      "contest_type": "friends_league",
+      "total_salary": 59800,
+      "projected_points": 188.66,
+      "ceiling_90": 298.06,
+      "floor_10": 99.36,
+      "ownership_total": 209.0,
+      "high_total_exposure": 9,
+      "primary_stack": "DET",
+      "players": [
+        {
+          "name": "Josh Allen",
+          "position": "QB",
+          "team": "BUF",
+          "salary": 9300,
+          "projection": 35.72,
+          "ceiling_90": 59.79,
+          "game_mult": 1.31,
+          "ai_must_play": true
+        },
+        {
+          "name": "Jahmyr Gibbs",
+          "position": "RB",
+          "team": "DET",
+          "salary": 9500,
+          "projection": 46.72,
+          "ceiling_90": 59.14,
+          "game_mult": 1.47,
+          "ai_must_play": true
+        },
+        {
+          "name": "Kyren Williams",
+          "position": "RB",
+          "team": "LAR",
+          "salary": 7200,
+          "projection": 19.95,
+          "ceiling_90": 32.71,
+          "game_mult": 1.47,
+          "ai_must_play": false
+        },
+        {
+          "name": "Puka Nacua",
+          "position": "WR",
+          "team": "LAR",
+          "salary": 9700,
+          "projection": 27.87,
+          "ceiling_90": 49.48,
+          "game_mult": 1.47,
+          "ai_must_play": true
+        },
+        {
+          "name": "Amon-Ra St. Brown",
+          "position": "WR",
+          "team": "DET",
+          "salary": 8600,
+          "projection": 25.0,
+          "ceiling_90": 41.12,
+          "game_mult": 1.47,
+          "ai_must_play": true
+        },
+        {
+          "name": "Stephen Gosnell",
+          "position": "WR",
+          "team": "BUF",
+          "salary": 4000,
+          "projection": 7.11,
+          "ceiling_90": 11.25,
+          "game_mult": 1.31,
+          "ai_must_play": false
+        },
+        {
+          "name": "William Wagner",
+          "position": "TE",
+          "team": "CIN",
+          "salary": 4000,
+          "projection": 7.55,
+          "ceiling_90": 11.76,
+          "game_mult": 1.47,
+          "ai_must_play": false
+        },
+        {
+          "name": "Craig Reynolds",
+          "position": "RB",
+          "team": "NE",
+          "salary": 4200,
+          "projection": 10.7,
+          "ceiling_90": 18.9,
+          "game_mult": 1.31,
+          "ai_must_play": false
+        },
+        {
+          "name": "Detroit Lions",
+          "position": "D",
+          "team": "DET",
+          "salary": 3300,
+          "projection": 8.05,
+          "ceiling_90": 13.9,
+          "game_mult": 1.47,
+          "ai_must_play": false
+        }
+      ]
+    },
+    {
+      "contest_type": "friends_league",
+      "total_salary": 59700,
+      "projected_points": 203.25,
+      "ceiling_90": 297.54,
+      "floor_10": 99.18,
+      "ownership_total": 208.0,
+      "high_total_exposure": 9,
+      "primary_stack": "DET",
+      "players": [
+        {
+          "name": "Drake Maye",
+          "position": "QB",
+          "team": "NE",
+          "salary": 8100,
+          "projection": 27.16,
+          "ceiling_90": 48.18,
+          "game_mult": 1.31,
+          "ai_must_play": true
+        },
+        {
+          "name": "Jahmyr Gibbs",
+          "position": "RB",
+          "team": "DET",
+          "salary": 9500,
+          "projection": 46.43,
+          "ceiling_90": 59.14,
+          "game_mult": 1.47,
+          "ai_must_play": true
+        },
+        {
+          "name": "James Cook III",
+          "position": "RB",
+          "team": "BUF",
+          "salary": 8300,
+          "projection": 27.2,
+          "ceiling_90": 43.8,
+          "game_mult": 1.31,
+          "ai_must_play": true
+        },
+        {
+          "name": "Puka Nacua",
+          "position": "WR",
+          "team": "LAR",
+          "salary": 9700,
+          "projection": 36.69,
+          "ceiling_90": 49.48,
+          "game_mult": 1.47,
+          "ai_must_play": true
+        },
+        {
+          "name": "Amon-Ra St. Brown",
+          "position": "WR",
+          "team": "DET",
+          "salary": 8600,
+          "projection": 31.33,
+          "ceiling_90": 41.12,
+          "game_mult": 1.47,
+          "ai_must_play": true
+        },
+        {
+          "name": "John Saunders Jr.",
+          "position": "WR",
+          "team": "NE",
+          "salary": 4000,
+          "projection": 6.55,
+          "ceiling_90": 11.25,
+          "game_mult": 1.31,
+          "ai_must_play": false
+        },
+        {
+          "name": "Zach Horton",
+          "position": "TE",
+          "team": "DET",
+          "salary": 4000,
+          "projection": 6.92,
+          "ceiling_90": 11.76,
+          "game_mult": 1.47,
+          "ai_must_play": false
+        },
+        {
+          "name": "Craig Reynolds",
+          "position": "RB",
+          "team": "NE",
+          "salary": 4200,
+          "projection": 11.66,
+          "ceiling_90": 18.9,
+          "game_mult": 1.31,
+          "ai_must_play": false
+        },
+        {
+          "name": "Detroit Lions",
+          "position": "D",
+          "team": "DET",
+          "salary": 3300,
+          "projection": 9.31,
+          "ceiling_90": 13.9,
+          "game_mult": 1.47,
+          "ai_must_play": false
+        }
+      ]
+    }
+  ]
+}

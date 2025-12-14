@@ -145,7 +145,7 @@ class VegasDataCollector:
                     # TEAM DEDUPLICATION: Check for impossible scheduling conflicts
                     if home_team in scheduled_teams or away_team in scheduled_teams:
                         conflicting_team = home_team if home_team in scheduled_teams else away_team
-                        logger.warning(f"🚫 IMPOSSIBLE SCHEDULE: Skipping {away_team}@{home_team} - {conflicting_team} already scheduled")
+                        logger.debug(f"📅 Skipping future week game: {away_team}@{home_team} - {conflicting_team} already scheduled this week")
                         continue
 
                     # Mark teams as scheduled

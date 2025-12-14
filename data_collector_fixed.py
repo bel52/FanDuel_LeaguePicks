@@ -34,11 +34,11 @@ try:
 except ImportError as e:
     MONTE_CARLO_AVAILABLE = False
     logger.warning(f"Monte Carlo engine not available: {e}")
-
+    
     # Define fallback function
     def run_monte_carlo_sync(*args, **kwargs):
         return {}
-
+    
     def enhance_players_with_monte_carlo(players, *args, **kwargs):
         return players
 
@@ -50,11 +50,11 @@ try:
 except ImportError as e:
     ENHANCED_AI_AVAILABLE = False
     logger.warning(f"Enhanced AI analyzer not available: {e} - using basic analyzer")
-
+    
     # Define stub functions so code doesn't break
     async def run_enhanced_ai_analysis(*args, **kwargs):
         return None
-
+    
     class EnhancedAIAnalyzer:
         def apply_analysis_to_players(self, players, analysis):
             return players
@@ -856,7 +856,7 @@ class EnhancedDataCollector:
 async def get_fresh_data(contest_type: str = 'gpp') -> Dict[str, Any]:
     """
     WINNING DATA COLLECTION - ENHANCED
-
+    
     Pipeline:
     1. Get games and Vegas data
     2. Collect players with base projections
@@ -900,7 +900,7 @@ async def get_fresh_data(contest_type: str = 'gpp') -> Dict[str, Any]:
         # Step 4: Get weather data
         logger.info("🌤️ Getting weather data...")
         weather_data = await collector.get_weather_for_games(games_info)
-
+        
         # Apply weather to players
         for p in players:
             team = p.get('team')
@@ -921,7 +921,7 @@ async def get_fresh_data(contest_type: str = 'gpp') -> Dict[str, Any]:
                     vegas_multipliers=vegas_multipliers,
                     num_simulations=1000
                 )
-
+                
                 # Apply MC results to players
                 for p in players:
                     name = p.get('name', '')
@@ -933,10 +933,10 @@ async def get_fresh_data(contest_type: str = 'gpp') -> Dict[str, Any]:
                         p['boom_rate'] = mc.get('boom_rate', 0.15)
                         p['bust_rate'] = mc.get('bust_rate', 0.20)
                         p['monte_carlo_analyzed'] = True
-
+                
                 mc_count = sum(1 for p in players if p.get('monte_carlo_analyzed'))
                 logger.info(f"✅ Monte Carlo complete: {mc_count}/{len(players)} players")
-
+                
             except Exception as e:
                 logger.warning(f"Monte Carlo failed: {e}")
         else:
@@ -964,7 +964,7 @@ async def get_fresh_data(contest_type: str = 'gpp') -> Dict[str, Any]:
                     news_items=news_items,
                     contest_type=contest_type
                 )
-
+                
                 # Log AI recommendations
                 if ai_analysis.primary_stack:
                     ps = ai_analysis.primary_stack
@@ -973,11 +973,11 @@ async def get_fresh_data(contest_type: str = 'gpp') -> Dict[str, Any]:
                 logger.info(f"⛔ AI Must-Fade: {ai_analysis.must_fade[:5]}..." if len(ai_analysis.must_fade) > 5 else f"⛔ AI Must-Fade: {ai_analysis.must_fade}")
                 if ai_analysis.raw_notes:
                     logger.info(f"💡 Key Insight: {ai_analysis.raw_notes[:100]}...")
-
+                
                 # Apply AI analysis to players
                 analyzer = EnhancedAIAnalyzer()
                 players = analyzer.apply_analysis_to_players(players, ai_analysis)
-
+                
             except Exception as e:
                 logger.warning(f"Enhanced AI analysis failed: {e}")
                 # Fall back to basic AI

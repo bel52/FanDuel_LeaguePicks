@@ -49,7 +49,6 @@ try:
         convert_player_data_to_simulation,
         run_monte_carlo_sync,
     )
-
     MONTE_CARLO_AVAILABLE = True
     logger.info("✅ Monte Carlo engine loaded (sync version)")
 except ImportError:
@@ -101,10 +100,10 @@ class Player:
         self.boom_rate = safe_float(self.boom_rate, 0.0)
         self.bust_rate = safe_float(self.bust_rate, 0.0)
         self.variance = safe_float(self.variance, 0.0)
-
+        
         # Calculate value
         self.value = safe_float(self.projection / (self.salary / 1000), 0.0) if self.salary > 0 else 0.0
-
+        
         # Calculate variance if not set
         if self.variance == 0 and self.projection > 0:
             variance_multipliers = {'QB': 0.28, 'RB': 0.35, 'WR': 0.45, 'TE': 0.38, 'D': 0.42}
@@ -156,19 +155,19 @@ class EnhancedDFSOptimizer:
         """Store Vegas data for constraint generation"""
         self.vegas_multipliers = vegas_multipliers or {}
         self.vegas_data = vegas_data or {}
-
+        
         # Log high-total teams for verification
-        high_total_teams = [team for team, mult in self.vegas_multipliers.items()
-                            if safe_float(mult, 1.0) >= 1.25]
+        high_total_teams = [team for team, mult in self.vegas_multipliers.items() 
+                          if safe_float(mult, 1.0) >= 1.25]
         if high_total_teams:
             logger.info(f"🎯 HIGH-TOTAL TEAMS (47+): {high_total_teams}")
         logger.info(f"📊 Vegas multipliers set for {len(self.vegas_multipliers)} teams")
 
     def prepare_players(
-            self,
-            player_data: List[Dict],
-            weather_data: Dict = None,
-            vegas_data: Dict = None,
+        self,
+        player_data: List[Dict],
+        weather_data: Dict = None,
+        vegas_data: Dict = None,
     ) -> List[Player]:
         """Convert player data with Monte Carlo enhancement (sync version)"""
         players: List[Player] = []
@@ -194,7 +193,7 @@ class EnhancedDFSOptimizer:
                 # Get game environment data
                 game_mult = safe_float(data.get('game_environment_mult', 1.0), 1.0)
                 game_total = safe_float(data.get('game_total', 45.0), 45.0)
-
+                
                 # Apply Vegas multiplier if not already applied
                 if game_mult == 1.0 and team in self.vegas_multipliers:
                     game_mult = safe_float(self.vegas_multipliers[team], 1.0)
@@ -236,10 +235,10 @@ class EnhancedDFSOptimizer:
         return players
 
     def _enhance_players_with_monte_carlo_sync(
-            self,
-            players: List[Player],
-            weather_data: Dict = None,
-            vegas_data: Dict = None,
+        self,
+        players: List[Player],
+        weather_data: Dict = None,
+        vegas_data: Dict = None,
     ) -> List[Player]:
         """
         Enhance players with Monte Carlo variance analysis
@@ -248,11 +247,11 @@ class EnhancedDFSOptimizer:
         try:
             # Import sync Monte Carlo engine
             from monte_carlo_engine import (
-                MonteCarloEngine,
+                MonteCarloEngine, 
                 PlayerSimulation,
                 run_monte_carlo_sync
             )
-
+            
             # Convert players to dict format for Monte Carlo
             player_dicts = []
             for player in players:
@@ -265,7 +264,7 @@ class EnhancedDFSOptimizer:
                     'game_environment_mult': player.game_environment_mult,
                     'game_total': player.game_total,
                 })
-
+            
             # Run SYNCHRONOUS Monte Carlo
             mc_results = run_monte_carlo_sync(
                 player_data=player_dicts,
@@ -274,7 +273,7 @@ class EnhancedDFSOptimizer:
                 vegas_multipliers=self.vegas_multipliers,
                 num_simulations=1000
             )
-
+            
             # Apply results to Player objects
             for player in players:
                 if player.name in mc_results:
@@ -294,19 +293,19 @@ class EnhancedDFSOptimizer:
                     player.boom_rate = 0.15
                     player.bust_rate = 0.20
                     player.monte_carlo_analyzed = True
-
+            
             analyzed_count = sum(1 for p in players if p.monte_carlo_analyzed)
             logger.info(f"✅ Monte Carlo complete: {analyzed_count}/{len(players)} players analyzed")
-
+            
         except ImportError as e:
             logger.warning(f"Monte Carlo engine not available: {e}, using fallback estimates")
             self._apply_fallback_estimates(players)
         except Exception as e:
             logger.warning(f"Monte Carlo failed: {e}, using fallback estimates")
             self._apply_fallback_estimates(players)
-
+            
         return players
-
+    
     def _apply_fallback_estimates(self, players: List[Player]):
         """Apply simple fallback estimates when Monte Carlo fails"""
         for player in players:
@@ -319,16 +318,16 @@ class EnhancedDFSOptimizer:
         return players
 
     def optimize_lineup(
-            self,
-            players: List[Player],
-            contest_type: str = 'gpp',
-            single_game_teams: List[str] = None,
-            excluded_player_ids: set = None,
+        self,
+        players: List[Player],
+        contest_type: str = 'gpp',
+        single_game_teams: List[str] = None,
+        excluded_player_ids: set = None,
     ) -> Optional[LineupResult]:
         """Optimize single lineup with explicit exclusions"""
         try:
             excluded_player_ids = excluded_player_ids or set()
-
+            
             # Filter for single game
             if single_game_teams:
                 players = [p for p in players if p.team in single_game_teams]
@@ -338,7 +337,7 @@ class EnhancedDFSOptimizer:
 
             # Apply exclusions
             available_players = [p for p in players if p.id not in excluded_player_ids]
-
+            
             if len(available_players) < 20:
                 logger.warning(f"Low player pool after exclusions: {len(available_players)}")
 
@@ -383,7 +382,7 @@ class EnhancedDFSOptimizer:
     def _calculate_winning_value(self, player: Player, contest_type: str) -> float:
         """
         WINNING VALUE CALCULATION - The heart of tournament optimization
-
+        
         Priority order:
         1. Game environment (high-total games = more points scored)
         2. AI recommendations (expert analysis)
@@ -466,12 +465,12 @@ class EnhancedDFSOptimizer:
             return safe_float(base_value + game_boost + ai_adjustment, base_value)
 
     def _add_fanduel_constraints(
-            self,
-            prob,
-            players: List[Player],
-            player_vars: Dict,
-            contest_type: str,
-            single_game_teams: List[str],
+        self,
+        prob,
+        players: List[Player],
+        player_vars: Dict,
+        contest_type: str,
+        single_game_teams: List[str],
     ):
         """EXACT FanDuel constraints"""
         # Salary cap
@@ -566,12 +565,12 @@ class EnhancedDFSOptimizer:
             logger.info(f"🎯 FORCING 3+ players from high-total games: {teams_in_constraint}")
 
     def _add_qb_wr_stack_requirement(
-            self,
-            prob,
-            players: List[Player],
-            player_vars: Dict,
-            qb_indices: List[int],
-            wr_indices: List[int]
+        self,
+        prob,
+        players: List[Player],
+        player_vars: Dict,
+        qb_indices: List[int],
+        wr_indices: List[int]
     ):
         """Force QB + at least 1 WR from same team"""
         team_qbs: Dict[str, List[int]] = {}
@@ -648,8 +647,7 @@ class EnhancedDFSOptimizer:
             total_value=sum(safe_float(p.value, 0.0) for p in ordered_players),
             ownership_total=safe_float(total_ownership, 0.0),
             correlation_score=self._calculate_correlation(ordered_players),
-            weather_impact=float(
-                np.mean([safe_float(p.weather_factor, 1.0) for p in ordered_players])) if ordered_players else 1.0,
+            weather_impact=float(np.mean([safe_float(p.weather_factor, 1.0) for p in ordered_players])) if ordered_players else 1.0,
             contest_type=contest_type,
             high_total_exposure=high_total_count,
             primary_stack_team=primary_stack,
@@ -658,8 +656,7 @@ class EnhancedDFSOptimizer:
             risk_level="Medium" if high_total_count >= 3 else "Low",
         )
 
-        logger.info(
-            f"📊 Lineup: ${total_salary} | {projected_points:.1f}pts | {high_total_count} high-total players | Stack: {primary_stack}")
+        logger.info(f"📊 Lineup: ${total_salary} | {projected_points:.1f}pts | {high_total_count} high-total players | Stack: {primary_stack}")
 
         return result
 
@@ -736,23 +733,23 @@ class EnhancedDFSOptimizer:
         return min(1.0, correlation)
 
     def generate_multiple_lineups(
-            self,
-            players: List[Player],
-            num_lineups: int = 10,
-            contest_type: str = 'gpp',
-            single_game_teams: List[str] = None,
+        self,
+        players: List[Player],
+        num_lineups: int = 10,
+        contest_type: str = 'gpp',
+        single_game_teams: List[str] = None,
     ) -> List[LineupResult]:
         """
         Generate diverse lineups with QB exclusion for different stacks
-
+        
         Strategy: Each lineup gets a different QB = different primary stack
         This is the most reliable way to ensure lineup diversity
         """
         lineups: List[LineupResult] = []
         excluded_qbs: set = set()  # Force different QB each lineup
-
+        
         max_attempts = num_lineups * 10
-
+        
         for attempt in range(max_attempts):
             if len(lineups) >= num_lineups:
                 break
@@ -763,7 +760,7 @@ class EnhancedDFSOptimizer:
                 # Skip QBs we've already used
                 if player.position == 'QB' and player.id in excluded_qbs:
                     continue
-
+                    
                 new_player = Player(
                     id=player.id,
                     name=player.name,
@@ -795,8 +792,7 @@ class EnhancedDFSOptimizer:
                     random_factor = random.uniform(0.75, 1.25)
 
                 new_player.projection = safe_float(new_player.projection * random_factor, 5.0)
-                new_player.value = safe_float(new_player.projection / (new_player.salary / 1000),
-                                              0.0) if new_player.salary else 0.0
+                new_player.value = safe_float(new_player.projection / (new_player.salary / 1000), 0.0) if new_player.salary else 0.0
                 randomized_players.append(new_player)
 
             # Check we have enough QBs
@@ -810,12 +806,11 @@ class EnhancedDFSOptimizer:
             if lineup:
                 # Get QB from this lineup
                 qb = next((p for p in lineup.players if p.position == 'QB'), None)
-
+                
                 if qb and qb.id not in excluded_qbs:
                     lineups.append(lineup)
                     excluded_qbs.add(qb.id)
-                    logger.info(
-                        f"✅ Lineup {len(lineups)} accepted: QB={qb.name} ({qb.team}), Stack={lineup.primary_stack_team}")
+                    logger.info(f"✅ Lineup {len(lineups)} accepted: QB={qb.name} ({qb.team}), Stack={lineup.primary_stack_team}")
                 else:
                     logger.debug(f"⏭️ Lineup rejected - QB already used")
 
@@ -823,8 +818,7 @@ class EnhancedDFSOptimizer:
         if contest_type in ['cash']:
             lineups.sort(key=lambda x: safe_float(x.floor_10, x.projected_points), reverse=True)
         else:
-            lineups.sort(key=lambda x: (safe_float(x.ceiling_90, x.projected_points), x.high_total_exposure),
-                         reverse=True)
+            lineups.sort(key=lambda x: (safe_float(x.ceiling_90, x.projected_points), x.high_total_exposure), reverse=True)
 
         logger.info(f"Generated {len(lineups)} {contest_type} lineups")
 
@@ -871,15 +865,15 @@ def _run_coro_sync(coro):
 
 
 def optimize_dfs_lineups(
-        player_data: List[Dict],
-        weather_data: Dict = None,
-        vegas_multipliers: Dict = None,
-        vegas_data: Dict = None,
-        num_lineups: int = 10,
-        contest_type: str = 'gpp',
-        single_game_teams: List[str] = None,
-        use_monte_carlo: bool = True,
-        mc_simulations: int = 5000,
+    player_data: List[Dict],
+    weather_data: Dict = None,
+    vegas_multipliers: Dict = None,
+    vegas_data: Dict = None,
+    num_lineups: int = 10,
+    contest_type: str = 'gpp',
+    single_game_teams: List[str] = None,
+    use_monte_carlo: bool = True,
+    mc_simulations: int = 5000,
 ) -> List[LineupResult]:
     """
     Main entry point for lineup optimization
@@ -889,7 +883,7 @@ def optimize_dfs_lineups(
 
     # Create optimizer
     optimizer = EnhancedDFSOptimizer(use_monte_carlo=use_monte_carlo, mc_simulations=mc_simulations)
-
+    
     # Set Vegas data
     optimizer.set_vegas_data(vegas_multipliers or {}, vegas_data or {})
 
@@ -905,7 +899,7 @@ def optimize_dfs_lineups(
     ai_must_play = sum(1 for p in players if p.ai_must_play)
     ai_must_fade = sum(1 for p in players if p.ai_must_fade)
     high_total = sum(1 for p in players if safe_float(p.game_environment_mult, 1.0) >= 1.25)
-
+    
     logger.info(f"📊 Players in high-total games: {high_total}/{len(players)}")
     logger.info(f"🎯 AI flags: {ai_must_play} must-play, {ai_must_fade} must-fade")
     logger.info(f"🎲 Monte Carlo analyzed: {mc_count}/{len(players)}")
@@ -963,7 +957,6 @@ def optimize_dfs_lineups(
 
     # Log top lineup summary
     top = lineups[0]
-    logger.info(
-        f"🏆 TOP LINEUP: ${top.total_salary} | {top.projected_points:.1f}pts | Ceil90: {top.ceiling_90:.1f} | High-total: {top.high_total_exposure} | Stack: {top.primary_stack_team}")
+    logger.info(f"🏆 TOP LINEUP: ${top.total_salary} | {top.projected_points:.1f}pts | Ceil90: {top.ceiling_90:.1f} | High-total: {top.high_total_exposure} | Stack: {top.primary_stack_team}")
 
     return lineups
