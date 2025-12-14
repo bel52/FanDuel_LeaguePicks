@@ -1,11 +1,13 @@
 """
 Enhanced AI Analyzer for DFS Optimization
-UPGRADED: Uses ALL collected data (Monte Carlo, Vegas, Weather, News)
-Provides STRATEGIC recommendations, not just player names
+FIXED:
+- Validates all recommendations against actual player pool
+- Emphasizes ONLY recommending players from the list
+- Rejects stale knowledge from AI training data
 """
 import os
 import json
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Set
 from loguru import logger
 from dataclasses import dataclass
 
@@ -38,17 +40,54 @@ class AIAnalysisResult:
 class EnhancedAIAnalyzer:
     """
     AI Analyzer that uses ALL collected data for strategic DFS decisions
+    VALIDATES all recommendations against actual player pool
     """
 
     def __init__(self):
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
         self.ai_enabled = bool(self.openai_api_key or self.anthropic_api_key)
+        self.valid_players: Set[str] = set()  # For validation
+        self.player_teams: Dict[str, str] = {}  # name -> team mapping
 
         if self.ai_enabled:
             logger.info("🤖 Enhanced AI Analyzer initialized")
         else:
             logger.warning("⚠️ AI Analyzer disabled - no API keys found")
+
+    def _build_player_lookup(self, players: List[Dict]):
+        """Build lookup tables for player validation"""
+        self.valid_players = set()
+        self.player_teams = {}
+
+        for p in players:
+            name = p.get('name', '')
+            team = p.get('team', '')
+            if name:
+                self.valid_players.add(name)
+                self.valid_players.add(name.lower())
+                self.player_teams[name] = team
+                self.player_teams[name.lower()] = team
+
+    def _validate_player(self, name: str, expected_team: str = None) -> bool:
+        """Check if player exists in our pool, optionally verify team"""
+        if not name:
+            return False
+
+        # Check if player exists
+        exists = name in self.valid_players or name.lower() in self.valid_players
+
+        if not exists:
+            return False
+
+        # If team is specified, verify it matches
+        if expected_team:
+            actual_team = self.player_teams.get(name, self.player_teams.get(name.lower(), ''))
+            if actual_team and actual_team != expected_team:
+                logger.warning(f"⚠️ AI suggested {name} on {expected_team} but they're on {actual_team}")
+                return False
+
+        return True
 
     def _build_comprehensive_prompt(
         self,
@@ -61,13 +100,16 @@ class EnhancedAIAnalyzer:
     ) -> str:
         """
         Build a rich prompt with ALL available data
+        EMPHASIZES: Only recommend players from the provided list!
         """
         lines = []
 
-        # System context
-        lines.append("""You are an elite DFS tournament optimizer. Your goal is to identify the OPTIMAL lineup construction strategy, not just good players.
+        # System context with STRONG CONSTRAINT
+        lines.append("""You are an elite DFS tournament optimizer. Your goal is to identify the OPTIMAL lineup construction strategy.
 
-CRITICAL CONTEXT: This is a 12-person friends league. You need to WIN, not just cash. That means:
+⚠️ CRITICAL CONSTRAINT: You may ONLY recommend players from the lists below. Do NOT use your training knowledge about NFL rosters - players may have changed teams. If a player is not in the lists below, they are NOT available.
+
+CONTEXT: This is a 12-person friends league. You need to WIN, not just cash. That means:
 - Target players with the highest CEILINGS, not safest floors
 - Stack QBs with their pass catchers from HIGH-TOTAL games
 - 1st place pays, 2nd place doesn't matter
@@ -87,6 +129,8 @@ CRITICAL CONTEXT: This is a 12-person friends league. You need to WIN, not just 
                 total = game.get('total', 45)
                 lines.append(f"  • {teams[0] if teams else 'TBD'} vs {teams[1] if len(teams) > 1 else 'TBD'}: {total} points")
             lines.append("")
+        else:
+            lines.append("\n⚠️ No high-total games identified")
 
         avg_total = vegas_data.get('avg_total', 45)
         lines.append(f"Slate average total: {avg_total:.1f} points")
@@ -110,9 +154,11 @@ CRITICAL CONTEXT: This is a 12-person friends league. You need to WIN, not just 
                 lines.append(f"  • {item.get('title', item.get('headline', 'News item'))[:80]}")
             lines.append("")
 
-        # Top Players by Position with Monte Carlo Data
+        # ============================================
+        # PLAYER LISTS - THE ONLY VALID PLAYERS
+        # ============================================
         lines.append("=" * 50)
-        lines.append("TOP PLAYERS BY POSITION (with Monte Carlo analysis)")
+        lines.append("⚠️ AVAILABLE PLAYERS (You may ONLY recommend these)")
         lines.append("=" * 50)
 
         # Group players by position
@@ -141,9 +187,9 @@ CRITICAL CONTEXT: This is a 12-person friends league. You need to WIN, not just 
             pos_players.sort(key=lambda x: x.get('_ceiling_90', 0), reverse=True)
 
             display_pos = 'DEF' if pos == 'D' else pos
-            lines.append(f"\n{display_pos}s (Top 8 by ceiling):")
+            lines.append(f"\n{display_pos}s (Top 10 by ceiling):")
 
-            for p in pos_players[:8]:
+            for p in pos_players[:10]:
                 name = p.get('name', '')
                 team = p.get('team', '')
                 salary = p.get('salary', 0)
@@ -183,40 +229,42 @@ CRITICAL CONTEXT: This is a 12-person friends league. You need to WIN, not just 
                     })
 
         value_players.sort(key=lambda x: x['value_ratio'], reverse=True)
-        for vp in value_players[:6]:
+        for vp in value_players[:8]:
             lines.append(
                 f"  {vp['name']} ({vp['position']}-{vp['team']}) ${vp['salary']:,} | "
                 f"Ceiling:{vp['ceiling']:.1f} Value:{vp['value_ratio']:.1f}x"
             )
 
-        # Request structured output
+        # Request structured output with VALIDATION REMINDER
         lines.append("\n" + "=" * 50)
         lines.append("YOUR TASK")
         lines.append("=" * 50)
         lines.append("""
+⚠️ REMINDER: Only recommend players from the lists above! Do not use your training knowledge about NFL rosters.
+
 Based on ALL the data above, provide your analysis in this EXACT JSON format:
 
 {
   "primary_stack": {
-    "qb": "QB Name",
+    "qb": "EXACT QB Name from list above",
     "qb_team": "TEAM",
-    "targets": ["WR1 Name", "WR2 Name"],
+    "targets": ["EXACT WR/TE Name from list", "Another EXACT name"],
     "reasoning": "Why this stack wins the week",
     "game_total": 54.5
   },
   "secondary_stack": {
-    "qb": "QB Name",
+    "qb": "EXACT QB Name from list above",
     "qb_team": "TEAM", 
-    "targets": ["WR Name"],
+    "targets": ["EXACT WR/TE Name from list"],
     "reasoning": "Backup stack reasoning"
   },
-  "must_play": ["Player 1", "Player 2", "Player 3", ...],
-  "must_fade": ["Player 1", "Player 2", ...],
+  "must_play": ["EXACT Player Name 1", "EXACT Player Name 2", "EXACT Player Name 3"],
+  "must_fade": ["EXACT Player Name 1", "EXACT Player Name 2"],
   "value_plays": [
-    {"name": "Player Name", "reason": "Why they're value"}
+    {"name": "EXACT Player Name from list", "reason": "Why they're value"}
   ],
   "bring_back": {
-    "player": "Opposing player to correlate",
+    "player": "EXACT opposing player name from list",
     "from_game": "TEAM1 vs TEAM2",
     "reasoning": "Why bring-back works"
   },
@@ -225,6 +273,7 @@ Based on ALL the data above, provide your analysis in this EXACT JSON format:
   "key_insight": "The ONE thing that will decide this week"
 }
 
+⚠️ Use EXACT player names as shown in the lists. Do not use nicknames or different spellings.
 Respond with ONLY valid JSON, no other text.
 """)
 
@@ -245,6 +294,9 @@ Respond with ONLY valid JSON, no other text.
         if not self.ai_enabled:
             logger.warning("AI disabled - returning empty analysis")
             return self._empty_result()
+
+        # Build player lookup for validation
+        self._build_player_lookup(players)
 
         # Build comprehensive prompt
         prompt = self._build_comprehensive_prompt(
@@ -267,7 +319,7 @@ Respond with ONLY valid JSON, no other text.
         if not response_data:
             return self._empty_result()
 
-        # Parse response
+        # Parse and VALIDATE response
         return self._parse_response(response_data)
 
     async def _call_ai(self, prompt: str) -> Optional[Dict]:
@@ -285,7 +337,7 @@ Respond with ONLY valid JSON, no other text.
                     messages=[
                         {
                             "role": "system",
-                            "content": "You are an expert DFS NFL strategist. Respond with valid JSON only."
+                            "content": "You are an expert DFS NFL strategist. CRITICAL: Only recommend players from the provided lists. Do not use your training knowledge about NFL rosters. Respond with valid JSON only."
                         },
                         {"role": "user", "content": prompt}
                     ],
@@ -320,7 +372,7 @@ Respond with ONLY valid JSON, no other text.
                     model="claude-sonnet-4-20250514",
                     max_tokens=2000,
                     temperature=0.3,
-                    system="You are an expert DFS NFL strategist. Respond with valid JSON only.",
+                    system="You are an expert DFS NFL strategist. CRITICAL: Only recommend players from the provided lists. Do not use your training knowledge about NFL rosters. Respond with valid JSON only.",
                     messages=[{"role": "user", "content": prompt}]
                 )
 
@@ -341,54 +393,100 @@ Respond with ONLY valid JSON, no other text.
         return None
 
     def _parse_response(self, data: Dict) -> AIAnalysisResult:
-        """Parse AI response into structured result"""
+        """Parse AI response into structured result with VALIDATION"""
 
-        # Extract primary stack
+        # Extract and VALIDATE primary stack
         primary_stack = None
         ps_data = data.get('primary_stack', {})
         if ps_data:
-            primary_stack = StackRecommendation(
-                qb=ps_data.get('qb', ''),
-                qb_team=ps_data.get('qb_team', ''),
-                targets=ps_data.get('targets', []),
-                reasoning=ps_data.get('reasoning', ''),
-                ceiling_score=0.0,
-                game_total=ps_data.get('game_total', 45.0)
-            )
+            qb_name = ps_data.get('qb', '')
+            qb_team = ps_data.get('qb_team', '')
+            targets = ps_data.get('targets', [])
 
-        # Extract secondary stacks
+            # Validate QB
+            if self._validate_player(qb_name, qb_team):
+                # Validate targets
+                valid_targets = [t for t in targets if self._validate_player(t)]
+                invalid_targets = [t for t in targets if not self._validate_player(t)]
+
+                if invalid_targets:
+                    logger.warning(f"⚠️ AI recommended invalid targets (not in pool): {invalid_targets}")
+
+                if valid_targets:
+                    primary_stack = StackRecommendation(
+                        qb=qb_name,
+                        qb_team=qb_team,
+                        targets=valid_targets,
+                        reasoning=ps_data.get('reasoning', ''),
+                        ceiling_score=0.0,
+                        game_total=ps_data.get('game_total', 45.0)
+                    )
+            else:
+                logger.warning(f"⚠️ AI recommended invalid QB: {qb_name} ({qb_team}) - not in player pool")
+
+        # Extract and validate secondary stacks
         secondary_stacks = []
         ss_data = data.get('secondary_stack', {})
         if ss_data:
-            secondary_stacks.append(StackRecommendation(
-                qb=ss_data.get('qb', ''),
-                qb_team=ss_data.get('qb_team', ''),
-                targets=ss_data.get('targets', []),
-                reasoning=ss_data.get('reasoning', ''),
-                ceiling_score=0.0,
-                game_total=ss_data.get('game_total', 45.0)
-            ))
+            qb_name = ss_data.get('qb', '')
+            qb_team = ss_data.get('qb_team', '')
+            targets = ss_data.get('targets', [])
 
-        # Extract value plays
-        value_plays = data.get('value_plays', [])
+            if self._validate_player(qb_name, qb_team):
+                valid_targets = [t for t in targets if self._validate_player(t)]
+                if valid_targets:
+                    secondary_stacks.append(StackRecommendation(
+                        qb=qb_name,
+                        qb_team=qb_team,
+                        targets=valid_targets,
+                        reasoning=ss_data.get('reasoning', ''),
+                        ceiling_score=0.0,
+                        game_total=ss_data.get('game_total', 45.0)
+                    ))
+
+        # Validate must_play list
+        raw_must_play = data.get('must_play', [])
+        valid_must_play = [p for p in raw_must_play if self._validate_player(p)]
+        invalid_must_play = [p for p in raw_must_play if not self._validate_player(p)]
+        if invalid_must_play:
+            logger.warning(f"⚠️ AI recommended invalid must-play (not in pool): {invalid_must_play}")
+
+        # Validate must_fade list
+        raw_must_fade = data.get('must_fade', [])
+        valid_must_fade = [p for p in raw_must_fade if self._validate_player(p)]
+        invalid_must_fade = [p for p in raw_must_fade if not self._validate_player(p)]
+        if invalid_must_fade:
+            logger.warning(f"⚠️ AI recommended invalid must-fade (not in pool): {invalid_must_fade}")
+
+        # Validate value plays
+        raw_value_plays = data.get('value_plays', [])
+        valid_value_plays = []
+        for vp in raw_value_plays:
+            name = vp.get('name', '')
+            if self._validate_player(name):
+                valid_value_plays.append(vp)
 
         # Extract news impacts
         news_impacts = []
         bring_back = data.get('bring_back', {})
         if bring_back:
-            news_impacts.append({
-                'type': 'bring_back',
-                'player': bring_back.get('player', ''),
-                'game': bring_back.get('from_game', ''),
-                'reasoning': bring_back.get('reasoning', '')
-            })
+            player_name = bring_back.get('player', '')
+            if self._validate_player(player_name):
+                news_impacts.append({
+                    'type': 'bring_back',
+                    'player': player_name,
+                    'game': bring_back.get('from_game', ''),
+                    'reasoning': bring_back.get('reasoning', '')
+                })
+
+        logger.info(f"✅ AI Validation: {len(valid_must_play)}/{len(raw_must_play)} must-play, {len(valid_must_fade)}/{len(raw_must_fade)} must-fade valid")
 
         return AIAnalysisResult(
-            must_play=data.get('must_play', []),
-            must_fade=data.get('must_fade', []),
+            must_play=valid_must_play,
+            must_fade=valid_must_fade,
             primary_stack=primary_stack,
             secondary_stacks=secondary_stacks,
-            value_plays=value_plays,
+            value_plays=valid_value_plays,
             news_impacts=news_impacts,
             lineup_advice=data.get('lineup_construction', ''),
             confidence_score=data.get('confidence', 0.5),
@@ -414,18 +512,25 @@ Respond with ONLY valid JSON, no other text.
         players: List[Dict],
         analysis: AIAnalysisResult
     ) -> List[Dict]:
-        """Apply AI analysis results to player projections"""
+        """Apply AI analysis results to player projections with VALIDATION"""
+
+        # Build lookup if not already done
+        if not self.valid_players:
+            self._build_player_lookup(players)
 
         must_play_set = set(analysis.must_play)
         must_fade_set = set(analysis.must_fade)
 
-        # Build stack bonus set
+        # Build stack bonus set - only include validated players
         stack_players = set()
         if analysis.primary_stack:
-            stack_players.add(analysis.primary_stack.qb)
-            stack_players.update(analysis.primary_stack.targets)
+            if self._validate_player(analysis.primary_stack.qb):
+                stack_players.add(analysis.primary_stack.qb)
+            for target in analysis.primary_stack.targets:
+                if self._validate_player(target):
+                    stack_players.add(target)
 
-        value_play_set = set(vp.get('name', '') for vp in analysis.value_plays)
+        value_play_set = set(vp.get('name', '') for vp in analysis.value_plays if self._validate_player(vp.get('name', '')))
 
         logger.info(f"🎯 Applying AI analysis: {len(must_play_set)} must-play, {len(must_fade_set)} must-fade, {len(stack_players)} stack players")
 

@@ -1,69 +1,58 @@
-# Secrets
-.env
-fantasypros_auth.json
-.env.old
-# Data
-data/input/*
-data/output/*
-!data/.gitkeep
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.egg-info/
-.pytest_cache/
-.cache/
-
-# Mac
-.DS_Store
-data/weekly/*
-logs/*
-# Local secrets
-.env.*
-# Virtual envs & caches
-venv/
-.venv/
-.mypy_cache/
-# Editors & OS
-.idea/
-.vscode/
-# Logs & temp
-logs/
-# Archived/local-only artifacts
-*.bak
-*.bak.*
-*.old
-*.old.*
-.auth/
-# Editor & OS
-cache/
-
-# env files (keep the template)
+##### Secrets / env #####
 .env
 .env.*
 *.env
 !.env.example
+fantasypros_auth.json
+.auth/
 
-# run artifacts
-data/**/*.csv
-data/**/*.json
-data/**/*.db
-data/output/
-data/lineups/
-!data/fanduel_salary_template.csv         # keep the template if you want
-
-# track only the placeholder in logs
-logs/
-!logs/.gitkeep
-
-# build/run detritus
+##### Python #####
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
 .pytest_cache/
+.mypy_cache/
+.cache/
 .ipynb_checkpoints/
+
+##### Virtual envs #####
+venv/
+.venv/
+
+##### Editors / OS #####
 .DS_Store
-.vscode/
 .idea/
+.vscode/
 .notebooks/
+cache/
+
+##### Logs #####
+logs/*
+!logs/.gitkeep
+*.log
+
+##### Runtime / generated data #####
+data/output/
+data/weekly/
+data/targets/
+data/executed/
+data/fantasypros/
+data/lineups/
+
+##### Databases & artifacts #####
+data/**/*.db
+data/**/*.json
+data/**/*.csv
+!data/**/*.template.csv
+!data/**/.gitkeep
+
+##### Backups / temp #####
+*.bak
+*.bak.*
+*.old
+*.old.*
+*.backup
+
+##### Build / misc #####
+*.swp
+*.tmp

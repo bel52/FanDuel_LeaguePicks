@@ -1,6 +1,10 @@
+from dotenv import load_dotenv
+load_dotenv()
 """
-GAME-CHANGING: Real Vegas lines integration for tournament-winning DFS
+FIXED: Real Vegas lines integration for tournament-winning DFS
 High-total games (47+ points) produce 70%+ of tournament winners
+SCALABLE: Works for any week of any season without hardcoded matchups
+FIX: Handle None values for spread properly
 """
 import aiohttp
 import asyncio
@@ -8,6 +12,16 @@ from typing import Dict, List, Any, Optional
 from loguru import logger
 from datetime import datetime
 import os
+
+
+def safe_float(val, default=0.0):
+    """Safely convert to float, handling None"""
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
 
 
 class VegasDataCollector:
@@ -22,46 +36,50 @@ class VegasDataCollector:
         self.requests_per_week = 20  # Very conservative usage
 
         if not self.api_key:
-            logger.warning("⚠️ No ODDS_API_KEY found - using enhanced fallback data")
+            logger.warning("⚠️ No ODDS_API_KEY found - will use graceful fallback")
 
-    async def get_nfl_odds_data(self) -> Dict[str, Any]:
-        """Get current NFL Vegas lines with totals (the key to DFS success)"""
+    async def get_nfl_odds_data(self) -> Dict:
+        """Get NFL odds with proper team deduplication"""
+        api_key = os.getenv("ODDS_API_KEY", "")
 
-        if not self.api_key:
-            return self._get_enhanced_fallback_odds()
+        if not api_key:
+            logger.info("📊 No Vegas API key - using team multiplier defaults")
+            return self._get_scalable_fallback()
+
+        url = "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds"
+        params = {
+            "apiKey": api_key,
+            "regions": "us",
+            "markets": "h2h,totals,spreads",  # Added spreads explicitly
+            "oddsFormat": "american",
+        }
 
         try:
-            # Request NFL odds with totals (game totals are CRITICAL for DFS)
-            url = f"{self.base_url}/sports/americanfootball_nfl/odds"
-            params = {
-                'apiKey': self.api_key,
-                'regions': 'us',
-                'markets': 'totals,spreads,h2h',  # totals = game totals (47+ = DFS gold)
-                'oddsFormat': 'american',
-                'dateFormat': 'iso'
-            }
-
-            async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=15)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url, params=params) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        processed_odds = self._process_vegas_data(data)
+                    if response.status != 200:
+                        logger.warning(f"Vegas API returned {response.status} - using fallback")
+                        return self._get_scalable_fallback()
 
-                        logger.info(f"✅ REAL Vegas data: {len(processed_odds)} games with totals")
-                        return processed_odds
-                    else:
-                        logger.error(f"Odds API error: {response.status}")
-                        return self._get_enhanced_fallback_odds()
+                    data = await response.json()
+
+                    if not data or len(data) == 0:
+                        logger.warning("Vegas API returned empty data - using fallback")
+                        return self._get_scalable_fallback()
+
+                    return self._process_vegas_data(data)
 
         except Exception as e:
-            logger.error(f"Vegas data collection failed: {e}")
-            return self._get_enhanced_fallback_odds()
+            logger.warning(f"Vegas API unavailable: {e}")
+            return self._get_scalable_fallback()
 
     def _process_vegas_data(self, raw_data: List[Dict]) -> Dict[str, Any]:
-        """Process raw Vegas data into DFS-optimized format"""
+        """Process raw Vegas data with team deduplication"""
 
         processed_games = {}
         high_total_games = []
+        scheduled_teams = set()  # Track teams already scheduled in games
 
         for game in raw_data:
             try:
@@ -72,6 +90,12 @@ class VegasDataCollector:
                     continue
 
                 game_id = f"{away_team}@{home_team}"
+
+                # Skip if we already processed this exact game
+                if game_id in processed_games:
+                    logger.debug(f"Skipping duplicate game: {game_id}")
+                    continue
+
                 commence_time = game.get('commence_time', '')
 
                 # Extract betting data from bookmakers
@@ -81,36 +105,35 @@ class VegasDataCollector:
                     'away_team': away_team,
                     'commence_time': commence_time,
                     'total_points': None,
-                    'spread': None,
+                    'spread': 0.0,  # Default to 0, not None
                     'home_moneyline': None,
                     'away_moneyline': None
                 }
 
-                # Get data from FanDuel or DraftKings (most reliable)
+                # Get data from reputable sportsbooks
                 for bookmaker in game.get('bookmakers', []):
                     book_key = bookmaker.get('key', '')
 
-                    if book_key in ['fanduel', 'draftkings', 'betmgm']:
+                    if book_key in ['fanduel', 'draftkings', 'betmgm', 'caesars', 'pointsbet']:
                         markets = bookmaker.get('markets', [])
 
                         for market in markets:
                             market_key = market.get('key')
                             outcomes = market.get('outcomes', [])
 
-                            # TOTALS - This is the DFS goldmine
+                            # TOTALS - Critical for DFS success
                             if market_key == 'totals' and outcomes:
                                 total_point = outcomes[0].get('point')
-                                if total_point:
-                                    game_data['total_points'] = float(total_point)
+                                if total_point is not None:
+                                    game_data['total_points'] = safe_float(total_point, 45.0)
 
                             # SPREADS
                             elif market_key == 'spreads' and len(outcomes) >= 2:
-                                # Find home team spread
                                 for outcome in outcomes:
                                     if home_team.upper() in outcome.get('name', '').upper():
                                         spread = outcome.get('point')
-                                        if spread:
-                                            game_data['spread'] = float(spread)
+                                        if spread is not None:
+                                            game_data['spread'] = safe_float(spread, 0.0)
                                             break
 
                             # MONEYLINES
@@ -124,15 +147,25 @@ class VegasDataCollector:
                                     elif away_team.upper() in team_name.upper():
                                         game_data['away_moneyline'] = price
 
-                        # Use first good bookmaker found
+                        # Use first valid bookmaker
                         if game_data['total_points']:
                             break
 
-                # Only include games with total points (essential for DFS)
+                # Only process games with valid betting data
                 if game_data['total_points']:
+                    # TEAM DEDUPLICATION: Check for impossible scheduling conflicts
+                    if home_team in scheduled_teams or away_team in scheduled_teams:
+                        conflicting_team = home_team if home_team in scheduled_teams else away_team
+                        logger.debug(f"📅 Skipping future week game: {away_team}@{home_team} - {conflicting_team} already scheduled this week")
+                        continue
+
+                    # Mark teams as scheduled
+                    scheduled_teams.add(home_team)
+                    scheduled_teams.add(away_team)
+
                     processed_games[game_id] = game_data
 
-                    # Identify HIGH-TOTAL games (DFS tournament gold)
+                    # Identify high-total games (DFS tournament gold)
                     if game_data['total_points'] >= 47.0:
                         high_total_games.append({
                             'game_id': game_id,
@@ -145,25 +178,29 @@ class VegasDataCollector:
                 logger.error(f"Error processing game data: {e}")
                 continue
 
-        # Calculate implied team scores (for player weighting)
+        # Sort high-total games by total (highest first)
+        high_total_games.sort(key=lambda x: x['total'], reverse=True)
+
+        # Calculate implied team scores for player weighting
         for game_id, game_data in processed_games.items():
             self._calculate_implied_scores(game_data)
+
+        logger.info(f"✅ Processed {len(processed_games)} valid games with {len(high_total_games)} high-total games")
 
         return {
             'games': processed_games,
             'high_total_games': high_total_games,
-            'avg_total': sum(g['total_points'] for g in processed_games.values()) / len(
-                processed_games) if processed_games else 45.0,
+            'avg_total': sum(g['total_points'] for g in processed_games.values()) / len(processed_games) if processed_games else 45.5,
             'total_games': len(processed_games),
             'data_source': 'real_vegas_api'
         }
 
     def _calculate_implied_scores(self, game_data: Dict):
         """Calculate implied team scores from total and spread"""
-        total = game_data.get('total_points', 45)
-        spread = game_data.get('spread', 0) or 0
+        total = safe_float(game_data.get('total_points'), 45.5)
+        spread = safe_float(game_data.get('spread'), 0.0)
 
-        # Home team implied score
+        # Calculate implied scores
         home_implied = (total - spread) / 2
         away_implied = (total + spread) / 2
 
@@ -177,7 +214,7 @@ class VegasDataCollector:
             'Buffalo Bills': 'BUF', 'Miami Dolphins': 'MIA',
             'New England Patriots': 'NE', 'New York Jets': 'NYJ',
 
-            # AFC North  
+            # AFC North
             'Baltimore Ravens': 'BAL', 'Cincinnati Bengals': 'CIN',
             'Cleveland Browns': 'CLE', 'Pittsburgh Steelers': 'PIT',
 
@@ -208,77 +245,60 @@ class VegasDataCollector:
 
         return team_mapping.get(team_name, team_name)
 
-    def _get_enhanced_fallback_odds(self) -> Dict[str, Any]:
-        """Enhanced fallback with realistic game totals"""
-        logger.info("📊 Using enhanced fallback Vegas data")
+    def _get_scalable_fallback(self) -> Dict[str, Any]:
+        """SCALABLE: No hardcoded games - just return reasonable defaults"""
+        logger.info("📊 Using scalable fallback - no hardcoded matchups")
 
-        # Realistic NFL game totals based on 2024 averages
-        fallback_games = {
-            'BUF@MIA': {
-                'game_id': 'BUF@MIA', 'home_team': 'MIA', 'away_team': 'BUF',
-                'total_points': 48.5, 'spread': -2.5, 'home_implied_score': 25.5, 'away_implied_score': 23.0
-            },
-            'KC@LAC': {
-                'game_id': 'KC@LAC', 'home_team': 'LAC', 'away_team': 'KC',
-                'total_points': 50.0, 'spread': 3.0, 'home_implied_score': 23.5, 'away_implied_score': 26.5
-            },
-            'DET@GB': {
-                'game_id': 'DET@GB', 'home_team': 'GB', 'away_team': 'DET',
-                'total_points': 49.5, 'spread': -1.0, 'home_implied_score': 25.3, 'away_implied_score': 24.3
-            },
-            'BAL@PIT': {
-                'game_id': 'BAL@PIT', 'home_team': 'PIT', 'away_team': 'BAL',
-                'total_points': 43.5, 'spread': 2.5, 'home_implied_score': 20.5, 'away_implied_score': 23.0
-            }
-        }
-
-        high_total_games = [
-            {'game_id': 'KC@LAC', 'total': 50.0, 'teams': ['KC', 'LAC']},
-            {'game_id': 'DET@GB', 'total': 49.5, 'teams': ['DET', 'GB']},
-            {'game_id': 'BUF@MIA', 'total': 48.5, 'teams': ['BUF', 'MIA']}
-        ]
-
+        # Return empty games but with reasonable league averages for multipliers
         return {
-            'games': fallback_games,
-            'high_total_games': high_total_games,
-            'avg_total': 47.9,
-            'total_games': len(fallback_games),
-            'data_source': 'enhanced_fallback'
+            'games': {},  # No hardcoded games
+            'high_total_games': [],  # No fake high-total games
+            'avg_total': 45.5,  # Reasonable NFL average
+            'total_games': 0,
+            'data_source': 'scalable_fallback'
         }
 
     def get_game_environment_factors(self, vegas_data: Dict) -> Dict[str, float]:
-        """Calculate game environment multipliers for DFS optimization"""
+        """Calculate game environment multipliers - gracefully handles no Vegas data"""
 
         game_factors = {}
         games = vegas_data.get('games', {})
-        avg_total = vegas_data.get('avg_total', 45.0)
+
+        # If no Vegas data, return neutral multipliers (1.0x for all teams)
+        if not games:
+            logger.info("📊 No Vegas data available - using neutral team multipliers (1.0x)")
+            return {}  # Empty dict means no multipliers applied
+
+        avg_total = vegas_data.get('avg_total', 45.5)
 
         for game_id, game_data in games.items():
-            total = game_data.get('total_points', avg_total)
-            spread = abs(game_data.get('spread', 0))
+            # FIXED: Use safe_float to handle None values
+            total = safe_float(game_data.get('total_points'), avg_total)
+            spread = safe_float(game_data.get('spread'), 0.0)
+            spread = abs(spread)  # Now safe since we know spread is a float
 
-            # TOTAL FACTOR: Higher totals = higher DFS scoring
+            # TOTAL FACTOR: Higher totals = higher DFS scoring potential
             total_factor = 1.0
             if total >= 50:
-                total_factor = 1.35  # MAJOR boost for 50+ games
+                total_factor = 1.35  # Elite scoring environment
             elif total >= 47:
-                total_factor = 1.25  # Significant boost for 47+ games  
+                total_factor = 1.25  # High scoring
             elif total >= 44:
-                total_factor = 1.10  # Moderate boost
+                total_factor = 1.10  # Above average
             elif total <= 40:
-                total_factor = 0.85  # Penalty for low totals
+                total_factor = 0.85  # Low scoring
 
-            # SPREAD FACTOR: Close games = more passing = higher DFS
+            # SPREAD FACTOR: Close games = more passing = higher DFS upside
             spread_factor = 1.0
             if spread <= 3:
-                spread_factor = 1.15  # Close games = shootouts
+                spread_factor = 1.15  # Competitive games
             elif spread >= 10:
-                spread_factor = 0.90  # Blowouts = fewer points
+                spread_factor = 0.90  # Potential blowouts
 
             # COMBINED FACTOR
             combined_factor = total_factor * spread_factor
 
-            # Apply to both teams
+            # Apply to both teams in the game
             home_team = game_data.get('home_team')
             away_team = game_data.get('away_team')
 
@@ -292,7 +312,7 @@ class VegasDataCollector:
         return game_factors
 
 
-# Integration function for data_collector.py
+# Integration functions for data_collector.py
 async def get_vegas_odds_data() -> Dict[str, Any]:
     """Get Vegas odds data for DFS optimization"""
     collector = VegasDataCollector()

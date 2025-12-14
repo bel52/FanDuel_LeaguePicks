@@ -1,20 +1,59 @@
 """
-Simplified configuration settings for on-demand DFS optimization
-Removed all scheduling-related config
+Enhanced configuration settings for on-demand DFS optimization
+FIXED: Better environment variable loading and validation
 """
 import os
 from pathlib import Path
 from typing import List, Dict
 from datetime import datetime
 
-# Load environment variables from .env file
-try:
-    from dotenv import load_dotenv
+# ENHANCED environment loading with validation
+def load_environment_variables():
+    """Load and validate environment variables with better error handling"""
+    env_loaded = False
 
-    load_dotenv()
-    print("✅ Environment variables loaded from .env file")
-except ImportError:
-    print("⚠️ python-dotenv not installed, using system environment variables only")
+    try:
+        from dotenv import load_dotenv
+
+        # Try multiple .env file locations
+        project_dir = Path(__file__).parent
+        env_files = [
+            project_dir / ".env",
+            project_dir / ".env.local",
+            Path.home() / "fanduel" / ".env"
+        ]
+
+        for env_file in env_files:
+            if env_file.exists():
+                load_dotenv(env_file, override=True)
+                print(f"✅ Loaded environment from: {env_file}")
+                env_loaded = True
+                break
+
+        if not env_loaded:
+            print(f"⚠️ No .env file found in: {[str(f) for f in env_files]}")
+
+    except ImportError:
+        print("⚠️ python-dotenv not installed, using system environment variables only")
+
+    # Validate critical API keys
+    openai_key = os.getenv('OPENAI_API_KEY', '')
+    anthropic_key = os.getenv('ANTHROPIC_API_KEY', '')
+
+    if openai_key and len(openai_key) > 20:
+        print(f"✅ OpenAI API key loaded (starts with: {openai_key[:20]}...)")
+    else:
+        print("❌ OpenAI API key missing or invalid")
+
+    if anthropic_key and len(anthropic_key) > 20:
+        print(f"✅ Anthropic API key loaded (starts with: {anthropic_key[:20]}...)")
+    else:
+        print("❌ Anthropic API key missing or invalid")
+
+    return env_loaded
+
+# Load environment variables immediately
+load_environment_variables()
 
 # Base directories
 BASE_DIR = Path(__file__).parent
@@ -39,9 +78,9 @@ API_PORT = 8020
 
 # DFS Platform Settings
 PLATFORM = "fanduel"
-CONTEST_TYPES = ["gpp", "cash", "contrarian", "bestball"]
+CONTEST_TYPES = ["gpp", "cash", "contrarian", "bestball", "friends_league", "h2h"]
 
-# AI Configuration
+# AI Configuration with validation
 AI_ENABLED = os.getenv('AI_ENABLED', 'true').lower() == 'true'
 AI_WEEKLY_BUDGET = float(os.getenv('AI_WEEKLY_BUDGET', '15.0'))
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -99,9 +138,9 @@ WEATHER_API = {
 
 # Rate Limits
 RATE_LIMITS = {
-    'espn_api': 60,  # requests per minute
-    'weather_api': 30,  # requests per minute
-    'odds_api': 500  # requests per day
+    'espn_api': 60,
+    'weather_api': 30,
+    'odds_api': 500
 }
 
 # Validation Thresholds
@@ -155,6 +194,11 @@ POSITION_LIMITS = {
     'D': {'min': 1, 'max': 1}
 }
 
+# Head-to-Head Single Game Settings
+H2H_ROSTER_SIZE = 6
+H2H_MVP_MULTIPLIER = 1.5
+H2H_SALARY_CAP = 60000
+
 # Weather impact thresholds
 WIND_SPEED_THRESHOLD = 15
 PRECIPITATION_THRESHOLD = 0.1
@@ -191,10 +235,39 @@ OPTIMIZATION_CONFIG = {
         'variance_weight': 0.4,
         'ownership_threshold': 15.0,
         'correlation_bonus': 1.3
+    },
+    'h2h': {
+        'variance_weight': 0.35,
+        'ownership_threshold': 20.0,
+        'correlation_bonus': 1.5,
+        'mvp_multiplier': 1.5,
+        'roster_size': 6,
+        'salary_cap': 60000
     }
 }
 
+# NFL Defensive Rankings (Week 6 2025 - Update weekly)
+# Based on DVOA, yards/game, and points allowed
+DEFENSIVE_RANKINGS = {
+    'pass_defense': {
+        'top_5': ['SF', 'BAL', 'PIT', 'BUF', 'NYJ'],        # Elite pass D (penalty for WR/TE/QB)
+        'bottom_5': ['LAC', 'WAS', 'NO', 'NYG', 'CAR']      # Weak pass D (boost for WR/TE/QB)
+    },
+    'run_defense': {
+        'top_5': ['BAL', 'SF', 'CLE', 'DET', 'PHI'],        # Elite run D (penalty for RB)
+        'bottom_5': ['CAR', 'NYG', 'TEN', 'IND', 'DEN']     # Weak run D (boost for RB)
+    }
+}
+
+# Matchup adjustment factors
+MATCHUP_ADJUSTMENTS = {
+    'elite_matchup': 1.10,      # +10% vs bottom-5 defense
+    'good_matchup': 1.05,       # +5% vs below-average defense
+    'poor_matchup': 0.95,       # -5% vs above-average defense  
+    'terrible_matchup': 0.90    # -10% vs top-5 defense
+}
+
 # Print loaded config summary on import
-print(
-    f"Config loaded - AI: {AI_ENABLED}, OpenAI: {'✅' if OPENAI_API_KEY else '❌'}, Anthropic: {'✅' if ANTHROPIC_API_KEY else '❌'}")
-print("✅ Simplified config loaded - no scheduling, on-demand only")
+print(f"Config loaded - AI: {AI_ENABLED}, OpenAI: {'✅' if OPENAI_API_KEY else '❌'}, Anthropic: {'✅' if ANTHROPIC_API_KEY else '❌'}")
+print("✅ Enhanced config loaded with improved environment handling")
+print("✅ Defensive rankings loaded for matchup adjustments")
