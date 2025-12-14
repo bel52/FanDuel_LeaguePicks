@@ -67,3 +67,18 @@ __pycache__/
 .vscode/
 .idea/
 .notebooks/
+
+# generated / runtime data
+data/output/
+data/weekly/
+data/targets/
+data/executed/
+data/fantasypros/
+*.log
+*.backup
+
+# local db/csv artifacts (keep templates only)
+data/*.db
+data/*.csv
+!data/*.template.csv
+!data/**/.gitkeep
