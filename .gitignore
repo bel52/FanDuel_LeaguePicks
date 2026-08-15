@@ -8,3 +8,7 @@ data/contests/
 data/calibration_*.json
 *.tar
 *.db
+band.py
+diag.py
+realtest.py
+*.log
