@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+data/lineups/
+data/contests/
+data/calibration_*.json
+*.tar
+*.db
