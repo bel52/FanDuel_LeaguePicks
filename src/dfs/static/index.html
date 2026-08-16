@@ -131,12 +131,17 @@ tr.me td{color:var(--lamp);font-weight:600}
     <label>Season <input type="number" name="season" value="2026" required></label>
     <label>Week <input type="number" name="week" min="1" max="22" required></label>
     <label>Contest type
-      <select name="profile">
-        <option value="friends_league">League (Sunday main)</option>
-        <option value="showdown_friends">Single game vs friends</option>
-        <option value="h2h">Head-to-head</option>
-        <option value="public_gpp">Public tournament</option>
+      <select name="profile" id="b-profile">
+        <optgroup label="LEAGUE — learns from league history">
+          <option value="friends_league">Leather League — Sunday Main</option>
+          <option value="showdown_friends">League friends — single game</option>
+        </optgroup>
+        <optgroup label="NON-LEAGUE — pure win probability, no league data">
+          <option value="h2h">Public head-to-head</option>
+          <option value="public_gpp">Public Sunday Main / tournament</option>
+        </optgroup>
       </select></label>
+    <label>Contest name <input type="text" name="contest" value="Leather League"></label>
     <label>Field size <input type="number" name="field" value="12"></label>
     <label>Entry fee $ <input type="number" step="0.01" name="entry_fee" value="0"></label>
     <label>Prize pool $ (one-offs) <input type="text" name="prize_pool" placeholder="auto"></label>
@@ -268,6 +273,14 @@ async function runJob(form,outSel,url,linksSel){
   }catch(e){out.textContent='Error: '+e;btn.disabled=false}
 }
 $('#f-build').onsubmit=e=>{e.preventDefault();runJob(e.target,'#o-build','/api/build','#build-links')};
+/* league profiles use the league contest name; non-league gets a distinct one so
+   league standings and ownership can never be polluted by side action */
+$('#b-profile').onchange=()=>{
+  const f=document.querySelector('#f-build'),p=f.profile.value;
+  if(p==='friends_league'){f.contest.value='Leather League';f.field.value=12;f.entry_fee.value=0}
+  else if(p==='showdown_friends'){f.contest.value='League Showdown';f.field.value=2;f.entry_fee.value=5}
+  else{f.contest.value=(p==='h2h'?'Public H2H':'Public GPP');f.field.value=(p==='h2h'?2:100);f.entry_fee.value=5}
+};
 $('#f-swap').onsubmit=e=>{e.preventDefault();runJob(e.target,'#o-swap','/api/swap','#swap-links')};
 $('#f-capture').onsubmit=e=>{e.preventDefault();runJob(e.target,'#o-capture','/api/capture',null)};
 /* week picker */
@@ -302,12 +315,14 @@ function goBuild(msg){
 function pickMain(season,week,n){
   const f=document.querySelector('#f-build');
   f.season.value=season;f.week.value=week;f.profile.value='friends_league';
+  f.contest.value='Leather League';
   f.field.value=12;f.entry_fee.value=0;f.prize_pool.value='';
   goBuild(`<b>Sunday Main, Week ${week}</b> (${n} games) — league build configured. Now download the player list from the league contest lobby and drop it below.`);
 }
 function pickGame(season,week,a,b,ko){
   const f=document.querySelector('#f-build');
   f.season.value=season;f.week.value=week;f.profile.value='showdown_friends';
+  f.contest.value=a+' @ '+b+' W'+week;
   f.field.value=2;f.entry_fee.value=5;
   goBuild(`<b>${a} @ ${b}</b> · ${ko} — single-game build configured (adjust field size + entry to match the contest). Download the player list from <b>that game's</b> single-game contest lobby and drop it below.`);
 }

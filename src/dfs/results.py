@@ -222,13 +222,25 @@ class ResultLog:
                         "corr": round(float(np.corrcoef(p, a)[0, 1]), 3) if len(sel) > 2 else None}
         return out
 
-    def measured_ownership(self, season: int, weeks: int = 0) -> dict[str, float]:
-        """Average measured ownership by player across logged weeks."""
+    def measured_ownership(self, season: int, weeks: int = 0,
+                           contest_like: str = "%") -> dict[str, float]:
+        """Average measured ownership by player across logged weeks.
+
+        contest_like scopes the model: league builds must learn ONLY from league
+        contests — a public H2H's ownership says nothing about how the family drafts.
+        """
         with self._c() as c:
-            q = "SELECT player, AVG(drafted_pct) v, COUNT(*) n FROM ownership WHERE season=?"
-            args = [season]
+            q = ("SELECT player, AVG(drafted_pct) v FROM ownership "
+                 "WHERE season=? AND contest LIKE ?")
+            args = [season, contest_like]
             if weeks:
                 q += " AND week>=?"
                 args.append(weeks)
             rows = c.execute(q + " GROUP BY player", args).fetchall()
         return {r["player"]: round(r["v"], 2) for r in rows}
+
+    def ownership_week_count(self, season: int, contest_like: str = "%") -> int:
+        with self._c() as c:
+            return c.execute("SELECT COUNT(DISTINCT week) FROM ownership "
+                             "WHERE season=? AND contest LIKE ?",
+                             (season, contest_like)).fetchone()[0]

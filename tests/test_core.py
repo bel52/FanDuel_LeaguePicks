@@ -986,3 +986,30 @@ def test_calendar_endpoint_and_override():
     r = c.get("/api/calendar").json()
     assert r["season"] >= 2025 and 1 <= r["week"] <= 22
     assert r["reason"] and r["label"].startswith(str(r["season"]))
+
+
+# ---- league vs non-league isolation ----
+def test_public_contests_cannot_pollute_league_standings(tmp_path):
+    """A captured public H2H must not appear in Leather League standings or drive
+    the league objective."""
+    log = ResultLog(tmp_path / "r.db")
+    cap = parse_contest(CONTEST_FIX, 2025, 18, contest="Leather League")
+    log.log_capture(cap)
+    pub = parse_contest(CONTEST_FIX, 2025, 17, contest="Public H2H")
+    log.log_capture(pub)
+    league = log.standings(2025, contest_like="Leather League")
+    everything = log.standings(2025)
+    assert all(s.weeks == 1 for s in league), "league rows must count league weeks only"
+    assert sum(s.weeks for s in everything) == 2 * len(league)
+    ctx = log.season_context(2025, me="brettleath", contest_like="Leather League")
+    assert ctx.weeks_played == 1
+
+
+def test_league_ownership_scoped_to_league(tmp_path):
+    log = ResultLog(tmp_path / "r.db")
+    log.log_capture(parse_contest(CONTEST_FIX, 2025, 18, contest="Leather League"))
+    log.log_capture(parse_contest(CONTEST_FIX, 2025, 17, contest="Public GPP"))
+    league_own = log.measured_ownership(2025, contest_like="Leather League")
+    assert league_own
+    assert log.ownership_week_count(2025, contest_like="Leather League") == 1
+    assert log.ownership_week_count(2025) == 2

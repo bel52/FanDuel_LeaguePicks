@@ -262,11 +262,14 @@ def api_job(job_id: str):
 
 
 @app.get("/api/standings")
-def api_standings(season: int, me: str = "", weeks_total: int = 21):
-    me = me or load_settings()["me"]
+def api_standings(season: int, me: str = "", weeks_total: int = 21,
+                  contest: str = ""):
+    s = load_settings()
+    me = me or s["me"]
+    contest = contest or s["contest"]        # league scope by default
     rl = ResultLog(DB)
-    st = rl.standings(season)
-    ctx = rl.season_context(season, me, weeks_total)
+    st = rl.standings(season, contest_like=contest)
+    ctx = rl.season_context(season, me, weeks_total, contest_like=contest)
     w = weights_for("friends_league", ctx)
     return {
         "standings": [{"entrant": s.entrant, "total": round(s.total_points, 2),

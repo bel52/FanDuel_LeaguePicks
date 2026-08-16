@@ -131,14 +131,12 @@ def cmd_build(a) -> int:
     print(f"Simulating {a.sims} correlated slate outcomes...")
     sim = SlateSimulator(slate, dist, n_sims=a.sims, seed=a.seed)
     measured, own_weeks = None, 0
-    if a.log_db and Path(a.log_db).exists() and a.profile == "friends_league":
+    if a.log_db and Path(a.log_db).exists() and a.profile in ("friends_league",
+                                                               "showdown_friends"):
         rl_own = ResultLog(a.log_db)
-        measured = rl_own.measured_ownership(a.season) or None
+        measured = rl_own.measured_ownership(a.season, contest_like=a.contest) or None
         if measured:
-            with rl_own._c() as _c:
-                own_weeks = _c.execute(
-                    "SELECT COUNT(DISTINCT week) FROM ownership WHERE season=?",
-                    (a.season,)).fetchone()[0]
+            own_weeks = rl_own.ownership_week_count(a.season, contest_like=a.contest)
     field = build_field_ensemble(slate, spec, n_opponents=spec.field_size - 1,
                                  n_fields=a.fields, seed=a.seed + 1,
                                  measured_ownership=measured,
@@ -151,8 +149,11 @@ def cmd_build(a) -> int:
 
     ctx = None
     if a.auto_context and a.log_db and Path(a.log_db).exists():
+        # Scoped to THIS contest's history: the league objective must be driven by
+        # league results only, never by public/side contests sharing the database.
         ctx = ResultLog(a.log_db).season_context(a.season, me=a.me,
-                                                 weeks_total=a.weeks_total)
+                                                 weeks_total=a.weeks_total,
+                                                 contest_like=a.contest)
         ctx.weekly_prize = a.weekly_prize
         ctx.grand_prizes = tuple(float(x) for x in a.grand_prizes.split(",") if x)
         ctx.field_size = spec.field_size
@@ -386,7 +387,7 @@ def cmd_capture(a) -> int:
 
 def cmd_standings(a) -> int:
     rl = ResultLog(a.log_db)
-    st = rl.standings(a.season)
+    st = rl.standings(a.season, contest_like=a.contest)
     if not st:
         print("No logged results yet. Run `capture` on a contest results page first.")
         return 0
@@ -396,7 +397,7 @@ def cmd_standings(a) -> int:
         me = " <-- you" if s.entrant == a.me else ""
         print(f"  {i:2d} {s.entrant:18s} {s.total_points:8.1f} {s.avg:7.1f} "
               f"{s.weeks:4d} {s.wins:5d} {s.best:7.1f}{me}")
-    ctx = rl.season_context(a.season, a.me, a.weeks_total)
+    ctx = rl.season_context(a.season, a.me, a.weeks_total, contest_like=a.contest)
     w = weights_for("friends_league", ctx)
     print(f"\nOBJECTIVE for next build (week {ctx.weeks_played + 1} of {ctx.weeks_total}):")
     print(f"  {w.rationale}")
@@ -481,6 +482,8 @@ def main(argv=None) -> int:
     st.add_argument("--season", type=int, required=True)
     st.add_argument("--me", default="xleathy")
     st.add_argument("--weeks-total", type=int, default=21)
+    st.add_argument("--contest", default="Leather League",
+                    help="scope standings to this contest (league by default)")
     st.add_argument("--log-db", default="data/results.db")
     st.set_defaults(func=cmd_standings)
 
