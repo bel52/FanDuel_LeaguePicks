@@ -31,6 +31,7 @@ from .injuries import (records_from_fantasypros, records_from_slate, merge,
 from .export import export_upload_csv, lineup_card, pushover_body
 from .results import ResultLog
 from .kickoffs import KickoffSchedule
+from .nflcal import current_week
 from .lateswap import propose_swap
 
 DATA = Path(__file__).resolve().parents[2] / "data"
@@ -416,8 +417,10 @@ def main(argv=None) -> int:
 
     b = sub.add_parser("build", help="build ranked lineups from a FanDuel slate CSV")
     b.add_argument("--csv", required=True)
-    b.add_argument("--season", type=int, required=True)
-    b.add_argument("--week", type=int, required=True)
+    b.add_argument("--season", type=int, default=None,
+                   help="default: current NFL season (auto-detected)")
+    b.add_argument("--week", type=int, default=None,
+                   help="default: current NFL week (auto-detected)")
     b.add_argument("--slate-id", default=None)
     b.add_argument("--contest", default="Leather League")
     b.add_argument("--profile", default="friends_league",
@@ -483,8 +486,10 @@ def main(argv=None) -> int:
 
     sw = sub.add_parser("swap", help="Sunday finalize: lock-aware late-swap check of the logged lineup")
     sw.add_argument("--csv", required=True)
-    sw.add_argument("--season", type=int, required=True)
-    sw.add_argument("--week", type=int, required=True)
+    sw.add_argument("--season", type=int, default=None,
+                   help="default: current NFL season (auto-detected)")
+    sw.add_argument("--week", type=int, default=None,
+                   help="default: current NFL week (auto-detected)")
     sw.add_argument("--slate-id", default=None)
     sw.add_argument("--contest", default="Leather League")
     sw.add_argument("--profile", default="friends_league", choices=[p.value for p in Profile])
@@ -504,6 +509,16 @@ def main(argv=None) -> int:
     sw.set_defaults(func=cmd_swap)
 
     a = ap.parse_args(argv)
+    # Season/week default to the live NFL calendar; an explicit flag always wins so
+    # Brett can build or re-check any week for testing or review.
+    if hasattr(a, "week"):
+        if getattr(a, "season", None) is None or getattr(a, "week", None) is None:
+            wi = current_week(season_hint=getattr(a, "season", None))
+            if getattr(a, "season", None) is None:
+                a.season = wi.season
+            if getattr(a, "week", None) is None:
+                a.week = wi.week
+            print(f"Calendar: {wi.summary()}")
     if getattr(a, "slate_id", "SKIP") is None and hasattr(a, "week"):
         a.slate_id = f"{a.season}-w{a.week:02d}"
     try:

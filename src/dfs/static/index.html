@@ -85,7 +85,7 @@ tr.me td{color:var(--lamp);font-weight:600}
 <div class="wrap">
 <header>
   <h1>Leather League <span class="yr">Ops</span></h1>
-  <p class="sub">Build Wednesday. Sweep Sunday 11:30. Capture Monday. Every number traceable.</p>
+  <p class="sub">Build Wednesday. Sweep Sunday 11:30. Capture Monday. Season and week fill in automatically — change them any time.</p>
   <nav id="tabs">
     <button data-t="build" class="on">Build</button>
     <button data-t="swap">Sunday swap</button>
@@ -187,18 +187,26 @@ async function ticker(){
     try{const s=await (await fetch('/api/standings?season='+($('#s-season')?.value||2026))).json();
       if(s.objective) obj=`objective <b>$${s.objective.w_points}/pt</b> · <b>$${s.objective.w_win}/win</b> · week ${s.context.weeks_played+1}`;
     }catch(e){}
-    $('#ticker').innerHTML=`${cal}${obj?' &nbsp;·&nbsp; '+obj:''} &nbsp;·&nbsp; <span>${new Date(h.time).toLocaleString()}</span>`;
+    let wk='';
+    try{const c=await (await fetch('/api/calendar')).json();
+      const d=c.days_to_kickoff;
+      wk=`<b>${c.label}</b> — ${c.reason}${d!==null&&d>0?` · kickoff in ${d}d`:''}`;
+    }catch(e){}
+    $('#ticker').innerHTML=`${wk?wk+' &nbsp;·&nbsp; ':''}${cal}${obj?' &nbsp;·&nbsp; '+obj:''}`;
   }catch(e){$('#ticker').innerHTML='<span class="bad">backend unreachable</span>'}
 }
 ticker();
 /* settings prefill */
 (async()=>{try{
   const s=await (await fetch('/api/settings')).json();
+  const c=await (await fetch('/api/calendar')).json();
   const f=document.querySelector('#f-build');
-  f.season.value=s.season; f.field.value=s.field;
-  document.querySelector('#f-swap').season.value=s.season;
-  document.querySelector('#f-capture').season.value=s.season;
-  $('#s-season').value=s.season; $('#s-me').value=s.me;
+  f.season.value=c.season; f.week.value=c.week; f.field.value=s.field;
+  const sw=document.querySelector('#f-swap');  sw.season.value=c.season; sw.week.value=c.week;
+  const cp=document.querySelector('#f-capture');cp.season.value=c.season;
+  // capture is for the week just played, which on Tue+ is the previous one
+  cp.week.value=Math.max(1,c.week-(c.reason.includes('next slate')?1:0));
+  $('#s-season').value=c.season; $('#s-me').value=s.me;
 }catch(e){}})();
 $('#s-save').onclick=async()=>{
   await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},

@@ -84,6 +84,18 @@ def index() -> str:
     return (STATIC / "index.html").read_text()
 
 
+@app.get("/api/calendar")
+def api_calendar(season: int | None = None) -> dict:
+    """What week the system thinks it is. The UI prefills from this; every form
+    still accepts an override."""
+    from .nflcal import current_week
+    wi = current_week(season_hint=season)
+    return {"season": wi.season, "week": wi.week, "reason": wi.reason,
+            "label": wi.label, "summary": wi.summary(),
+            "days_to_kickoff": wi.days_to_kickoff(),
+            "preseason": wi.is_preseason, "postseason": wi.is_postseason}
+
+
 @app.get("/api/settings")
 def api_settings_get() -> dict:
     return load_settings()
@@ -110,8 +122,8 @@ def health() -> dict:
 
 
 @app.post("/api/build")
-async def api_build(csv: UploadFile = File(...), season: int = Form(...),
-                    week: int = Form(...), profile: str = Form("friends_league"),
+async def api_build(csv: UploadFile = File(...), season: int = Form(0),
+                    week: int = Form(0), profile: str = Form("friends_league"),
                     leaderboard: str = Form("total_scores"),
                     field: int = Form(12), entry_fee: float = Form(0.0),
                     weekly_prize: float = Form(12.84),
@@ -119,6 +131,10 @@ async def api_build(csv: UploadFile = File(...), season: int = Form(...),
                     weeks_total: int = Form(21), pool: int = Form(120),
                     show: int = Form(3), contest: str = Form("Leather League"),
                     prize_pool: str = Form(""), strict_injuries: bool = Form(False)):
+    if not season or not week:
+        from .nflcal import current_week
+        wi = current_week()
+        season, week = season or wi.season, week or wi.week
     UPLOADS.mkdir(parents=True, exist_ok=True)
     dest = UPLOADS / f"{season}-w{week:02d}-{uuid.uuid4().hex[:6]}.csv"
     dest.write_bytes(await csv.read())
@@ -142,8 +158,12 @@ async def api_build(csv: UploadFile = File(...), season: int = Form(...),
 
 @app.post("/api/swap")
 async def api_swap(csv: UploadFile | None = File(None),
-                   slate_csv: str = Form(""), season: int = Form(...),
-                   week: int = Form(...), contest: str = Form("Leather League")):
+                   slate_csv: str = Form(""), season: int = Form(0),
+                   week: int = Form(0), contest: str = Form("Leather League")):
+    if not season or not week:
+        from .nflcal import current_week
+        wi = current_week()
+        season, week = season or wi.season, week or wi.week
     if csv is not None:
         UPLOADS.mkdir(parents=True, exist_ok=True)
         dest = UPLOADS / f"swap-{season}-w{week:02d}-{uuid.uuid4().hex[:6]}.csv"
@@ -166,8 +186,12 @@ async def api_swap(csv: UploadFile | None = File(None),
 
 @app.post("/api/capture")
 async def api_capture(page: UploadFile | None = File(None),
-                      text: str = Form(""), season: int = Form(...),
-                      week: int = Form(...), contest: str = Form("Leather League")):
+                      text: str = Form(""), season: int = Form(0),
+                      week: int = Form(0), contest: str = Form("Leather League")):
+    if not season or not week:
+        from .nflcal import current_week
+        wi = current_week()
+        season, week = season or wi.season, week or wi.week
     UPLOADS.mkdir(parents=True, exist_ok=True)
     dest = UPLOADS / f"capture-{season}-w{week:02d}.txt"
     if page is not None:

@@ -935,3 +935,54 @@ def test_injury_detail_is_human_readable():
                                       "comment": "expected to test pregame"}])
     d = recs[_norm("X Y")].detail
     assert "Ankle" in d and "practice LP" in d and "50% to play" in d
+
+
+# ---- NFL calendar: the system knows what week it is ----
+from dfs.nflcal import current_week, WeekInfo
+from zoneinfo import ZoneInfo as _ZI
+
+_ET = _ZI("America/New_York")
+
+
+def _at(y, m, d, h=12):
+    return datetime(y, m, d, h, tzinfo=_ET).astimezone(timezone.utc)
+
+
+def test_preseason_prepares_week_one():
+    w = current_week(_at(2026, 8, 16))
+    assert w.season == 2026 and w.week == 1 and w.is_preseason
+    assert w.days_to_kickoff(_at(2026, 8, 16)) > 20
+
+
+def test_week_holds_through_monday_night():
+    """MNF still belongs to the week that just played."""
+    assert current_week(_at(2026, 9, 14, 23)).week == 1
+
+
+def test_week_rolls_tuesday_morning():
+    """New FanDuel slates post Tue/Wed — that is the handoff."""
+    assert current_week(_at(2026, 9, 15, 7)).week == 2
+
+
+def test_january_belongs_to_prior_season():
+    w = current_week(_at(2027, 1, 5))
+    assert w.season == 2026 and w.week >= 17
+
+
+def test_midseason_week_is_sane():
+    w = current_week(_at(2026, 10, 20))
+    assert w.season == 2026 and 5 <= w.week <= 8
+
+
+def test_season_hint_overrides_detection():
+    w = current_week(_at(2026, 8, 16), season_hint=2025)
+    assert w.season == 2025
+
+
+def test_calendar_endpoint_and_override():
+    from fastapi.testclient import TestClient
+    from dfs.web import app
+    c = TestClient(app)
+    r = c.get("/api/calendar").json()
+    assert r["season"] >= 2025 and 1 <= r["week"] <= 22
+    assert r["reason"] and r["label"].startswith(str(r["season"]))
