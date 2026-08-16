@@ -96,6 +96,51 @@ def api_calendar(season: int | None = None) -> dict:
             "preseason": wi.is_preseason, "postseason": wi.is_postseason}
 
 
+@app.get("/api/schedule")
+def api_schedule(season: int | None = None, week: int | None = None) -> dict:
+    """The week's games grouped into slate windows, for the Week picker."""
+    from .nflcal import current_week
+    from .kickoffs import KickoffSchedule, ET
+    wi = current_week(season_hint=season)
+    season, week = season or wi.season, week or wi.week
+    try:
+        sched = KickoffSchedule.from_nflverse(season, week)
+    except Exception as e:
+        return {"season": season, "week": week, "windows": [], "error": str(e)}
+    seen, games = set(), []
+    for g in sched.by_team.values():
+        key = tuple(sorted((g.team, g.opponent)))
+        if key in seen:
+            continue
+        seen.add(key)
+        et = g.kickoff_utc.astimezone(ET)
+        games.append({"away": g.opponent if g.game_id.split("_")[-2:] and
+                              g.game_id.endswith(g.team) else g.team,
+                      "home": g.team, "teams": list(key),
+                      "kickoff_et": et.strftime("%a %b %-d, %-I:%M %p"),
+                      "iso": g.kickoff_utc.isoformat(),
+                      "dow": et.weekday(), "hour": et.hour,
+                      "game_id": g.game_id, "started": g.locked()})
+    def window(g):
+        d, h = g["dow"], g["hour"]
+        if d == 3: return "Thursday Night"
+        if d == 5: return "Saturday"
+        if d == 6 and h < 16: return "Sunday Early"
+        if d == 6 and h < 19: return "Sunday Late"
+        if d == 6: return "Sunday Night"
+        if d == 0: return "Monday Night"
+        return "Other"
+    order = ["Thursday Night", "Saturday", "Sunday Early", "Sunday Late",
+             "Sunday Night", "Monday Night", "Other"]
+    grouped: dict[str, list] = {}
+    for g in sorted(games, key=lambda x: x["iso"]):
+        grouped.setdefault(window(g), []).append(g)
+    n_sun = sum(len(grouped.get(k, [])) for k in ("Sunday Early", "Sunday Late"))
+    return {"season": season, "week": week, "label": f"{season} Week {week}",
+            "sunday_main_games": n_sun,
+            "windows": [{"name": k, "games": grouped[k]} for k in order if k in grouped]}
+
+
 @app.get("/api/settings")
 def api_settings_get() -> dict:
     return load_settings()

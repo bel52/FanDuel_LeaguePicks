@@ -77,6 +77,21 @@ tr.me td{color:var(--lamp);font-weight:600}
 .card h3{font:600 16px 'Barlow Condensed';letter-spacing:.06em;text-transform:uppercase;margin:0 0 8px}
 .metrics{font:12.5px var(--mono);color:var(--dim);margin-bottom:8px}
 .metrics b{color:var(--live)}
+.win{margin-bottom:18px}
+.win h3{font:600 15px 'Barlow Condensed';letter-spacing:.08em;text-transform:uppercase;
+  color:var(--dim);margin:0 0 8px;display:flex;align-items:center;gap:10px}
+.win h3 .pick{font-size:12px;padding:4px 10px;border:1px solid var(--lamp);color:var(--lamp);
+  background:transparent;cursor:pointer;letter-spacing:.06em}
+.games{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
+.game{background:var(--turf-2);border:1px solid var(--line);padding:12px 14px;cursor:pointer;
+  display:flex;flex-direction:column;gap:4px;text-align:left;color:var(--chalk)}
+.game:hover{border-color:var(--lamp)}
+.game:focus-visible{outline:2px solid var(--lamp)}
+.game.dead{opacity:.45;cursor:not-allowed}
+.game .m{font:600 17px 'Barlow Condensed';letter-spacing:.04em}
+.game .k{font:11.5px var(--mono);color:var(--dim)}
+.sel-note{background:var(--turf-2);border-left:3px solid var(--lamp);padding:10px 14px;
+  margin:0 0 14px;font-size:13.5px;color:var(--chalk)}
 @media (prefers-reduced-motion:reduce){pre.out .spin::after{animation:none;content:'...'}}
 @media (max-width:640px){h1{font-size:26px}#ticker{gap:14px}}
 </style>
@@ -87,7 +102,8 @@ tr.me td{color:var(--lamp);font-weight:600}
   <h1>Leather League <span class="yr">Ops</span></h1>
   <p class="sub">Build Wednesday. Sweep Sunday 11:30. Capture Monday. Season and week fill in automatically — change them any time.</p>
   <nav id="tabs">
-    <button data-t="build" class="on">Build</button>
+    <button data-t="week" class="on">Week</button>
+    <button data-t="build">Build</button>
     <button data-t="swap">Sunday swap</button>
     <button data-t="capture">Capture results</button>
     <button data-t="season">Season</button>
@@ -96,7 +112,17 @@ tr.me td{color:var(--lamp);font-weight:600}
 </header>
 
 <main>
-<section id="t-build" class="on">
+<section id="t-week" class="on">
+  <h2>This week's slates</h2>
+  <p class="hint">Pick what you're playing. Sunday Main sets up the league build; any single game sets up a head-to-head/showdown build. Then download that contest's player list from FanDuel and drop it on the Build tab — everything else is pre-filled.</p>
+  <div class="actions" style="margin-bottom:14px">
+    <label style="flex-direction:row;align-items:center;gap:8px">Week
+      <input type="number" id="w-week" min="1" max="22" style="width:80px"></label>
+    <button class="go" id="w-load" type="button">Load</button>
+  </div>
+  <div id="w-body"><p class="hint">Loading schedule…</p></div>
+</section>
+<section id="t-build">
   <h2>Build lineups</h2>
   <p class="hint">Drop the FanDuel salary CSV (contest lobby → Download players list). The build pulls FantasyPros projections and Vegas team totals, sweeps injuries, simulates the slate, and ranks lineups by real prize dollars. Takes about a minute.</p>
   <form id="f-build">
@@ -244,6 +270,49 @@ async function runJob(form,outSel,url,linksSel){
 $('#f-build').onsubmit=e=>{e.preventDefault();runJob(e.target,'#o-build','/api/build','#build-links')};
 $('#f-swap').onsubmit=e=>{e.preventDefault();runJob(e.target,'#o-swap','/api/swap','#swap-links')};
 $('#f-capture').onsubmit=e=>{e.preventDefault();runJob(e.target,'#o-capture','/api/capture',null)};
+/* week picker */
+async function loadWeek(){
+  const wk=$('#w-week').value?('&week='+$('#w-week').value):'';
+  const s=await (await fetch('/api/schedule?x=1'+wk)).json();
+  if(!$('#w-week').value)$('#w-week').value=s.week;
+  if(s.error||!s.windows.length){$('#w-body').innerHTML='<p class="hint">Schedule unavailable: '+(s.error||'no games')+'</p>';return}
+  let h='';
+  for(const w of s.windows){
+    const sunday=w.name.startsWith('Sunday Early')||w.name.startsWith('Sunday Late');
+    h+=`<div class="win"><h3>${w.name}`;
+    if(w.name==='Sunday Early')h+=` <button class="pick" onclick="pickMain(${s.season},${s.week},${s.sunday_main_games})">Set up Sunday Main (league)</button>`;
+    h+='</h3><div class="games">';
+    for(const g of w.games){
+      h+=`<button class="game ${g.started?'dead':''}" ${g.started?'disabled':''}
+           onclick="pickGame(${s.season},${s.week},'${g.teams[0]}','${g.teams[1]}','${g.kickoff_et}')">
+           <span class="m">${g.teams[0]} @ ${g.teams[1]}</span>
+           <span class="k">${g.kickoff_et}${g.started?' · STARTED':''}</span></button>`;
+    }
+    h+='</div></div>';
+  }
+  $('#w-body').innerHTML=h;
+}
+function goBuild(msg){
+  document.querySelector('[data-t=build]').click();
+  const old=document.querySelector('.sel-note');if(old)old.remove();
+  const n=document.createElement('p');n.className='sel-note';n.innerHTML=msg;
+  const sec=document.querySelector('#t-build');sec.insertBefore(n,sec.querySelector('form'));
+  window.scrollTo({top:0});
+}
+function pickMain(season,week,n){
+  const f=document.querySelector('#f-build');
+  f.season.value=season;f.week.value=week;f.profile.value='friends_league';
+  f.field.value=12;f.entry_fee.value=0;f.prize_pool.value='';
+  goBuild(`<b>Sunday Main, Week ${week}</b> (${n} games) — league build configured. Now download the player list from the league contest lobby and drop it below.`);
+}
+function pickGame(season,week,a,b,ko){
+  const f=document.querySelector('#f-build');
+  f.season.value=season;f.week.value=week;f.profile.value='showdown_friends';
+  f.field.value=2;f.entry_fee.value=5;
+  goBuild(`<b>${a} @ ${b}</b> · ${ko} — single-game build configured (adjust field size + entry to match the contest). Download the player list from <b>that game's</b> single-game contest lobby and drop it below.`);
+}
+loadWeek();
+$('#w-load').onclick=loadWeek;
 /* season tab */
 async function loadSeason(){
   const season=$('#s-season').value;
