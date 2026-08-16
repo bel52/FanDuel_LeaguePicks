@@ -96,7 +96,7 @@ def error_report(data: dict) -> str:
     return "\n".join(lines)
 
 
-def rebuild_distributions(data: dict, min_proj: float = 3.0, min_n: int = 80) -> dict:
+def rebuild_distributions(data: dict, min_proj: float = 3.0, min_n: int = 50) -> dict:
     """Empirical actual/projected ratio pools by position x projection tier."""
     dist: dict = {"meta": {"source": "calibrated", "season": data["season"],
                            "n_obs": 0, "percentiles": PCTS,
@@ -175,7 +175,8 @@ def main(argv=None) -> int:
     print(compare(Path(a.compare_to), dist))
     Path(a.dist_out).write_text(json.dumps(dist, indent=1))
     print(f"\nCalibrated distributions: {a.dist_out}  (n={dist['meta']['n_obs']})")
-    print("Activate with:  cp %s data/distributions.json" % a.dist_out)
+    if str(a.dist_out) != "data/distributions.json":
+        print("Activate with:  cp %s data/distributions.json" % a.dist_out)
     return 0
 
 

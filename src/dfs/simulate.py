@@ -75,17 +75,10 @@ class SlateSimulator:
     # ---- ratio pools ----
     def _pool_curve(self, p: SlatePlayer):
         """Empirical ratio percentile curve (quantiles, values, zero_rate) for this player."""
-        tiers = TIERS.get(p.position)
-        cell = None
-        if tiers:
-            for lo, hi in tiers:
-                if lo <= p.projection < hi:
-                    cell = self.dist.get(p.position, {}).get(f"{lo}-{hi}")
-                    break
-            if cell is None:
-                lo, hi = tiers[-1]
-                cell = self.dist.get(p.position, {}).get(f"{lo}-{hi}")
+        from .distributions import _nearest_cell
+        cell = _nearest_cell(p.projection, p.position, self.dist)
         if cell is None:
+            # K and D have no calibrated pools; a generic spread until they are built.
             pcts = {"5": 0.15, "10": 0.35, "25": 0.65, "50": 0.95,
                     "75": 1.35, "90": 1.85, "95": 2.15}
             zero = 0.02

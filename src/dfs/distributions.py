@@ -92,19 +92,35 @@ def load_distributions(path: str | Path) -> dict:
     return json.loads(Path(path).read_text())
 
 
-def floor_ceiling(projection: float, position: str, dist: dict) -> tuple[float, float]:
-    """p10 floor / p90 ceiling for a projection, from empirical ratio pools."""
+def _nearest_cell(projection: float, position: str, dist: dict):
+    """Nearest POPULATED tier cell. Sparse seasons leave some tiers empty (few WRs
+    project above 15), so falling back to the closest populated tier is correct;
+    raising would block a build over a data-density artifact."""
     tiers = TIERS.get(position)
-    if tiers is None:  # D handled separately (defense scoring model TBD Phase 1.7)
-        return round(projection * 0.4, 2), round(projection * 1.8, 2)
-    for lo, hi in tiers:
+    if not tiers:
+        return None
+    for lo, hi in tiers:                      # exact containing tier wins if populated
         if lo <= projection < hi:
             cell = dist.get(position, {}).get(f"{lo}-{hi}")
             if cell:
-                return (round(projection * cell["pcts"]["10"], 2),
-                        round(projection * cell["pcts"]["90"], 2))
-    cell = dist.get(position, {}).get(f"{tiers[-1][0]}-{tiers[-1][1]}")
-    if cell:
-        return (round(projection * cell["pcts"]["10"], 2),
-                round(projection * cell["pcts"]["90"], 2))
-    raise ValueError(f"no distribution cell for {position} proj={projection}")
+                return cell
+    cells = []
+    for lo, hi in tiers:
+        cell = dist.get(position, {}).get(f"{lo}-{hi}")
+        if cell:
+            mid = (lo + min(hi, lo + 20)) / 2.0
+            cells.append((abs(projection - mid), cell))
+    if not cells:
+        return None
+    cells.sort(key=lambda c: c[0])
+    return cells[0][1]
+
+
+def floor_ceiling(projection: float, position: str, dist: dict) -> tuple[float, float]:
+    """p10 floor / p90 ceiling for a projection, from empirical ratio pools."""
+    cell = _nearest_cell(projection, position, dist)
+    if cell is None:
+        # K and D have no calibrated pools yet — conservative generic spread.
+        return round(projection * 0.40, 2), round(projection * 1.85, 2)
+    return (round(projection * cell["pcts"]["10"], 2),
+            round(projection * cell["pcts"]["90"], 2))
