@@ -155,35 +155,50 @@ def baseline_lineups(slate: PlayerSlate, spec: ContestSpec, n: int = 200,
 class RankedLineup:
     candidate: Candidate
     p_win: float
-    ev: float
+    p_top3: float
+    exp_points: float
+    dollars: float          # objective value, in dollars (see objectives.py)
     median: float
+    p10: float
     p90: float
     mean_rank: float
+    weights: "ObjectiveWeights"
 
     def summary(self) -> str:
-        return (f"P(win)={self.p_win:.1%} EV=${self.ev:.2f} med={self.median:.1f} "
-                f"p90={self.p90:.1f} avg_rank={self.mean_rank:.1f} "
-                f"${self.candidate.salary} proj={self.candidate.proj_sum}")
+        w = self.weights
+        parts = [f"${self.dollars:6.2f}"]
+        if w.w_points:
+            parts.append(f"E[pts]={self.exp_points:6.1f}")
+        parts += [f"P(win)={self.p_win:5.1%}", f"P(top3)={self.p_top3:5.1%}",
+                  f"med={self.median:6.1f}", f"[{self.p10:5.1f}-{self.p90:6.1f}]",
+                  f"${self.candidate.salary}"]
+        return " ".join(parts)
 
 
 def rank_candidates(candidates: list[Candidate], sim: SlateSimulator,
-                    field: FieldModel, spec: ContestSpec) -> list[RankedLineup]:
-    """Score every candidate against the simulated field. Returns sorted by EV desc."""
+                    field: FieldModel, spec: ContestSpec,
+                    weights: "ObjectiveWeights | None" = None) -> list[RankedLineup]:
+    """Score every candidate against the simulated field, rank by the contest objective.
+
+    `weights` comes from objectives.weights_for(profile, season_context) and is
+    denominated in dollars, so ranking optimizes real prize money rather than a
+    hand-built score. Falls back to pure win probability if none supplied.
+    """
+    from .objectives import ObjectiveWeights, score_lineup
     if not field.lineups:
         raise ValueError("empty field model")
-    field_totals = sim.score_many([(l, None) for l in field.lineups])   # (n_opp, n_sims)
+    if weights is None:
+        weights = ObjectiveWeights(0.0, 1.0, "fallback: pure P(win)")
+
+    field_totals = sim.score_many([(l, None) for l in field.lineups])
+    n_opp = field_totals.shape[0]
     ranked: list[RankedLineup] = []
     for c in candidates:
-        mine = sim.score(c.player_ids, c.mvp_id).totals                 # (n_sims,)
-        beaten = (mine[None, :] > field_totals).sum(axis=0)             # opponents beaten per sim
-        rank = field_totals.shape[0] + 1 - beaten                       # my rank, 1 = best
-        p_win = float((rank == 1).mean())
-        payouts = np.array([spec.payout_for_rank(int(r)) for r in range(1, field_totals.shape[0] + 2)])
-        ev = float(payouts[rank - 1].mean() - spec.entry_fee)
+        mine = sim.score(c.player_ids, c.mvp_id).totals
+        s = score_lineup(mine, field_totals, weights)
+        rank = n_opp + 1 - (mine[None, :] > field_totals).sum(axis=0)
         ranked.append(RankedLineup(
-            candidate=c, p_win=p_win, ev=round(ev, 2),
-            median=round(float(np.median(mine)), 2),
-            p90=round(float(np.percentile(mine, 90)), 2),
-            mean_rank=round(float(rank.mean()), 2),
-        ))
-    return sorted(ranked, key=lambda r: (r.ev, r.p_win), reverse=True)
+            candidate=c, p_win=s.p_win, p_top3=s.p_top3, exp_points=s.exp_points,
+            dollars=s.dollars, median=s.median, p10=s.p10, p90=s.p90,
+            mean_rank=round(float(rank.mean()), 2), weights=weights))
+    return sorted(ranked, key=lambda r: r.dollars, reverse=True)

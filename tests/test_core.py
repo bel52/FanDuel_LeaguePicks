@@ -196,17 +196,39 @@ def test_lineup_p90_below_summed_marginals():
 
 
 def test_ranking_produces_win_probs():
+    from dfs.objectives import Leaderboard, SeasonContext, weights_for
     slate = _projected_slate()
     sim = SlateSimulator(slate, DIST, n_sims=5000, seed=1729)
     pool = generate_pool(slate, SPEC, n=12, min_unique=3)
     field = build_prior_field(slate, SPEC, n_opponents=11, seed=99)
     assert len(field.lineups) == 11
-    ranked = rank_candidates(pool, sim, field, SPEC)
+    w = weights_for("friends_league",
+                    SeasonContext(leaderboard=Leaderboard.TOTAL_SCORES, weeks_total=21))
+    ranked = rank_candidates(pool, sim, field, SPEC, w)
     assert len(ranked) == len(pool)
-    assert ranked[0].ev >= ranked[-1].ev
+    assert ranked[0].dollars >= ranked[-1].dollars       # sorted by objective
     assert 0.0 < ranked[0].p_win < 1.0
-    # EV must reconcile with WTA payout: ev = p_win*180 - 15
-    assert abs(ranked[0].ev - (ranked[0].p_win * 180 - 15)) < 0.5
+    # objective value must reconcile with the declared weights
+    r = ranked[0]
+    assert r.dollars == pytest.approx(w.w_points * r.exp_points + w.w_win * r.p_win, rel=1e-4)
+
+
+def test_objective_changes_lineup_selection():
+    """Total Scores (values points) and Most Wins (values only firsts) should not
+    agree on the best lineup — if they always did, the objective would be inert."""
+    from dfs.objectives import Leaderboard, SeasonContext, weights_for
+    slate = _projected_slate()
+    sim = SlateSimulator(slate, DIST, n_sims=8000, seed=1729)
+    pool = generate_pool(slate, SPEC, n=25, min_unique=3)
+    field = build_prior_field(slate, SPEC, n_opponents=11, seed=99)
+    tot = weights_for("friends_league", SeasonContext(leaderboard=Leaderboard.TOTAL_SCORES))
+    win = weights_for("friends_league", SeasonContext(leaderboard=Leaderboard.MOST_WINS))
+    a = rank_candidates(pool, sim, field, SPEC, tot)
+    b = rank_candidates(pool, sim, field, SPEC, win)
+    assert tot.w_points > 0 and win.w_points == 0
+    order_a = [r.candidate.player_ids for r in a]
+    order_b = [r.candidate.player_ids for r in b]
+    assert order_a != order_b, "objectives must produce different rankings"
 
 
 def test_normal_cdf_accuracy():
@@ -470,3 +492,99 @@ def test_sweep_clean_when_no_injuries():
     slate = _projected_slate()
     res = sweep(slate, {})
     assert res.ok and "clean" in res.summary()
+
+
+# ---- export ----
+from dfs.export import export_upload_csv, lineup_card, _slot_players, CLASSIC_FILL_ORDER
+
+
+def _one_lineup():
+    slate = _projected_slate()
+    pool = generate_pool(slate, SPEC, n=1, min_unique=3)
+    byid = {p.fd_id: p for p in slate.players}
+    return [byid[i] for i in pool[0].player_ids]
+
+
+def test_slot_assignment_matches_fanduel_order():
+    players = _one_lineup()
+    slotted = _slot_players(players, SlateType.FULL, None)
+    assert [s for s, _ in slotted] == CLASSIC_FILL_ORDER
+    assert len({p.fd_id for _, p in slotted}) == 9      # no player used twice
+
+
+def test_export_warns_without_verified_template(tmp_path):
+    res = export_upload_csv(_one_lineup(), tmp_path / "up.csv")
+    assert res.path.exists()
+    assert any("NOT been verified" in w for w in res.warnings)
+    import csv as _csv
+    rows = list(_csv.reader(open(res.path)))
+    assert len(rows) == 2 and len(rows[0]) == len(rows[1])
+
+
+def test_export_mirrors_supplied_template(tmp_path):
+    tmpl = tmp_path / "t.csv"
+    tmpl.write_text("entry_id,QB,RB,RB,WR,WR,WR,TE,FLEX,DEF\n")
+    res = export_upload_csv(_one_lineup(), tmp_path / "u.csv", template=tmpl,
+                            entry_id="E123")
+    assert not res.warnings
+    import csv as _csv
+    rows = list(_csv.reader(open(res.path)))
+    assert rows[0][0] == "entry_id" and rows[1][0] == "E123"
+    assert all(rows[1][1:])                              # every slot filled
+
+
+def test_lineup_card_readable():
+    card = lineup_card(_one_lineup(), title="Week 1")
+    assert "Week 1" in card and "TOTAL" in card
+    assert len([l for l in card.splitlines() if "$" in l]) == 10   # 9 players + total
+
+
+# ---- result log ----
+from dfs.results import ResultLog
+from dfs.contest_parse import parse_contest
+
+
+def test_log_entry_and_outcome(tmp_path):
+    log = ResultLog(tmp_path / "r.db")
+    players = _one_lineup()
+    log.log_entry(2026, 1, "Leather League", players, objective="total_scores",
+                  exp_points=128.0, p_win=0.21)
+    log.log_outcome(2026, 1, "Leather League", score=131.4, rank=3, field_size=12)
+    st = log._c().execute("SELECT * FROM entries").fetchone()
+    assert st["actual_score"] == pytest.approx(131.4)
+    assert st["final_rank"] == 3
+    assert st["exp_points"] == pytest.approx(128.0)     # relog must not wipe outcome
+
+
+def test_log_capture_and_standings(tmp_path):
+    log = ResultLog(tmp_path / "r.db")
+    cap = parse_contest(CONTEST_FIX, 2025, 18)
+    log.log_capture(cap)
+    st = log.standings(2025)
+    assert st[0].entrant == "xleathy"
+    assert st[0].total_points == pytest.approx(136.66)
+    assert st[0].wins == 1
+    own = log.measured_ownership(2025)
+    assert own["travis etienne"] == pytest.approx(50.0)
+
+
+def test_season_context_drives_objective(tmp_path):
+    """Logged results must feed back into the objective weights."""
+    log = ResultLog(tmp_path / "r.db")
+    log.log_capture(parse_contest(CONTEST_FIX, 2025, 18))
+    ctx = log.season_context(2025, me="xleathy", weeks_total=21)
+    assert ctx.weeks_played == 1
+    assert ctx.my_points == pytest.approx(136.66)
+    assert ctx.leader_points >= ctx.my_points
+    w = weights_for("friends_league", ctx)
+    assert w.w_points > 0
+
+
+def test_projection_accuracy_tracks_inseason(tmp_path):
+    log = ResultLog(tmp_path / "r.db")
+    players = _one_lineup()
+    log.log_entry(2026, 1, "LL", players)
+    log.log_player_actuals(2026, 1, {p.fd_id: (p.projection or 0) + 2.0 for p in players})
+    acc = log.projection_accuracy(2026)
+    assert acc["ALL"]["bias"] == pytest.approx(2.0, abs=0.01)
+    assert acc["ALL"]["n"] == 9

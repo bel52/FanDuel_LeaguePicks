@@ -13,8 +13,6 @@ import os
 import urllib.request
 import urllib.error
 from dataclasses import dataclass
-
-from .matching import norm_team as _canon
 from typing import Optional
 
 BASE = "https://api.the-odds-api.com/v4"
@@ -85,8 +83,7 @@ class OddsClient:
         out: dict[str, TeamLine] = {}
         for g in games:
             home_full, away_full = g.get("home_team", ""), g.get("away_team", "")
-            home = _canon(TEAM_ABBR.get(home_full, ""))
-            away = _canon(TEAM_ABBR.get(away_full, ""))
+            home, away = TEAM_ABBR.get(home_full), TEAM_ABBR.get(away_full)
             if not home or not away:
                 continue
             total, spreads = None, {}
@@ -97,7 +94,7 @@ class OddsClient:
                         total = pts[0] if pts else None
                     if mkt["key"] == "spreads" and not spreads:
                         for o in mkt["outcomes"]:
-                            abbr = _canon(TEAM_ABBR.get(o.get("name", ""), ""))
+                            abbr = TEAM_ABBR.get(o.get("name", ""))
                             if abbr and o.get("point") is not None:
                                 spreads[abbr] = float(o["point"])
                 if total is not None and spreads:
@@ -112,9 +109,8 @@ class OddsClient:
                     kickoff_iso=g.get("commence_time", ""),
                 )
         if slate_teams:
-            want = {_canon(t) for t in slate_teams}
-            out = {t: v for t, v in out.items() if t in want}
-            missing = want - set(out)
+            out = {t: v for t, v in out.items() if t in slate_teams}
+            missing = slate_teams - set(out)
             if missing:
                 raise VegasError(f"no Vegas lines for slate teams: {sorted(missing)} — "
                                  "verify slate vs odds board before proceeding")

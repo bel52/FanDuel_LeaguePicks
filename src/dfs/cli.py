@@ -23,7 +23,12 @@ from .distributions import load_distributions, build_distributions
 from .optimize import generate_pool, StackRule
 from .simulate import SlateSimulator
 from .field import build_prior_field, rank_candidates, baseline_lineups
+from .objectives import Leaderboard, SeasonContext, weights_for
 from .slate import SlateStore, SlateError
+from .injuries import (records_from_fantasypros, records_from_slate, merge,
+                       sweep as injury_sweep)
+from .export import export_upload_csv, lineup_card, pushover_body
+from .results import ResultLog
 
 DATA = Path(__file__).resolve().parents[2] / "data"
 
@@ -77,6 +82,22 @@ def cmd_build(a) -> int:
         print(f"  {p.projection:6.2f}  {p.position:3s} {p.team:3s} ${p.salary:5d} "
               f"[{p.floor_p10:5.1f} - {p.ceiling_p90:5.1f}]  {p.name}")
 
+    # ---- injury / inactives sweep ----
+    # A player who is inactive scores 0. Under Total Scores that zero is permanent
+    # damage to the season standing, so this runs before any lineup is built.
+    if not a.no_injuries:
+        try:
+            fp_inj = records_from_fantasypros(FantasyProsClient().injuries(a.season))
+        except FantasyProsError as e:
+            fp_inj = {}
+            print(f"\n  injury feed unavailable: {e}")
+        inj = merge(records_from_slate(slate), fp_inj)
+        sw = injury_sweep(slate, inj)
+        print("\n" + sw.summary())
+        if sw.flagged and a.strict_injuries:
+            raise SlateError("questionable players in pool and --strict-injuries set; "
+                             "resolve before building")
+
     spec = ContestSpec(name=a.contest, profile=Profile(a.profile),
                        slate_type=slate.slate_type, field_size=a.field,
                        entry_fee=a.entry_fee, late_swap=not a.no_late_swap)
@@ -95,7 +116,20 @@ def cmd_build(a) -> int:
     field = build_prior_field(slate, spec, n_opponents=spec.field_size - 1, seed=a.seed + 1)
     print(f"  field model: {len(field.lineups)} opponents ({field.source})")
 
-    ranked = rank_candidates(pool, sim, field, spec)
+    ctx = SeasonContext(leaderboard=Leaderboard(a.leaderboard),
+                        weeks_total=a.weeks_total, weeks_played=a.weeks_played,
+                        my_points=a.my_points, leader_points=a.leader_points,
+                        my_wins=a.my_wins, leader_wins=a.leader_wins,
+                        field_size=spec.field_size, weekly_prize=a.weekly_prize,
+                        grand_prizes=tuple(float(x) for x in a.grand_prizes.split(",") if x))
+    weights = weights_for(a.profile, ctx, entry_fee=a.entry_fee, prize_pool=a.prize_pool)
+    print("\n" + "=" * 72)
+    print("OBJECTIVE")
+    print(f"  {weights.rationale}")
+    print(f"  weights: ${weights.w_points:.2f} per expected point | "
+          f"${weights.w_win:.2f} per unit win probability")
+
+    ranked = rank_candidates(pool, sim, field, spec, weights)
     byid = {p.fd_id: p for p in slate.players}
 
     # ---- honest baselines: a win probability alone is uninterpretable ----
@@ -103,15 +137,16 @@ def cmd_build(a) -> int:
     naive = 1.0 / (n_opp + 1)
     field_totals = sim.score_many([(l, None) for l in field.lineups])
 
-    def _pwin(ids, mvp=None):
-        mine = sim.score(ids, mvp).totals
-        return float(((mine[None, :] > field_totals).sum(axis=0) == n_opp).mean())
+    def _obj(ids, mvp=None):
+        """Objective value in dollars, so baselines compare on the same axis."""
+        from .objectives import score_lineup
+        return score_lineup(sim.score(ids, mvp).totals, field_totals, weights)
 
     bl = baseline_lineups(slate, spec, n=200, seed=a.seed + 2)
-    rand_p = [_pwin(l) for l in bl["random"]] or [naive]
+    rand = [_obj(l) for l in bl["random"]]
     max_proj = max(pool, key=lambda c: c.proj_sum)
-    maxproj_p = _pwin(max_proj.player_ids, max_proj.mvp_id)
-    best_p = ranked[0].p_win
+    mp = _obj(max_proj.player_ids, max_proj.mvp_id)
+    best = ranked[0]
 
     print("\n" + "=" * 72)
     print(f"BASELINES (vs the same {n_opp}-opponent simulated field)")
@@ -136,6 +171,31 @@ def cmd_build(a) -> int:
             print(f"     {p.position:3s} {p.name:24s} {p.team:3s} ${p.salary:5d} "
                   f"{p.projection:5.1f}{mvp}")
 
+    best = ranked[0]
+    best_players = [byid[i] for i in best.candidate.player_ids]
+
+    if a.export:
+        ex = export_upload_csv(best_players, a.export, slate_type=slate.slate_type,
+                               mvp_id=best.candidate.mvp_id, template=a.template,
+                               contest_name=spec.name)
+        print("\n" + ex.summary())
+
+    if a.log_db:
+        rl = ResultLog(a.log_db)
+        rl.log_entry(a.season, a.week, spec.name, best_players, slate_id=a.slate_id,
+                     objective=a.leaderboard, exp_points=best.exp_points,
+                     p_win=best.p_win)
+        print(f"Logged entry -> {a.log_db}")
+
+    if a.pushover_out:
+        Path(a.pushover_out).parent.mkdir(parents=True, exist_ok=True)
+        Path(a.pushover_out).write_text(pushover_body(
+            best_players,
+            f"W{a.week} ${best.dollars:.2f} | E[pts] {best.exp_points:.1f} | "
+            f"P(win) {best.p_win:.0%}",
+            mvp_id=best.candidate.mvp_id))
+        print(f"Pushover body -> {a.pushover_out}")
+
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -143,8 +203,11 @@ def cmd_build(a) -> int:
         "contest": {"name": spec.name, "profile": spec.profile.value,
                     "field_size": spec.field_size, "entry_fee": spec.entry_fee},
         "match_rate": mrep.rate, "seed": a.seed, "sims": a.sims,
+        "objective": {"leaderboard": a.leaderboard, "w_points": weights.w_points,
+                      "w_win": weights.w_win, "rationale": weights.rationale},
         "lineups": [{
-            "rank": i, "p_win": r.p_win, "ev": r.ev, "median": r.median, "p90": r.p90,
+            "rank": i, "p_win": r.p_win, "p_top3": r.p_top3, "dollars": r.dollars,
+            "exp_points": r.exp_points, "median": r.median, "p10": r.p10, "p90": r.p90,
             "salary": r.candidate.salary, "projection": r.candidate.proj_sum,
             "mvp_id": r.candidate.mvp_id,
             "players": [{"fd_id": pid, "name": byid[pid].name, "pos": byid[pid].position,
@@ -160,6 +223,45 @@ def cmd_build(a) -> int:
     if a.db:
         SlateStore(a.db).save(slate)
         print(f"Slate persisted: {a.db}")
+    return 0
+
+
+def cmd_capture(a) -> int:
+    from .contest_parse import parse_contest
+    capture = parse_contest(a.path, a.season, a.week, a.contest)
+    print(capture.summary())
+    rl = ResultLog(a.log_db)
+    rl.log_capture(capture)
+    mine = next((e for e in capture.leaderboard if e.rank == 1), None)
+    print(f"\nLogged {len(capture.leaderboard)} entrants and "
+          f"{len(capture.ownership())} ownership records -> {a.log_db}")
+    return 0
+
+
+def cmd_standings(a) -> int:
+    rl = ResultLog(a.log_db)
+    st = rl.standings(a.season)
+    if not st:
+        print("No logged results yet. Run `capture` on a contest results page first.")
+        return 0
+    print(f"SEASON STANDINGS — {a.season} (Total Points)")
+    print(f"  {'#':>2s} {'entrant':18s} {'total':>8s} {'avg':>7s} {'wks':>4s} {'wins':>5s} {'best':>7s}")
+    for i, s in enumerate(st, 1):
+        me = " <-- you" if s.entrant == a.me else ""
+        print(f"  {i:2d} {s.entrant:18s} {s.total_points:8.1f} {s.avg:7.1f} "
+              f"{s.weeks:4d} {s.wins:5d} {s.best:7.1f}{me}")
+    ctx = rl.season_context(a.season, a.me, a.weeks_total)
+    w = weights_for("friends_league", ctx)
+    print(f"\nOBJECTIVE for next build (week {ctx.weeks_played + 1} of {ctx.weeks_total}):")
+    print(f"  {w.rationale}")
+    print(f"  behind leader by {ctx.deficit():.1f} points with {ctx.weeks_left} weeks left")
+    print(f"  weights: ${w.w_points:.2f}/pt | ${w.w_win:.2f}/win-prob")
+    acc = rl.projection_accuracy(a.season)
+    if acc:
+        print("\nIN-SEASON PROJECTION ACCURACY:")
+        for pos, v in acc.items():
+            print(f"  {pos:4s} n={v['n']:4d} MAE={v['mae']:5.2f} bias={v['bias']:+5.2f} "
+                  f"corr={v['corr']}")
     return 0
 
 
@@ -188,12 +290,49 @@ def main(argv=None) -> int:
     b.add_argument("--critical-salary", type=int, default=6500)
     b.add_argument("--no-vegas", action="store_true")
     b.add_argument("--no-late-swap", action="store_true")
+    b.add_argument("--leaderboard", default="total_scores",
+                   choices=[l.value for l in Leaderboard],
+                   help="season standing format — drives the objective weights")
+    b.add_argument("--weeks-total", type=int, default=21)
+    b.add_argument("--weeks-played", type=int, default=0)
+    b.add_argument("--my-points", type=float, default=0.0)
+    b.add_argument("--leader-points", type=float, default=0.0)
+    b.add_argument("--my-wins", type=int, default=0)
+    b.add_argument("--leader-wins", type=int, default=0)
+    b.add_argument("--weekly-prize", type=float, default=12.84)
+    b.add_argument("--grand-prizes", default="135,81,54")
+    b.add_argument("--prize-pool", type=float, default=None,
+                   help="one-off contests: total prize pool (h2h/showdown/gpp)")
+    b.add_argument("--no-injuries", action="store_true",
+                   help="skip the inactives sweep (testing only)")
+    b.add_argument("--strict-injuries", action="store_true",
+                   help="refuse to build while questionable players remain in the pool")
+    b.add_argument("--export", default=None, help="write a FanDuel upload CSV here")
+    b.add_argument("--template", default=None,
+                   help="a real FanDuel entries template to mirror column headers from")
+    b.add_argument("--log-db", default=None, help="SQLite result log to record this entry in")
+    b.add_argument("--pushover-out", default=None, help="write a phone-sized lineup here")
     b.add_argument("--out", default="data/lineups/latest.json")
     b.add_argument("--db", default=None)
     b.set_defaults(func=cmd_build)
 
+    cap = sub.add_parser("capture", help="ingest a pasted FanDuel contest results page")
+    cap.add_argument("path")
+    cap.add_argument("--season", type=int, required=True)
+    cap.add_argument("--week", type=int, required=True)
+    cap.add_argument("--contest", default="Leather League")
+    cap.add_argument("--log-db", default="data/results.db")
+    cap.set_defaults(func=cmd_capture)
+
+    st = sub.add_parser("standings", help="season standings + objective weights from the log")
+    st.add_argument("--season", type=int, required=True)
+    st.add_argument("--me", default="xleathy")
+    st.add_argument("--weeks-total", type=int, default=21)
+    st.add_argument("--log-db", default="data/results.db")
+    st.set_defaults(func=cmd_standings)
+
     a = ap.parse_args(argv)
-    if getattr(a, "slate_id", None) is None:
+    if getattr(a, "slate_id", "SKIP") is None and hasattr(a, "week"):
         a.slate_id = f"{a.season}-w{a.week:02d}"
     try:
         return a.func(a)
