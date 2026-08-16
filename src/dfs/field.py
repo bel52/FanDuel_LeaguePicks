@@ -27,7 +27,24 @@ from .slate import PlayerSlate
 class FieldModel:
     """Distribution over opponent lineups."""
     lineups: list[tuple[str, ...]]     # sampled opponent lineups
-    source: str                        # 'prior' | 'history'
+    source: str                        # 'prior' | 'prior_showdown' | 'history'
+    mvp_ids: list | None = None        # showdown: MVP per opponent lineup
+
+
+def build_field_ensemble(slate: PlayerSlate, spec: ContestSpec, n_opponents: int,
+                         n_fields: int = 25, seed: int = 99,
+                         chalk_temp: float = 1.6) -> list[FieldModel]:
+    """Posterior over fields, not one arbitrary draw.
+
+    A single 11-opponent draw held fixed across all simulations conditions every win
+    probability on that one realization — re-seeding the field moved the reported
+    P(win) from 14.5% to 21.7% on the test fixture. Averaging over an ensemble of
+    field draws integrates that uncertainty out. n_fields=25 keeps runtime modest;
+    the spread across fields is reported so instability is visible, not hidden.
+    """
+    return [build_prior_field(slate, spec, n_opponents, seed=seed + 1000 * k,
+                              chalk_temp=chalk_temp)
+            for k in range(n_fields)]
 
 
 def build_prior_field(slate: PlayerSlate, spec: ContestSpec, n_opponents: int,
@@ -42,6 +59,9 @@ def build_prior_field(slate: PlayerSlate, spec: ContestSpec, n_opponents: int,
     under-produced the field (8 of 11 opponents), which quietly inflated every win
     probability — the field must always be exactly n_opponents.
     """
+    from .contest_spec import SlateType
+    if spec.slate_type == SlateType.SINGLE_GAME:
+        return _prior_field_showdown(slate, spec, n_opponents, seed, chalk_temp)
     rng = np.random.default_rng(seed)
     by_pos: dict[str, list] = {}
     for p in slate.players:
@@ -151,6 +171,43 @@ def baseline_lineups(slate: PlayerSlate, spec: ContestSpec, n: int = 200,
     return {"random": randoms}
 
 
+def _prior_field_showdown(slate: PlayerSlate, spec: ContestSpec, n_opponents: int,
+                          seed: int, chalk_temp: float) -> FieldModel:
+    """Showdown opponents: 5 players from a 2-team pool, one MVP, cap-legal.
+
+    Opponents weight MVP choice heavily toward the highest-projected skill players
+    (QBs dominate real MVP ownership). Lineup tuple carries the MVP as element 0 by
+    convention; scoring reads FieldModel.mvp_ids.
+    """
+    rng = np.random.default_rng(seed)
+    pool = list(slate.players)
+    if len({p.team for p in pool}) != 2:
+        raise ValueError("showdown field requires a 2-team slate")
+    proj = np.array([p.projection for p in pool])
+    z = chalk_temp * (proj - proj.mean()) / (proj.std() + 1e-9)
+    w = np.exp(z - z.max()); w = w / w.sum()
+    mvp_w = np.exp(1.6 * z - z.max()); mvp_w = mvp_w / mvp_w.sum()
+
+    lineups, mvps, tries = [], [], 0
+    from .contest_spec import ROSTER_SHOWDOWN_SIZE
+    while len(lineups) < n_opponents and tries < n_opponents * 400:
+        tries += 1
+        idx = rng.choice(len(pool), size=ROSTER_SHOWDOWN_SIZE, replace=False, p=w)
+        picks = [pool[i] for i in idx]
+        if len({p.team for p in picks}) != 2:
+            continue
+        if sum(p.salary for p in picks) > spec.salary_cap:
+            continue
+        mw = mvp_w[idx]; mvp_i = idx[int(np.argmax(rng.random(len(idx)) ** (1.0 / mw)))]
+        lineups.append(tuple(pool[i].fd_id for i in idx))
+        mvps.append(pool[mvp_i].fd_id)
+    if len(lineups) != n_opponents:
+        raise ValueError(f"showdown field produced {len(lineups)}/{n_opponents}")
+    fm = FieldModel(lineups=lineups, source="prior_showdown")
+    fm.mvp_ids = mvps
+    return fm
+
+
 @dataclass
 class RankedLineup:
     candidate: Candidate
@@ -169,36 +226,63 @@ class RankedLineup:
         parts = [f"${self.dollars:6.2f}"]
         if w.w_points:
             parts.append(f"E[pts]={self.exp_points:6.1f}")
-        parts += [f"P(win)={self.p_win:5.1%}", f"P(top3)={self.p_top3:5.1%}",
+        parts += [f"P(win)={self.p_win:5.1%}±{self.mean_rank:4.1%}",
+                  f"P(top3)={self.p_top3:5.1%}",
                   f"med={self.median:6.1f}", f"[{self.p10:5.1f}-{self.p90:6.1f}]",
                   f"${self.candidate.salary}"]
         return " ".join(parts)
 
 
 def rank_candidates(candidates: list[Candidate], sim: SlateSimulator,
-                    field: FieldModel, spec: ContestSpec,
+                    field: "FieldModel | list[FieldModel]", spec: ContestSpec,
                     weights: "ObjectiveWeights | None" = None) -> list[RankedLineup]:
-    """Score every candidate against the simulated field, rank by the contest objective.
+    """Score candidates against a field ensemble, rank by the contest objective.
 
-    `weights` comes from objectives.weights_for(profile, season_context) and is
-    denominated in dollars, so ranking optimizes real prize money rather than a
-    hand-built score. Falls back to pure win probability if none supplied.
+    `field` may be one FieldModel or an ensemble; metrics are averaged across fields
+    so no single arbitrary opponent draw decides the pick. Ties split win credit.
     """
-    from .objectives import ObjectiveWeights, score_lineup
-    if not field.lineups:
+    from .objectives import ObjectiveWeights
+    fields = field if isinstance(field, list) else [field]
+    if not fields or not fields[0].lineups:
         raise ValueError("empty field model")
     if weights is None:
         weights = ObjectiveWeights(0.0, 1.0, "fallback: pure P(win)")
 
-    field_totals = sim.score_many([(l, None) for l in field.lineups])
-    n_opp = field_totals.shape[0]
+    # simulate every distinct opponent lineup once
+    keyed = {}
+    for fm in fields:
+        for i, l in enumerate(fm.lineups):
+            mvp = fm.mvp_ids[i] if fm.mvp_ids else None
+            keyed.setdefault((l, mvp), None)
+    for key in keyed:
+        keyed[key] = sim.score(key[0], key[1]).totals
+    field_stacks = []
+    for fm in fields:
+        import numpy as _np
+        rows = [keyed[(l, fm.mvp_ids[i] if fm.mvp_ids else None)]
+                for i, l in enumerate(fm.lineups)]
+        field_stacks.append(_np.stack(rows))
+
+    n_opp = field_stacks[0].shape[0]
     ranked: list[RankedLineup] = []
     for c in candidates:
         mine = sim.score(c.player_ids, c.mvp_id).totals
-        s = score_lineup(mine, field_totals, weights)
-        rank = n_opp + 1 - (mine[None, :] > field_totals).sum(axis=0)
+        pw, pt3, spread = [], [], []
+        for ft in field_stacks:
+            beaten_by = (ft > mine[None, :]).sum(axis=0)
+            tied = (ft == mine[None, :]).sum(axis=0)
+            rank = 1 + beaten_by
+            pw.append(float(((beaten_by == 0) * (1.0 / (1.0 + tied))).mean()))
+            pt3.append(float((rank <= 3).mean()))
+        import numpy as np
+        p_win, p_top3 = float(np.mean(pw)), float(np.mean(pt3))
+        exp_points = float(mine.mean())
         ranked.append(RankedLineup(
-            candidate=c, p_win=s.p_win, p_top3=s.p_top3, exp_points=s.exp_points,
-            dollars=s.dollars, median=s.median, p10=s.p10, p90=s.p90,
-            mean_rank=round(float(rank.mean()), 2), weights=weights))
+            candidate=c, p_win=p_win, p_top3=p_top3, exp_points=round(exp_points, 2),
+            dollars=round(weights.score(exp_points, p_win), 4),
+            median=round(float(np.median(mine)), 2),
+            p10=round(float(np.percentile(mine, 10)), 2),
+            p90=round(float(np.percentile(mine, 90)), 2),
+            mean_rank=round(float(np.std(pw)), 4) if len(pw) > 1 else 0.0,  # field-spread of P(win)
+            weights=weights))
     return sorted(ranked, key=lambda r: r.dollars, reverse=True)

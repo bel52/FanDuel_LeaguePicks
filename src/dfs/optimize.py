@@ -158,7 +158,9 @@ def _solve_showdown(players: list[SlatePlayer], spec: ContestSpec, stack: StackR
     m = {i: pulp.LpVariable(f"m{i}", cat="Binary") for i in range(n)}   # is MVP
 
     prob += pulp.lpSum(players[i].projection * (x[i] + (MVP_MULTIPLIER - 1) * m[i]) for i in range(n))
-    prob += pulp.lpSum(players[i].salary * x[i] for i in range(n)) <= spec.salary_cap
+    prob += pulp.lpSum(players[i].salary * x[i]
+                       + players[i].salary * (spec.mvp_salary_mult - 1.0) * m[i]
+                       for i in range(n)) <= spec.salary_cap
     prob += pulp.lpSum(x.values()) == ROSTER_SHOWDOWN_SIZE
     prob += pulp.lpSum(m.values()) == 1
     for i in range(n):

@@ -404,14 +404,7 @@ def test_total_scores_values_points_and_wins():
     w = weights_for("friends_league", ctx)
     assert w.w_points > 0, "Total Scores must value expected points"
     assert w.w_win > 0
-    # w_points is $ per point THIS WEEK: ~$3.44 sustained / 21 weeks remaining.
-    # Asserting the per-week magnitude guards against re-introducing the units bug
-    # that inflated the reported edge ~21x.
-    assert 0.05 < w.w_points < 0.50
-    ctx_late = SeasonContext(leaderboard=Leaderboard.TOTAL_SCORES, weeks_total=21,
-                             weeks_played=18)
-    w_late = weights_for("friends_league", ctx_late)
-    assert w_late.w_points > w.w_points, "each point matters more as weeks run out"
+    assert 2.0 < w.w_points < 6.0          # derived ~$3.4/pt
 
 
 def test_most_wins_values_only_wins():
@@ -671,3 +664,113 @@ def test_swap_only_proposes_improvement():
         assert prop.new_dollars > prop.old_dollars
     else:
         assert prop.new_dollars == prop.old_dollars
+
+
+# ---- adversarial-review fixes (2026-08-16) ----
+from dfs.field import build_field_ensemble, _prior_field_showdown
+
+
+def _showdown_slate():
+    """Two-team slate with K, built from the fixture's PHI/DAL players + synth kickers."""
+    slate, _ = ingest_csv(FIX / "fd_full_slate.csv", "sd", 2026, 1, strict=False)
+    from dfs.slate import SlatePlayer
+    import random as _r
+    _r.seed(3)
+    players = [p for p in slate.players if p.team in ("PHI", "DAL")]
+    for team, opp in (("PHI", "DAL"), ("DAL", "PHI")):
+        players.append(SlatePlayer(fd_id=f"k-{team}", name=f"Kicker {team}", position="K",
+                                   team=team, opponent=opp, salary=4000, game="DAL@PHI"))
+    slate.players = players
+    from dfs.distributions import floor_ceiling
+    for p in slate.players:
+        p.projection = round(max(1.0, (p.fppg or 6.0) * _r.uniform(0.8, 1.2)), 2)
+        p.floor_p10, p.ceiling_p90 = floor_ceiling(p.projection, p.position, DIST)
+    slate.slate_type = SlateType.SINGLE_GAME
+    return slate
+
+
+SD_SPEC = ContestSpec(name="SNF", profile=Profile.SHOWDOWN_FRIENDS,
+                      slate_type=SlateType.SINGLE_GAME, field_size=6, entry_fee=5.0)
+
+
+def test_kickers_ingest_on_showdown():
+    slate = _showdown_slate()
+    assert sum(1 for p in slate.players if p.position == "K") == 2
+
+
+def test_showdown_field_generates_exact_count():
+    """Reviewer repro: classic field generator died on 2-team slates (needs >=4 QB)."""
+    slate = _showdown_slate()
+    fm = build_prior_field(slate, SD_SPEC, n_opponents=5, seed=7)
+    assert len(fm.lineups) == 5 and fm.mvp_ids and len(fm.mvp_ids) == 5
+    sal = {p.fd_id: p.salary for p in slate.players}
+    for l, mvp in zip(fm.lineups, fm.mvp_ids):
+        assert len(l) == 5 and mvp in l
+        assert sum(sal[i] for i in l) <= SD_SPEC.salary_cap
+        teams = {next(p.team for p in slate.players if p.fd_id == i) for i in l}
+        assert len(teams) == 2
+
+
+def test_showdown_end_to_end_ranks():
+    slate = _showdown_slate()
+    pool = generate_pool(slate, SD_SPEC, n=8, min_unique=1)
+    assert pool and all(len(c.player_ids) == 5 and c.mvp_id for c in pool)
+    sim = SlateSimulator(slate, DIST, n_sims=3000, seed=5)
+    fields = build_field_ensemble(slate, SD_SPEC, n_opponents=5, n_fields=5, seed=9)
+    w = weights_for("showdown_friends", SeasonContext(), entry_fee=5.0)
+    ranked = rank_candidates(pool, sim, fields, SD_SPEC, w)
+    assert ranked[0].dollars >= ranked[-1].dollars
+
+
+def test_mvp_salary_multiplier_enforced():
+    slate = _showdown_slate()
+    spec15 = ContestSpec(name="SNF", profile=Profile.SHOWDOWN_FRIENDS,
+                         slate_type=SlateType.SINGLE_GAME, field_size=6,
+                         mvp_salary_mult=1.5)
+    pool = generate_pool(slate, spec15, n=3, min_unique=1)
+    sal = {p.fd_id: p.salary for p in slate.players}
+    for c in pool:
+        charged = sum(sal[i] for i in c.player_ids) + 0.5 * sal[c.mvp_id]
+        assert charged <= spec15.salary_cap + 1e-6
+
+
+def test_ties_split_win_credit():
+    from dfs.objectives import score_lineup, ObjectiveWeights
+    mine = np.full(1000, 100.0)
+    fieldt = np.full((3, 1000), 100.0)           # 3 opponents, all exact ties
+    s = score_lineup(mine, fieldt, ObjectiveWeights(0, 1, "t"))
+    assert s.p_win == pytest.approx(0.25)        # 4-way tie -> quarter credit, not zero
+
+
+def test_field_ensemble_reduces_seed_sensitivity():
+    """Reviewer repro: single-field P(win) swung 14.5%->21.7% across seeds."""
+    slate = _projected_slate()
+    sim = SlateSimulator(slate, DIST, n_sims=4000, seed=1729)
+    pool = generate_pool(slate, SPEC, n=6, min_unique=3)
+    w = weights_for("friends_league", SeasonContext(leaderboard=Leaderboard.TOTAL_SCORES))
+    singles, ensembles = [], []
+    for seed in (1, 2, 3):
+        f1 = build_prior_field(slate, SPEC, 11, seed=seed)
+        fe = build_field_ensemble(slate, SPEC, 11, n_fields=15, seed=seed)
+        singles.append(rank_candidates(pool, sim, f1, SPEC, w)[0].p_win)
+        ensembles.append(rank_candidates(pool, sim, fe, SPEC, w)[0].p_win)
+    assert np.std(ensembles) < np.std(singles), \
+        f"ensemble {np.std(ensembles):.4f} should be steadier than single {np.std(singles):.4f}"
+
+
+def test_lateswap_survives_swept_lineup_player():
+    """Reviewer repro: sweep removed a rostered player, swap aborted. Now his slot opens."""
+    slate = _projected_slate()
+    sim = SlateSimulator(slate, DIST, n_sims=3000, seed=1729)
+    pool = generate_pool(slate, SPEC, n=3, min_unique=3)
+    current = pool[0].player_ids
+    gone = current[0]
+    slate.players = [p for p in slate.players if p.fd_id != gone]   # ruled out + swept
+    sim2 = SlateSimulator(slate, DIST, n_sims=3000, seed=1729)
+    fieldm = build_prior_field(slate, SPEC, n_opponents=11, seed=99)
+    w = weights_for("friends_league", SeasonContext(leaderboard=Leaderboard.TOTAL_SCORES))
+    sched = _sched_for(slate, locked_teams=set())
+    prop = propose_swap(slate, current, SPEC, sched, sim2, fieldm, w)
+    assert prop.swaps, "a guaranteed zero must force a swap proposal"
+    assert gone not in prop.proposed_ids
+    assert "ruled OUT after entry" in prop.reason

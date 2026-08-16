@@ -69,22 +69,30 @@ def propose_swap(slate: PlayerSlate, current_ids: tuple, spec: ContestSpec,
     locked_teams = schedule.locked_teams(now)
     byid = {p.fd_id: p for p in slate.players}
 
-    missing = [i for i in current_ids if i not in byid]
-    if missing:
-        raise SlateError(f"current lineup has players not in slate: {missing} — "
-                         "was a player removed by the inactives sweep? Rebuild instead.")
-
-    locked_ids = {i for i in current_ids if byid[i].team in locked_teams}
-    open_ids = [i for i in current_ids if i not in locked_ids]
+    # A lineup player missing from the slate was removed by the inactives sweep
+    # (ruled OUT after we entered). That is exactly when late swap matters most —
+    # his slot is forcibly open and the objective already reflects his absence.
+    swept = [i for i in current_ids if i not in byid]
+    present = [i for i in current_ids if i in byid]
+    locked_ids = {i for i in present if byid[i].team in locked_teams}
+    open_ids = [i for i in present if i not in locked_ids] + swept
+    if swept:
+        reason = (f"{len(swept)} rostered player(s) ruled OUT after entry "
+                  f"({', '.join(swept)}); their slots are open. " + reason)
 
     from .objectives import score_lineup
-    field_totals = sim.score_many([(l, None) for l in field_model.lineups])
-    cur = score_lineup(sim.score(current_ids).totals, field_totals, weights)
+    fm = field_model[0] if isinstance(field_model, list) else field_model
+    field_totals = sim.score_many([(l, None) for l in fm.lineups])
+    # score current lineup with swept players contributing ZERO (they will not play)
+    cur = score_lineup(sim.score(tuple(present)).totals, field_totals, weights)
 
     if not open_ids:
         return SwapProposal(current_ids, current_ids, locked_ids, [],
                             cur.dollars, cur.dollars,
                             "all players locked — nothing can be changed")
+    if swept and all(byid.get(i) is None or byid[i].team in locked_teams
+                     for i in current_ids if i not in swept):
+        pass  # swept slots stay open even when everything else is locked
 
     # Candidate pool constrained to: locked players forced in, locked-team players
     # excluded from the open slots (their games already started).
@@ -101,13 +109,19 @@ def propose_swap(slate: PlayerSlate, current_ids: tuple, spec: ContestSpec,
     ranked = rank_candidates(pool, sim, field_model, spec, weights)
     best = ranked[0]
 
-    if set(best.candidate.player_ids) == set(current_ids) or best.dollars <= cur.dollars:
+    # any valid lineup beats one with a guaranteed zero, so a swept slot forces a swap
+    if set(best.candidate.player_ids) == set(current_ids) or (not swept and best.dollars <= cur.dollars):
         return SwapProposal(current_ids, current_ids, locked_ids, [],
                             cur.dollars, cur.dollars, reason)
 
     out_ids = set(current_ids) - set(best.candidate.player_ids)
     in_ids = set(best.candidate.player_ids) - set(current_ids)
-    swaps = list(zip(sorted((byid[i] for i in out_ids), key=lambda p: p.position),
+    from .slate import SlatePlayer
+    def _ghost(fd_id):
+        return byid.get(fd_id) or SlatePlayer(fd_id=fd_id, name=f"(ruled out) {fd_id}",
+                                              position="?", team="?", opponent="?",
+                                              salary=0, game="")
+    swaps = list(zip(sorted((_ghost(i) for i in out_ids), key=lambda p: p.position),
                      sorted((byid[i] for i in in_ids), key=lambda p: p.position)))
     return SwapProposal(current_ids, best.candidate.player_ids, locked_ids, swaps,
                         cur.dollars, best.dollars, reason)

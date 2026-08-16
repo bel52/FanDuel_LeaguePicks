@@ -15,7 +15,8 @@ from .slate import PlayerSlate, SlatePlayer, SlateError
 REQUIRED_COLS = {"Id", "Position", "Salary", "Team", "Opponent", "Game"}
 NAME_COLS = {"First Name", "Last Name"}  # Nickname optional
 POSITION_MAP = {"DST": "D", "DEF": "D", "D/ST": "D", "D": "D",
-                "QB": "QB", "RB": "RB", "WR": "WR", "TE": "TE"}
+                "QB": "QB", "RB": "RB", "WR": "WR", "TE": "TE",
+                "K": "K", "PK": "K"}  # kickers appear on showdown slates
 EXCLUDE_INJURY = {"IR", "O", "OUT", "NA", "SUSP"}  # dropped at ingest, reported
 
 

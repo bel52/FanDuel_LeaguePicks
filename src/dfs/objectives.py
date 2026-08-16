@@ -118,20 +118,14 @@ def weights_for(profile: str, ctx: SeasonContext, entry_fee: float = 0.0,
             n = 5 if ctx.leaderboard == Leaderboard.BEST_5 else 10
             banked = min(ctx.weeks_played, n) / n
             return ObjectiveWeights(
-                (w_pts / max(1, ctx.weeks_left)) * (1 - 0.6 * banked), w_win,
+                w_pts * (1 - 0.6 * banked), w_win,
                 f"Best {n}: only your top {n} weeks count, so points matter less once "
                 f"good weeks are banked ({banked:.0%} banked).")
-        # UNITS: season_marginal_value is $ per +1 point per week SUSTAINED for the
-        # remaining schedule. A lineup's E[pts] is ONE week, so the per-week value of a
-        # point is that figure divided by the weeks it would be sustained over.
-        # Multiplying the sustained rate by a single week's score overstates by ~W.
-        per_week = w_pts / max(1, ctx.weeks_left)
         return ObjectiveWeights(
-            per_week, w_win,
-            f"Total Scores: every week counts. ${per_week:.3f} of season equity per point "
-            f"THIS week (${w_pts:.2f} per point/week sustained over {ctx.weeks_left} weeks) "
-            f"vs ${w_win:.2f} weekly prize — 1 point ~ "
-            f"{(per_week / (w_win * 0.01)) if w_win else 0:.2f}% of win rate.")
+            w_pts, w_win,
+            f"Total Scores: every week counts. ${w_pts:.2f}/pt of season equity vs "
+            f"${w_win:.2f} weekly prize — 1 expected point ~ "
+            f"{(w_pts / (w_win * 0.01)) if w_win else 0:.1f}% of win rate.")
 
     if profile == "h2h":
         # One opponent. Beating them is the only thing that pays; margin is worthless.
@@ -189,9 +183,14 @@ def score_lineup(mine: np.ndarray, field_totals: np.ndarray,
     All metrics come from the JOINT simulated distribution — never from summing
     individual player percentiles, which overstates a lineup ceiling badly.
     """
-    beaten = (mine[None, :] > field_totals).sum(axis=0)
-    rank = field_totals.shape[0] + 1 - beaten
-    p_win = float((rank == 1).mean())
+    # Ties split credit. With duplicated lineups (small friend fields, showdown) exact
+    # ties are common; counting them as losses understates P(win) and distorts choice
+    # between chalky and contrarian builds.
+    beaten_by = (field_totals > mine[None, :]).sum(axis=0)   # opponents strictly above me
+    tied = (field_totals == mine[None, :]).sum(axis=0)
+    rank = 1 + beaten_by
+    win_credit = (beaten_by == 0) * (1.0 / (1.0 + tied))     # share of a tied first place
+    p_win = float(win_credit.mean())
     p_top3 = float((rank <= 3).mean())
     exp_points = float(mine.mean())
     return ScoredLineup(

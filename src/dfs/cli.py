@@ -22,7 +22,8 @@ from .blend import apply_projections
 from .distributions import load_distributions, build_distributions
 from .optimize import generate_pool, StackRule
 from .simulate import SlateSimulator
-from .field import build_prior_field, rank_candidates, baseline_lineups
+from .field import (build_prior_field, build_field_ensemble, rank_candidates,
+                    baseline_lineups)
 from .objectives import Leaderboard, SeasonContext, weights_for
 from .slate import SlateStore, SlateError
 from .injuries import (records_from_fantasypros, records_from_slate, merge,
@@ -41,7 +42,17 @@ def _dist():
         print("Building empirical distributions (one-time, ~60s)...")
         DATA.mkdir(exist_ok=True)
         build_distributions(out_path=p)
-    return load_distributions(p)
+    d = load_distributions(p)
+    method = d.get("meta", {}).get("method", "?")
+    if "calibrated" not in str(d.get("meta", {}).get("source", "")) and "actual/FP" not in method:
+        print("!" * 72)
+        print(f"!! ACTIVE DISTRIBUTIONS ARE THE PROXY ({method}), NOT THE 2025 CALIBRATION.")
+        print("!! Regenerate: python3 -m dfs.calibrate --rebuild-distributions "
+              "data/calibration_2025.json --dist-out data/distributions.json — then COMMIT it.")
+        print("!" * 72)
+    else:
+        print(f"distributions: {method} (n={d['meta'].get('n_obs')})")
+    return d
 
 
 def cmd_build(a) -> int:
@@ -115,8 +126,10 @@ def cmd_build(a) -> int:
 
     print(f"Simulating {a.sims} correlated slate outcomes...")
     sim = SlateSimulator(slate, dist, n_sims=a.sims, seed=a.seed)
-    field = build_prior_field(slate, spec, n_opponents=spec.field_size - 1, seed=a.seed + 1)
-    print(f"  field model: {len(field.lineups)} opponents ({field.source})")
+    field = build_field_ensemble(slate, spec, n_opponents=spec.field_size - 1,
+                                 n_fields=a.fields, seed=a.seed + 1)
+    print(f"  field ensemble: {a.fields} draws x {spec.field_size - 1} opponents "
+          f"({field[0].source})")
 
     ctx = SeasonContext(leaderboard=Leaderboard(a.leaderboard),
                         weeks_total=a.weeks_total, weeks_played=a.weeks_played,
@@ -135,9 +148,9 @@ def cmd_build(a) -> int:
     byid = {p.fd_id: p for p in slate.players}
 
     # ---- honest baselines: a win probability alone is uninterpretable ----
-    n_opp = len(field.lineups)
+    n_opp = len(field[0].lineups)
     naive = 1.0 / (n_opp + 1)
-    field_totals = sim.score_many([(l, None) for l in field.lineups])
+    field_totals = sim.score_many([(l, None) for l in field[0].lineups])
 
     def _obj(ids, mvp=None):
         """Objective value in dollars, so baselines compare on the same axis."""
@@ -150,23 +163,18 @@ def cmd_build(a) -> int:
     mp = _obj(max_proj.player_ids, max_proj.mvp_id)
     best = ranked[0]
 
-    ar_d = sum(r.dollars for r in rand) / len(rand)
-    ar_p = sum(r.p_win for r in rand) / len(rand)
-    ar_e = sum(r.exp_points for r in rand) / len(rand)
     print("\n" + "=" * 72)
     print(f"BASELINES (vs the same {n_opp}-opponent simulated field)")
-    print(f"  {'':32s} {'$obj':>8s} {'E[pts]':>7s} {'P(win)':>7s}")
-    print(f"  coin flip among {n_opp + 1:<16d} {'-':>8s} {'-':>7s} {naive:7.1%}")
-    print(f"  random valid lineup (n={len(rand):<3d})       {ar_d:8.2f} {ar_e:7.1f} {ar_p:7.1%}")
-    print(f"  max-projection lineup            {mp.dollars:8.2f} {mp.exp_points:7.1f} {mp.p_win:7.1%}")
-    print(f"  our #1 lineup                    {best.dollars:8.2f} {best.exp_points:7.1f} {best.p_win:7.1%}")
-    edge = best.dollars - mp.dollars
-    verdict = "REAL" if edge > 0.02 else "NOT DEMONSTRATED - do not trust this build"
-    print(f"  edge over max-projection         {edge:+8.2f}  ({verdict})")
-    print(f"  (dollars of value from THIS week under {a.leaderboard}: season equity + weekly prize)")
+    print(f"  chance if all 12 were coin flips : {naive:6.1%}")
+    print(f"  random valid lineup (n=%d)       : {sum(rand_p)/len(rand_p):6.1%}" % len(rand_p))
+    print(f"  max-projection lineup            : {maxproj_p:6.1%}")
+    print(f"  our #1 lineup                    : {best_p:6.1%}")
+    edge = best_p - maxproj_p
+    print(f"  edge over max-projection         : {edge:+6.1%} "
+          f"({'REAL' if edge > 0.005 else 'NOT DEMONSTRATED — do not trust this build'})")
 
     print("\n" + "=" * 72)
-    print(f"TOP {a.show} LINEUPS — ranked by objective vs {spec.field_size - 1}-opponent field")
+    print(f"TOP {a.show} LINEUPS — ranked by EV vs {spec.field_size - 1}-opponent field")
     print("=" * 72)
     for i, r in enumerate(ranked[:a.show], 1):
         c = r.candidate
@@ -180,6 +188,19 @@ def cmd_build(a) -> int:
 
     best = ranked[0]
     best_players = [byid[i] for i in best.candidate.player_ids]
+
+    # ---- independent evaluation: fresh simulation + fresh fields ----
+    # Selection and evaluation on the same paths is self-grading (winner's curse):
+    # the argmax of noisy estimates is biased high. The number to trust is this one.
+    eval_sim = SlateSimulator(slate, dist, n_sims=a.sims, seed=a.seed + 777)
+    eval_fields = build_field_ensemble(slate, spec, n_opponents=spec.field_size - 1,
+                                       n_fields=a.fields, seed=a.seed + 7777)
+    ev = rank_candidates([best.candidate], eval_sim, eval_fields, spec, weights)[0]
+    print("\nINDEPENDENT EVALUATION of selected lineup (fresh sims + fresh fields):")
+    print(f"  selection estimate: ${best.dollars:.2f}  P(win)={best.p_win:.1%}")
+    print(f"  independent est.  : ${ev.dollars:.2f}  P(win)={ev.p_win:.1%}±{ev.mean_rank:.1%} across fields")
+    shrink = ev.dollars - best.dollars
+    print(f"  selection optimism: {shrink:+.2f}  — trust the independent number")
 
     if a.export:
         ex = export_upload_csv(best_players, a.export, slate_type=slate.slate_type,
@@ -368,6 +389,8 @@ def main(argv=None) -> int:
     b.add_argument("--entry-fee", type=float, default=15.0)
     b.add_argument("--pool", type=int, default=120)
     b.add_argument("--sims", type=int, default=20000)
+    b.add_argument("--fields", type=int, default=25,
+                   help="field draws in the ensemble; P(win) is averaged across them")
     b.add_argument("--seed", type=int, default=1729)
     b.add_argument("--show", type=int, default=3)
     b.add_argument("--min-unique", type=int, default=3)
