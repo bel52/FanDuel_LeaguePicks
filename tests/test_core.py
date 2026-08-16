@@ -840,3 +840,69 @@ def test_web_download_traversal_blocked():
     from dfs.web import app
     c = TestClient(app)
     assert c.get("/api/download/..%2F..%2F.env").status_code == 404
+
+
+# ---- learning-from-league + operational fixes (2026-08-16) ----
+from dfs.field import ownership_weights
+
+
+def test_entry_history_csv_rejected_with_clear_message(tmp_path):
+    bad = tmp_path / "hist.csv"
+    bad.write_text("Entry Id,Sport,Date,Title,SalaryCap,Score,Opp Score,Position,Entries,"
+                   "Opponent,Entry ($),Winnings ($),Link\nS1,nfl,2026/01/01,x,$60k,"
+                   "100,,1,12,league,0,15,/entry/X\n")
+    with pytest.raises(SlateError, match="ENTRY HISTORY"):
+        ingest_csv(bad, "x", 2026, 1)
+
+
+def test_vegas_missing_slate_teams_is_warning_not_fatal():
+    """After TNF kicks off, its lines vanish from the board — a Sunday build must
+    not lose ALL Vegas because one team is off-board."""
+    from dfs.vegas import OddsClient
+    import dfs.vegas as vg
+    oc = OddsClient.__new__(OddsClient)
+    oc.last_quota = {}; oc.missing_teams = []
+    lines = {"PHI": vg.TeamLine("PHI", "DAL", 47.0, -3.0, 25.0, "")}
+    oc._get = lambda *a, **k: []                      # not used in this path
+    # simulate the filter step directly
+    want = {"PHI", "JAC"}
+    out = {t: v for t, v in lines.items() if t in want}
+    oc.missing_teams = sorted(want - set(out))
+    assert out and oc.missing_teams == ["JAC"]
+
+
+def test_ownership_weights_blend_and_shrink():
+    slate = _projected_slate()
+    from dfs.matching import norm_name
+    heavy = slate.players[0]
+    measured = {norm_name(heavy.name): 50.0}          # half the league on this player
+    w1 = ownership_weights(slate, measured, n_weeks=1)
+    w8 = ownership_weights(slate, measured, n_weeks=8)
+    i = slate.players.index(heavy)
+    base = ownership_weights(slate, measured, n_weeks=0)
+    assert base is None                                # no evidence -> no override
+    assert w8[i] > w1[i] > 0, "more weeks -> measured ownership dominates the prior"
+    assert abs(w1.sum() - 1) < 1e-9 and abs(w8.sum() - 1) < 1e-9
+
+
+def test_ownership_field_labels_source():
+    slate = _projected_slate()
+    from dfs.matching import norm_name
+    measured = {norm_name(p.name): 25.0 for p in slate.players[:20]}
+    fields = build_field_ensemble(slate, SPEC, 11, n_fields=3, seed=5,
+                                  measured_ownership=measured, ownership_weeks=2)
+    assert fields[0].source == "ownership(2wk)"
+    assert all(len(f.lineups) == 11 for f in fields)
+
+
+def test_auto_context_flows_from_log(tmp_path):
+    """The build must price points using the LIVE season standing, not week-0 defaults."""
+    log = ResultLog(tmp_path / "r.db")
+    log.log_capture(parse_contest(CONTEST_FIX, 2025, 18))
+    ctx = log.season_context(2025, me="brettleath", weeks_total=21)
+    assert ctx.weeks_played == 1
+    assert ctx.deficit() > 0                          # brettleath trails xleathy
+    w0 = weights_for("friends_league",
+                     SeasonContext(leaderboard=Leaderboard.TOTAL_SCORES, weeks_total=21))
+    w1 = weights_for("friends_league", ctx)
+    assert w1.w_points > w0.w_points                   # fewer weeks left -> pricier points

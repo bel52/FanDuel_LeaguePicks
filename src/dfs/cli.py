@@ -76,6 +76,9 @@ def cmd_build(a) -> int:
             team_lines = oc.team_lines(slate_teams={p.team for p in slate.players})
             print(f"  Vegas: {len(team_lines)} team totals "
                   f"(quota remaining {oc.last_quota.get('remaining','?')})")
+            if oc.missing_teams:
+                print(f"  Vegas missing for {oc.missing_teams} (kicked off or off-board) — "
+                      "those teams build without a Vegas tilt")
             hot = sorted(team_lines.values(), key=lambda t: -t.implied_total)[:3]
             print("  highest implied totals: " +
                   ", ".join(f"{t.team} {t.implied_total}" for t in hot))
@@ -126,17 +129,41 @@ def cmd_build(a) -> int:
 
     print(f"Simulating {a.sims} correlated slate outcomes...")
     sim = SlateSimulator(slate, dist, n_sims=a.sims, seed=a.seed)
+    measured, own_weeks = None, 0
+    if a.log_db and Path(a.log_db).exists() and a.profile == "friends_league":
+        rl_own = ResultLog(a.log_db)
+        measured = rl_own.measured_ownership(a.season) or None
+        if measured:
+            with rl_own._c() as _c:
+                own_weeks = _c.execute(
+                    "SELECT COUNT(DISTINCT week) FROM ownership WHERE season=?",
+                    (a.season,)).fetchone()[0]
     field = build_field_ensemble(slate, spec, n_opponents=spec.field_size - 1,
-                                 n_fields=a.fields, seed=a.seed + 1)
+                                 n_fields=a.fields, seed=a.seed + 1,
+                                 measured_ownership=measured,
+                                 ownership_weeks=own_weeks)
     print(f"  field ensemble: {a.fields} draws x {spec.field_size - 1} opponents "
           f"({field[0].source})")
+    if measured:
+        print(f"  league ownership: {len(measured)} players from {own_weeks} captured "
+              f"week(s), shrinkage {own_weeks/(own_weeks+4):.0%} toward measured")
 
-    ctx = SeasonContext(leaderboard=Leaderboard(a.leaderboard),
-                        weeks_total=a.weeks_total, weeks_played=a.weeks_played,
-                        my_points=a.my_points, leader_points=a.leader_points,
-                        my_wins=a.my_wins, leader_wins=a.leader_wins,
-                        field_size=spec.field_size, weekly_prize=a.weekly_prize,
-                        grand_prizes=tuple(float(x) for x in a.grand_prizes.split(",") if x))
+    ctx = None
+    if a.auto_context and a.log_db and Path(a.log_db).exists():
+        ctx = ResultLog(a.log_db).season_context(a.season, me=a.me,
+                                                 weeks_total=a.weeks_total)
+        ctx.weekly_prize = a.weekly_prize
+        ctx.grand_prizes = tuple(float(x) for x in a.grand_prizes.split(",") if x)
+        ctx.field_size = spec.field_size
+        print(f"\nSeason context (from log, me={a.me}): week {ctx.weeks_played + 1}, "
+              f"{ctx.my_points:.1f} pts, {ctx.deficit():+.1f} vs leader")
+    if ctx is None:
+        ctx = SeasonContext(leaderboard=Leaderboard(a.leaderboard),
+                            weeks_total=a.weeks_total, weeks_played=a.weeks_played,
+                            my_points=a.my_points, leader_points=a.leader_points,
+                            my_wins=a.my_wins, leader_wins=a.leader_wins,
+                            field_size=spec.field_size, weekly_prize=a.weekly_prize,
+                            grand_prizes=tuple(float(x) for x in a.grand_prizes.split(",") if x))
     weights = weights_for(a.profile, ctx, entry_fee=a.entry_fee, prize_pool=a.prize_pool)
     print("\n" + "=" * 72)
     print("OBJECTIVE")
@@ -399,6 +426,9 @@ def main(argv=None) -> int:
     b.add_argument("--entry-fee", type=float, default=15.0)
     b.add_argument("--pool", type=int, default=120)
     b.add_argument("--sims", type=int, default=20000)
+    b.add_argument("--auto-context", action="store_true",
+                   help="derive season standing (weeks played, deficit) from the result log")
+    b.add_argument("--me", default="brettleath")
     b.add_argument("--fields", type=int, default=25,
                    help="field draws in the ensemble; P(win) is averaged across them")
     b.add_argument("--seed", type=int, default=1729)
@@ -479,6 +509,9 @@ def main(argv=None) -> int:
     try:
         return a.func(a)
     except (SlateError, FantasyProsError, VegasError) as e:
+        # stdout as well as stderr: the web dashboard streams stdout, and an error the
+        # user cannot see is indistinguishable from a hang.
+        print(f"\nBUILD STOPPED: {e}")
         print(f"\nBUILD STOPPED: {e}", file=sys.stderr)
         return 2
 

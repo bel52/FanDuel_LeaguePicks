@@ -63,6 +63,10 @@ def ingest_csv(path: str | Path, slate_id: str, season: int, week: int,
     with path.open(newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         cols = set(reader.fieldnames or [])
+        if "Entry Id" in cols and "Winnings ($)" in cols:
+            raise SlateError(
+                "This is a FanDuel ENTRY HISTORY export, not a salary CSV. "
+                "Get the player list from the contest lobby -> 'Download players list'.")
         missing = REQUIRED_COLS - cols
         if missing:
             raise SlateError(

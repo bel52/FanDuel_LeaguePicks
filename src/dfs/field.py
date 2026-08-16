@@ -31,9 +31,40 @@ class FieldModel:
     mvp_ids: list | None = None        # showdown: MVP per opponent lineup
 
 
+def ownership_weights(slate: PlayerSlate, measured: dict[str, float],
+                      n_weeks: int, chalk_temp: float = 1.6):
+    """Blend measured league ownership into per-player pick weights.
+
+    measured: normalized player name -> avg DRAFTED% from captured weeks.
+    Shrinkage: w = n/(n+4) on the measured component, so one captured week moves the
+    prior only 20% and the model earns influence as evidence accumulates. Players never
+    observed keep the chalk prior — absence of evidence is not evidence of a fade.
+    """
+    import numpy as np
+    from .matching import norm_name
+    alpha = n_weeks / (n_weeks + 4.0)
+    proj = np.array([p.projection for p in slate.players])
+    val = np.array([p.projection / max(p.salary / 1000, 0.1) for p in slate.players])
+    z = chalk_temp * ((val - val.mean()) / (val.std() + 1e-9)
+                      + 0.8 * (proj - proj.mean()) / (proj.std() + 1e-9))
+    prior = np.exp(z - z.max())
+    prior = prior / prior.sum()
+    own = np.array([measured.get(norm_name(p.name), -1.0) for p in slate.players])
+    seen = own >= 0
+    if not seen.any() or n_weeks == 0:
+        return None
+    meas = np.where(seen, np.maximum(own, 0.5) / 100.0, 0.0)
+    if meas.sum() > 0:
+        meas = meas / meas.sum()
+    blended = np.where(seen, (1 - alpha) * prior + alpha * meas, prior)
+    return blended / blended.sum()
+
+
 def build_field_ensemble(slate: PlayerSlate, spec: ContestSpec, n_opponents: int,
                          n_fields: int = 25, seed: int = 99,
-                         chalk_temp: float = 1.6) -> list[FieldModel]:
+                         chalk_temp: float = 1.6,
+                         measured_ownership: dict[str, float] | None = None,
+                         ownership_weeks: int = 0) -> list[FieldModel]:
     """Posterior over fields, not one arbitrary draw.
 
     A single 11-opponent draw held fixed across all simulations conditions every win
@@ -42,13 +73,20 @@ def build_field_ensemble(slate: PlayerSlate, spec: ContestSpec, n_opponents: int
     field draws integrates that uncertainty out. n_fields=25 keeps runtime modest;
     the spread across fields is reported so instability is visible, not hidden.
     """
-    return [build_prior_field(slate, spec, n_opponents, seed=seed + 1000 * k,
-                              chalk_temp=chalk_temp)
-            for k in range(n_fields)]
+    ow = None
+    if measured_ownership:
+        ow = ownership_weights(slate, measured_ownership, ownership_weeks, chalk_temp)
+    fields = [build_prior_field(slate, spec, n_opponents, seed=seed + 1000 * k,
+                                chalk_temp=chalk_temp, pick_weights=ow)
+              for k in range(n_fields)]
+    for fm in fields:
+        fm.source = f"ownership({ownership_weeks}wk)" if ow is not None else fm.source
+    return fields
 
 
 def build_prior_field(slate: PlayerSlate, spec: ContestSpec, n_opponents: int,
-                      seed: int = 99, chalk_temp: float = 1.6) -> FieldModel:
+                      seed: int = 99, chalk_temp: float = 1.6,
+                      pick_weights=None) -> FieldModel:
     """Generic-field prior: opponents pick popular, high-value players.
 
     Popularity ~ softmax over projection-per-$1000 and raw projection. chalk_temp
@@ -70,13 +108,18 @@ def build_prior_field(slate: PlayerSlate, spec: ContestSpec, n_opponents: int,
         if len(by_pos.get(pos, [])) < 4:
             raise ValueError(f"field model needs >=4 {pos}, has {len(by_pos.get(pos, []))}")
 
+    idx_of = {p.fd_id: i for i, p in enumerate(slate.players)}
     weights: dict[str, np.ndarray] = {}
     for pos, plist in by_pos.items():
-        val = np.array([p.projection / max(p.salary / 1000, 0.1) for p in plist])
-        proj = np.array([p.projection for p in plist])
-        z = chalk_temp * ((val - val.mean()) / (val.std() + 1e-9)
-                          + 0.8 * (proj - proj.mean()) / (proj.std() + 1e-9))
-        w = np.exp(z - z.max())
+        if pick_weights is not None:
+            w = np.array([pick_weights[idx_of[p.fd_id]] for p in plist])
+            w = np.maximum(w, 1e-9)
+        else:
+            val = np.array([p.projection / max(p.salary / 1000, 0.1) for p in plist])
+            proj = np.array([p.projection for p in plist])
+            z = chalk_temp * ((val - val.mean()) / (val.std() + 1e-9)
+                              + 0.8 * (proj - proj.mean()) / (proj.std() + 1e-9))
+            w = np.exp(z - z.max())
         weights[pos] = w / w.sum()
 
     def _repair(picks: list) -> list | None:

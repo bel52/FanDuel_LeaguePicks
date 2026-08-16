@@ -55,6 +55,7 @@ class OddsClient:
             raise VegasError("ODDS_API_KEY not set")
         self.timeout = timeout
         self.last_quota: dict[str, str] = {}
+        self.missing_teams: list[str] = []
 
     def _get(self, path: str, params: dict) -> list | dict:
         qs = "&".join(f"{k}={v}" for k, v in {**params, "apiKey": self.api_key}.items())

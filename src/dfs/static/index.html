@@ -158,7 +158,10 @@ tr.me td{color:var(--lamp);font-weight:600}
   <div class="actions" style="margin-bottom:14px">
     <label style="flex-direction:row;align-items:center;gap:8px">Season
       <input type="number" id="s-season" value="2026" style="width:90px"></label>
+    <label style="flex-direction:row;align-items:center;gap:8px">My FanDuel username
+      <input type="text" id="s-me" value="" style="width:160px"></label>
     <button class="go" id="s-refresh" type="button">Refresh</button>
+    <button class="go" id="s-save" type="button" style="background:transparent;border:1px solid var(--lamp);color:var(--lamp)">Save as defaults</button>
   </div>
   <div id="s-body"><p class="hint">No results logged yet. Capture a week first.</p></div>
 </section>
@@ -188,6 +191,22 @@ async function ticker(){
   }catch(e){$('#ticker').innerHTML='<span class="bad">backend unreachable</span>'}
 }
 ticker();
+/* settings prefill */
+(async()=>{try{
+  const s=await (await fetch('/api/settings')).json();
+  const f=document.querySelector('#f-build');
+  f.season.value=s.season; f.field.value=s.field;
+  document.querySelector('#f-swap').season.value=s.season;
+  document.querySelector('#f-capture').season.value=s.season;
+  $('#s-season').value=s.season; $('#s-me').value=s.me;
+}catch(e){}})();
+$('#s-save').onclick=async()=>{
+  await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({me:$('#s-me').value,season:+$('#s-season').value,
+                         field:+document.querySelector('#f-build').field.value})});
+  $('#s-save').textContent='Saved ✓';setTimeout(()=>$('#s-save').textContent='Save as defaults',1500);
+  ticker();
+};
 /* job runner */
 async function runJob(form,outSel,url,linksSel){
   const out=$(outSel),btn=form.querySelector('button.go');
@@ -220,7 +239,7 @@ $('#f-capture').onsubmit=e=>{e.preventDefault();runJob(e.target,'#o-capture','/a
 /* season tab */
 async function loadSeason(){
   const season=$('#s-season').value;
-  const s=await (await fetch('/api/standings?season='+season)).json();
+  const s=await (await fetch('/api/standings?season='+season+'&me='+encodeURIComponent($('#s-me').value||''))).json();
   if(!s.standings.length){$('#s-body').innerHTML='<p class="hint">No results logged for '+season+' yet. Capture a week first.</p>';return}
   let h='<div class="card"><h3>Standings — Total Points</h3><table><tr><th>#</th><th>Entrant</th><th>Total</th><th>Avg</th><th>Wks</th><th>Wins</th><th>Best</th></tr>';
   s.standings.forEach((r,i)=>{h+=`<tr class="${r.me?'me':''}"><td>${i+1}</td><td>${r.entrant}${r.me?' ◀':''}</td><td>${r.total.toFixed(1)}</td><td>${r.avg.toFixed(1)}</td><td>${r.weeks}</td><td>${r.wins}</td><td>${r.best.toFixed(1)}</td></tr>`});

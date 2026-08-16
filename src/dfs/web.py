@@ -35,6 +35,19 @@ UPLOADS = DATA / "uploads"
 LINEUPS = DATA / "lineups"
 DB = DATA / "results.db"
 STATIC = Path(__file__).parent / "static"
+SETTINGS_FILE = DATA / "settings.json"
+DEFAULT_SETTINGS = {"me": "brettleath", "season": 2026, "field": 12,
+                    "weekly_prize": 12.84, "grand_prizes": "135,81,54",
+                    "weeks_total": 21, "contest": "Leather League"}
+
+
+def load_settings() -> dict:
+    if SETTINGS_FILE.exists():
+        try:
+            return {**DEFAULT_SETTINGS, **json.loads(SETTINGS_FILE.read_text())}
+        except json.JSONDecodeError:
+            pass
+    return dict(DEFAULT_SETTINGS)
 
 app = FastAPI(title="dfs-v6", docs_url=None, redoc_url=None)
 
@@ -71,6 +84,19 @@ def index() -> str:
     return (STATIC / "index.html").read_text()
 
 
+@app.get("/api/settings")
+def api_settings_get() -> dict:
+    return load_settings()
+
+
+@app.post("/api/settings")
+async def api_settings_post(payload: dict) -> dict:
+    s = {**load_settings(), **{k: v for k, v in payload.items() if k in DEFAULT_SETTINGS}}
+    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(json.dumps(s, indent=1))
+    return s
+
+
 @app.get("/health")
 def health() -> dict:
     dist = DATA / "distributions.json"
@@ -104,7 +130,7 @@ async def api_build(csv: UploadFile = File(...), season: int = Form(...),
             "--weeks-total", str(weeks_total), "--pool", str(pool),
             "--show", str(show), "--contest", contest,
             "--critical-salary", "7000",
-            "--log-db", str(DB),
+            "--log-db", str(DB), "--auto-context", "--me", load_settings()["me"],
             "--export", str(LINEUPS / f"upload-{slate_id}.csv"),
             "--out", str(LINEUPS / f"{slate_id}.json")]
     if prize_pool:
@@ -167,7 +193,8 @@ def api_job(job_id: str):
 
 
 @app.get("/api/standings")
-def api_standings(season: int, me: str = "xleathy", weeks_total: int = 21):
+def api_standings(season: int, me: str = "", weeks_total: int = 21):
+    me = me or load_settings()["me"]
     rl = ResultLog(DB)
     st = rl.standings(season)
     ctx = rl.season_context(season, me, weeks_total)
