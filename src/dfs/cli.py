@@ -150,12 +150,17 @@ def cmd_build(a) -> int:
     # ---- honest baselines: a win probability alone is uninterpretable ----
     n_opp = len(field[0].lineups)
     naive = 1.0 / (n_opp + 1)
-    field_totals = sim.score_many([(l, None) for l in field[0].lineups])
 
     def _obj(ids, mvp=None):
-        """Objective value in dollars, so baselines compare on the same axis."""
-        from .objectives import score_lineup
-        return score_lineup(sim.score(ids, mvp).totals, field_totals, weights)
+        """Objective value via the SAME ensemble path used for ranking.
+
+        Scoring a baseline against one field draw while ranking candidates against a
+        25-field ensemble compares two different measurements and can invert the sign
+        of the reported edge.
+        """
+        from .optimize import Candidate
+        cand = Candidate(player_ids=tuple(ids), salary=0, proj_sum=0.0, mvp_id=mvp)
+        return rank_candidates([cand], sim, field, spec, weights)[0]
 
     bl = baseline_lineups(slate, spec, n=200, seed=a.seed + 2)
     rand = [_obj(l) for l in bl["random"]]
@@ -163,18 +168,23 @@ def cmd_build(a) -> int:
     mp = _obj(max_proj.player_ids, max_proj.mvp_id)
     best = ranked[0]
 
+    ar_d = sum(r.dollars for r in rand) / len(rand)
+    ar_p = sum(r.p_win for r in rand) / len(rand)
+    ar_e = sum(r.exp_points for r in rand) / len(rand)
     print("\n" + "=" * 72)
     print(f"BASELINES (vs the same {n_opp}-opponent simulated field)")
-    print(f"  chance if all 12 were coin flips : {naive:6.1%}")
-    print(f"  random valid lineup (n=%d)       : {sum(rand_p)/len(rand_p):6.1%}" % len(rand_p))
-    print(f"  max-projection lineup            : {maxproj_p:6.1%}")
-    print(f"  our #1 lineup                    : {best_p:6.1%}")
-    edge = best_p - maxproj_p
-    print(f"  edge over max-projection         : {edge:+6.1%} "
-          f"({'REAL' if edge > 0.005 else 'NOT DEMONSTRATED — do not trust this build'})")
+    print(f"  {'':32s} {'$obj':>8s} {'E[pts]':>7s} {'P(win)':>7s}")
+    print(f"  coin flip among {n_opp + 1:<16d} {'-':>8s} {'-':>7s} {naive:7.1%}")
+    print(f"  random valid lineup (n={len(rand):<3d})       {ar_d:8.2f} {ar_e:7.1f} {ar_p:7.1%}")
+    print(f"  max-projection lineup            {mp.dollars:8.2f} {mp.exp_points:7.1f} {mp.p_win:7.1%}")
+    print(f"  our #1 lineup                    {best.dollars:8.2f} {best.exp_points:7.1f} {best.p_win:7.1%}")
+    edge = best.dollars - mp.dollars
+    print(f"  delta vs max-projection          {edge:+8.2f}")
+    print("  NOTE: selection and this comparison share simulation paths. See the")
+    print("        INDEPENDENT EVALUATION below for the number to actually trust.")
 
     print("\n" + "=" * 72)
-    print(f"TOP {a.show} LINEUPS — ranked by EV vs {spec.field_size - 1}-opponent field")
+    print(f"TOP {a.show} LINEUPS — ranked by objective vs {spec.field_size - 1}-opponent field")
     print("=" * 72)
     for i, r in enumerate(ranked[:a.show], 1):
         c = r.candidate

@@ -404,7 +404,14 @@ def test_total_scores_values_points_and_wins():
     w = weights_for("friends_league", ctx)
     assert w.w_points > 0, "Total Scores must value expected points"
     assert w.w_win > 0
-    assert 2.0 < w.w_points < 6.0          # derived ~$3.4/pt
+    # w_points is $ per point THIS WEEK: ~$3.44 sustained / weeks remaining.
+    # This bound is a regression guard against the units bug that inflated the
+    # reported edge ~21x by multiplying a sustained rate by one week's score.
+    assert 0.05 < w.w_points < 0.50
+    late = weights_for("friends_league",
+                       SeasonContext(leaderboard=Leaderboard.TOTAL_SCORES,
+                                     weeks_total=21, weeks_played=18))
+    assert late.w_points > w.w_points, "each point matters more as weeks run out"
 
 
 def test_most_wins_values_only_wins():
@@ -774,3 +781,20 @@ def test_lateswap_survives_swept_lineup_player():
     assert prop.swaps, "a guaranteed zero must force a swap proposal"
     assert gone not in prop.proposed_ids
     assert "ruled OUT after entry" in prop.reason
+
+
+def test_baseline_and_ranking_use_same_evaluation_path():
+    """A baseline scored on one field draw while candidates are scored on a 25-field
+    ensemble compares different measurements and can invert the sign of the edge.
+    Both must run through rank_candidates."""
+    slate = _projected_slate()
+    sim = SlateSimulator(slate, DIST, n_sims=6000, seed=1729)
+    pool = generate_pool(slate, SPEC, n=20, min_unique=3)
+    fields = build_field_ensemble(slate, SPEC, 11, n_fields=10, seed=100)
+    w = weights_for("friends_league",
+                    SeasonContext(leaderboard=Leaderboard.TOTAL_SCORES, weeks_total=21))
+    ranked = rank_candidates(pool, sim, fields, SPEC, w)
+    mx = max(pool, key=lambda c: c.proj_sum)
+    mp = rank_candidates([mx], sim, fields, SPEC, w)[0]
+    assert ranked[0].dollars >= mp.dollars - 1e-9, \
+        "the selected lineup cannot score below a candidate it was ranked against"
