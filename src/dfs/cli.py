@@ -29,6 +29,8 @@ from .injuries import (records_from_fantasypros, records_from_slate, merge,
                        sweep as injury_sweep)
 from .export import export_upload_csv, lineup_card, pushover_body
 from .results import ResultLog
+from .kickoffs import KickoffSchedule
+from .lateswap import propose_swap
 
 DATA = Path(__file__).resolve().parents[2] / "data"
 
@@ -148,18 +150,23 @@ def cmd_build(a) -> int:
     mp = _obj(max_proj.player_ids, max_proj.mvp_id)
     best = ranked[0]
 
+    ar_d = sum(r.dollars for r in rand) / len(rand)
+    ar_p = sum(r.p_win for r in rand) / len(rand)
+    ar_e = sum(r.exp_points for r in rand) / len(rand)
     print("\n" + "=" * 72)
     print(f"BASELINES (vs the same {n_opp}-opponent simulated field)")
-    print(f"  chance if all 12 were coin flips : {naive:6.1%}")
-    print(f"  random valid lineup (n=%d)       : {sum(rand_p)/len(rand_p):6.1%}" % len(rand_p))
-    print(f"  max-projection lineup            : {maxproj_p:6.1%}")
-    print(f"  our #1 lineup                    : {best_p:6.1%}")
-    edge = best_p - maxproj_p
-    print(f"  edge over max-projection         : {edge:+6.1%} "
-          f"({'REAL' if edge > 0.005 else 'NOT DEMONSTRATED — do not trust this build'})")
+    print(f"  {'':32s} {'$obj':>8s} {'E[pts]':>7s} {'P(win)':>7s}")
+    print(f"  coin flip among {n_opp + 1:<16d} {'-':>8s} {'-':>7s} {naive:7.1%}")
+    print(f"  random valid lineup (n={len(rand):<3d})       {ar_d:8.2f} {ar_e:7.1f} {ar_p:7.1%}")
+    print(f"  max-projection lineup            {mp.dollars:8.2f} {mp.exp_points:7.1f} {mp.p_win:7.1%}")
+    print(f"  our #1 lineup                    {best.dollars:8.2f} {best.exp_points:7.1f} {best.p_win:7.1%}")
+    edge = best.dollars - mp.dollars
+    verdict = "REAL" if edge > 0.02 else "NOT DEMONSTRATED - do not trust this build"
+    print(f"  edge over max-projection         {edge:+8.2f}  ({verdict})")
+    print(f"  (dollars of value from THIS week under {a.leaderboard}: season equity + weekly prize)")
 
     print("\n" + "=" * 72)
-    print(f"TOP {a.show} LINEUPS — ranked by EV vs {spec.field_size - 1}-opponent field")
+    print(f"TOP {a.show} LINEUPS — ranked by objective vs {spec.field_size - 1}-opponent field")
     print("=" * 72)
     for i, r in enumerate(ranked[:a.show], 1):
         c = r.candidate
@@ -223,6 +230,86 @@ def cmd_build(a) -> int:
     if a.db:
         SlateStore(a.db).save(slate)
         print(f"Slate persisted: {a.db}")
+    return 0
+
+
+def cmd_swap(a) -> int:
+    """Sunday workflow: fresh injuries + fresh Vegas + lock-aware re-optimization of the
+    logged lineup. Run at 11:30 ET, again before the 4:00 window, and before SNF."""
+    import json as _json
+    dist = _dist()
+    rl = ResultLog(a.log_db)
+    with rl._c() as conn:
+        row = conn.execute("""SELECT lineup_json, objective FROM entries
+                              WHERE season=? AND week=? AND contest=?""",
+                           (a.season, a.week, a.contest)).fetchone()
+    if not row:
+        print(f"No logged entry for {a.contest} {a.season} w{a.week}. "
+              "Run `build --log-db` first.")
+        return 2
+    current_ids = tuple(p["fd_id"] for p in _json.loads(row["lineup_json"]))
+
+    slate, irep = ingest_csv(a.csv, a.slate_id, a.season, a.week, strict=False)
+    print(irep.summary())
+    fp = FantasyProsClient().weekly_projections(a.season, a.week)
+
+    team_lines = {}
+    try:
+        oc = OddsClient()
+        team_lines = oc.team_lines(slate_teams={p.team for p in slate.players})
+        print(f"Vegas refreshed: {len(team_lines)} team totals")
+    except VegasError as e:
+        print(f"Vegas skipped: {e}")
+
+    # fresh injuries BEFORE matching, so removed players leave the pool
+    try:
+        fp_inj = records_from_fantasypros(FantasyProsClient().injuries(a.season))
+    except FantasyProsError:
+        fp_inj = {}
+    inj = merge(records_from_slate(slate), fp_inj)
+    lineup_set = set(current_ids)
+    sw = injury_sweep(slate, inj, lineup_ids=lineup_set)
+    print("\n" + sw.summary())
+
+    mrep = apply_projections(slate, fp, team_lines, dist,
+                             min_match_rate=a.min_match,
+                             critical_salary=a.critical_salary)
+    print(f"Projections refreshed: {mrep.matched}/{mrep.total}")
+
+    try:
+        sched = KickoffSchedule.from_nflverse(a.season, a.week)
+    except Exception as e:
+        if team_lines:
+            print(f"nflverse schedule unavailable ({e}); falling back to Odds kickoff times")
+            sched = KickoffSchedule.from_team_lines(team_lines)
+        else:
+            raise
+    print("\n" + sched.summary())
+
+    spec = ContestSpec(name=a.contest, profile=Profile(a.profile),
+                       slate_type=slate.slate_type, field_size=a.field,
+                       entry_fee=a.entry_fee)
+    ctx = SeasonContext(leaderboard=Leaderboard(a.leaderboard),
+                        weeks_total=a.weeks_total, field_size=a.field,
+                        weekly_prize=a.weekly_prize,
+                        grand_prizes=tuple(float(x) for x in a.grand_prizes.split(",") if x))
+    weights = weights_for(a.profile, ctx, entry_fee=a.entry_fee, prize_pool=a.prize_pool)
+
+    sim = SlateSimulator(slate, dist, n_sims=a.sims, seed=a.seed)
+    fieldm = build_prior_field(slate, spec, n_opponents=spec.field_size - 1,
+                               seed=a.seed + 1)
+    reason = ("inactives affected the lineup" if sw.lineup_affected
+              else "scheduled late-swap check")
+    prop = propose_swap(slate, current_ids, spec, sched, sim, fieldm, weights,
+                        reason=reason)
+    byid = {p.fd_id: p for p in slate.players}
+    print("\n" + "=" * 72)
+    print(prop.summary(byid))
+    if prop.improves and a.export:
+        best_players = [byid[i] for i in prop.proposed_ids]
+        ex = export_upload_csv(best_players, a.export, slate_type=slate.slate_type,
+                               contest_name=spec.name)
+        print("\n" + ex.summary())
     return 0
 
 
@@ -330,6 +417,28 @@ def main(argv=None) -> int:
     st.add_argument("--weeks-total", type=int, default=21)
     st.add_argument("--log-db", default="data/results.db")
     st.set_defaults(func=cmd_standings)
+
+    sw = sub.add_parser("swap", help="Sunday finalize: lock-aware late-swap check of the logged lineup")
+    sw.add_argument("--csv", required=True)
+    sw.add_argument("--season", type=int, required=True)
+    sw.add_argument("--week", type=int, required=True)
+    sw.add_argument("--slate-id", default=None)
+    sw.add_argument("--contest", default="Leather League")
+    sw.add_argument("--profile", default="friends_league", choices=[p.value for p in Profile])
+    sw.add_argument("--leaderboard", default="total_scores", choices=[l.value for l in Leaderboard])
+    sw.add_argument("--field", type=int, default=12)
+    sw.add_argument("--entry-fee", type=float, default=0.0)
+    sw.add_argument("--weekly-prize", type=float, default=12.84)
+    sw.add_argument("--grand-prizes", default="135,81,54")
+    sw.add_argument("--prize-pool", type=float, default=None)
+    sw.add_argument("--weeks-total", type=int, default=21)
+    sw.add_argument("--sims", type=int, default=15000)
+    sw.add_argument("--seed", type=int, default=1729)
+    sw.add_argument("--min-match", type=float, default=0.60)
+    sw.add_argument("--critical-salary", type=int, default=6500)
+    sw.add_argument("--log-db", default="data/results.db")
+    sw.add_argument("--export", default=None)
+    sw.set_defaults(func=cmd_swap)
 
     a = ap.parse_args(argv)
     if getattr(a, "slate_id", "SKIP") is None and hasattr(a, "week"):

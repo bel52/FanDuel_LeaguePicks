@@ -404,7 +404,14 @@ def test_total_scores_values_points_and_wins():
     w = weights_for("friends_league", ctx)
     assert w.w_points > 0, "Total Scores must value expected points"
     assert w.w_win > 0
-    assert 2.0 < w.w_points < 6.0          # derived ~$3.4/pt
+    # w_points is $ per point THIS WEEK: ~$3.44 sustained / 21 weeks remaining.
+    # Asserting the per-week magnitude guards against re-introducing the units bug
+    # that inflated the reported edge ~21x.
+    assert 0.05 < w.w_points < 0.50
+    ctx_late = SeasonContext(leaderboard=Leaderboard.TOTAL_SCORES, weeks_total=21,
+                             weeks_played=18)
+    w_late = weights_for("friends_league", ctx_late)
+    assert w_late.w_points > w.w_points, "each point matters more as weeks run out"
 
 
 def test_most_wins_values_only_wins():
@@ -588,3 +595,79 @@ def test_projection_accuracy_tracks_inseason(tmp_path):
     acc = log.projection_accuracy(2026)
     assert acc["ALL"]["bias"] == pytest.approx(2.0, abs=0.01)
     assert acc["ALL"]["n"] == 9
+
+
+# ---- kickoffs + late swap ----
+from datetime import datetime, timezone, timedelta
+from dfs.kickoffs import KickoffSchedule, GameTime
+from dfs.lateswap import propose_swap
+from dfs.objectives import score_lineup as _sl
+
+
+def _sched_for(slate, locked_teams=(), now=None):
+    """Synthetic schedule: locked teams kicked off an hour ago, rest in 3 hours."""
+    now = now or datetime.now(timezone.utc)
+    games = {}
+    for p in slate.players:
+        if p.team in games:
+            continue
+        ko = now - timedelta(hours=1) if p.team in locked_teams else now + timedelta(hours=3)
+        games[p.team] = GameTime(p.team, p.opponent, ko)
+    return KickoffSchedule(games)
+
+
+def test_lock_state_and_next_lock():
+    slate = _projected_slate()
+    now = datetime.now(timezone.utc)
+    sched = _sched_for(slate, locked_teams={"PHI", "DAL"}, now=now)
+    assert sched.by_team["PHI"].locked(now) and not sched.by_team["KC"].locked(now)
+    assert {"PHI", "DAL"} <= sched.locked_teams(now)
+    assert sched.next_lock(now) is not None
+    assert "LOCKED" in sched.summary(now) and "open" in sched.summary(now)
+
+
+def _swap_setup(locked_teams, n_sims=4000):
+    slate = _projected_slate()
+    sim = SlateSimulator(slate, DIST, n_sims=n_sims, seed=1729)
+    pool = generate_pool(slate, SPEC, n=5, min_unique=3)
+    fieldm = build_prior_field(slate, SPEC, n_opponents=11, seed=99)
+    w = weights_for("friends_league",
+                    SeasonContext(leaderboard=Leaderboard.TOTAL_SCORES))
+    current = pool[-1].player_ids          # deliberately not the best lineup
+    sched = _sched_for(slate, locked_teams=locked_teams)
+    return slate, sim, fieldm, w, current, sched
+
+
+def test_swap_never_touches_locked_players():
+    slate, sim, fieldm, w, current, sched = _swap_setup(locked_teams={"PHI", "DAL", "KC", "BUF"})
+    byid = {p.fd_id: p for p in slate.players}
+    locked_in_lineup = {i for i in current if byid[i].team in {"PHI", "DAL", "KC", "BUF"}}
+    prop = propose_swap(slate, current, SPEC, sched, sim, fieldm, w)
+    assert locked_in_lineup <= set(prop.proposed_ids), "locked players must survive any swap"
+    for out_p, in_p in prop.swaps:
+        assert out_p.team not in {"PHI", "DAL", "KC", "BUF"}
+
+
+def test_swap_excludes_started_games_from_replacements():
+    slate, sim, fieldm, w, current, sched = _swap_setup(locked_teams={"PHI", "DAL"})
+    byid = {p.fd_id: p for p in slate.players}
+    prop = propose_swap(slate, current, SPEC, sched, sim, fieldm, w)
+    for _, in_p in prop.swaps:
+        assert in_p.team not in {"PHI", "DAL"}, "cannot swap IN a player whose game started"
+
+
+def test_swap_all_locked_is_noop():
+    slate, sim, fieldm, w, current, sched = _swap_setup(
+        locked_teams={p.team for p in _projected_slate().players})
+    prop = propose_swap(slate, current, SPEC, sched, sim, fieldm, w)
+    assert not prop.swaps and prop.proposed_ids == current
+    assert "all players locked" in prop.reason
+
+
+def test_swap_only_proposes_improvement():
+    slate, sim, fieldm, w, current, sched = _swap_setup(locked_teams=set())
+    prop = propose_swap(slate, current, SPEC, sched, sim, fieldm, w)
+    if prop.swaps:
+        assert prop.new_dollars > prop.old_dollars
+    else:
+        assert prop.new_dollars == prop.old_dollars

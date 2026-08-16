@@ -118,14 +118,20 @@ def weights_for(profile: str, ctx: SeasonContext, entry_fee: float = 0.0,
             n = 5 if ctx.leaderboard == Leaderboard.BEST_5 else 10
             banked = min(ctx.weeks_played, n) / n
             return ObjectiveWeights(
-                w_pts * (1 - 0.6 * banked), w_win,
+                (w_pts / max(1, ctx.weeks_left)) * (1 - 0.6 * banked), w_win,
                 f"Best {n}: only your top {n} weeks count, so points matter less once "
                 f"good weeks are banked ({banked:.0%} banked).")
+        # UNITS: season_marginal_value is $ per +1 point per week SUSTAINED for the
+        # remaining schedule. A lineup's E[pts] is ONE week, so the per-week value of a
+        # point is that figure divided by the weeks it would be sustained over.
+        # Multiplying the sustained rate by a single week's score overstates by ~W.
+        per_week = w_pts / max(1, ctx.weeks_left)
         return ObjectiveWeights(
-            w_pts, w_win,
-            f"Total Scores: every week counts. ${w_pts:.2f}/pt of season equity vs "
-            f"${w_win:.2f} weekly prize — 1 expected point ~ "
-            f"{(w_pts / (w_win * 0.01)) if w_win else 0:.1f}% of win rate.")
+            per_week, w_win,
+            f"Total Scores: every week counts. ${per_week:.3f} of season equity per point "
+            f"THIS week (${w_pts:.2f} per point/week sustained over {ctx.weeks_left} weeks) "
+            f"vs ${w_win:.2f} weekly prize — 1 point ~ "
+            f"{(per_week / (w_win * 0.01)) if w_win else 0:.2f}% of win rate.")
 
     if profile == "h2h":
         # One opponent. Beating them is the only thing that pays; margin is worthless.
