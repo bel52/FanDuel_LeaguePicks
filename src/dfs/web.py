@@ -141,6 +141,27 @@ def api_schedule(season: int | None = None, week: int | None = None) -> dict:
             "windows": [{"name": k, "games": grouped[k]} for k in order if k in grouped]}
 
 
+@app.get("/api/slates")
+def api_slates(season: int, week: int) -> list[dict]:
+    """Stored FanDuel CSVs for a week — upload once, reuse for every build/swap."""
+    out = []
+    for f in sorted(UPLOADS.glob(f"*{season}-w{week:02d}*.csv"),
+                    key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            head = f.open(encoding="utf-8-sig").readline()
+            rows = sum(1 for _ in f.open()) - 1
+        except OSError:
+            continue
+        kind = ("entry-history" if "Entry Id" in head else
+                "salary" if "Salary" in head else "unknown")
+        if kind != "salary":
+            continue
+        out.append({"file": f.name, "path": str(f), "rows": rows,
+                    "uploaded": datetime.fromtimestamp(f.stat().st_mtime,
+                                                       timezone.utc).isoformat()})
+    return out
+
+
 @app.get("/api/settings")
 def api_settings_get() -> dict:
     return load_settings()
@@ -167,7 +188,7 @@ def health() -> dict:
 
 
 @app.post("/api/build")
-async def api_build(csv: UploadFile = File(...), season: int = Form(0),
+async def api_build(csv: UploadFile | None = File(None), season: int = Form(0),
                     week: int = Form(0), profile: str = Form("friends_league"),
                     leaderboard: str = Form("total_scores"),
                     field: int = Form(12), entry_fee: float = Form(0.0),
@@ -181,8 +202,18 @@ async def api_build(csv: UploadFile = File(...), season: int = Form(0),
         wi = current_week()
         season, week = season or wi.season, week or wi.week
     UPLOADS.mkdir(parents=True, exist_ok=True)
-    dest = UPLOADS / f"{season}-w{week:02d}-{uuid.uuid4().hex[:6]}.csv"
-    dest.write_bytes(await csv.read())
+    if csv is not None and csv.filename:
+        dest = UPLOADS / f"{season}-w{week:02d}-{uuid.uuid4().hex[:6]}.csv"
+        dest.write_bytes(await csv.read())
+    else:
+        stored = sorted(UPLOADS.glob(f"*{season}-w{week:02d}*.csv"),
+                        key=lambda p: p.stat().st_mtime, reverse=True)
+        stored = [s for s in stored
+                  if "Salary" in s.open(encoding="utf-8-sig").readline()]
+        if not stored:
+            raise HTTPException(400, f"No stored salary CSV for {season} week {week} — "
+                                     "upload one.")
+        dest = stored[0]
     slate_id = f"{season}-w{week:02d}"
     argv = ["build", "--csv", str(dest), "--season", str(season), "--week", str(week),
             "--profile", profile, "--leaderboard", leaderboard,

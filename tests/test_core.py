@@ -1013,3 +1013,18 @@ def test_league_ownership_scoped_to_league(tmp_path):
     assert league_own
     assert log.ownership_week_count(2025, contest_like="Leather League") == 1
     assert log.ownership_week_count(2025) == 2
+
+
+def test_slate_library_reuse(tmp_path, monkeypatch):
+    """Upload once, build again without a file: the stored CSV is reused; a missing
+    week fails with a clear message."""
+    import dfs.web as web
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(web, "UPLOADS", tmp_path)
+    c = TestClient(web.app)
+    r = c.post("/api/build", data={"season": 2031, "week": 3, "pool": 5})
+    assert r.status_code == 400 and "No stored salary CSV" in r.text
+    (tmp_path / "2031-w03-abc123.csv").write_text(
+        open(FIX / "fd_full_slate.csv", encoding="utf-8-sig").read())
+    s = c.get("/api/slates", params={"season": 2031, "week": 3}).json()
+    assert len(s) == 1 and s[0]["rows"] > 100

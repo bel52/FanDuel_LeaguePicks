@@ -127,7 +127,8 @@ tr.me td{color:var(--lamp);font-weight:600}
   <p class="hint">Drop the FanDuel salary CSV (contest lobby → Download players list). The build pulls FantasyPros projections and Vegas team totals, sweeps injuries, simulates the slate, and ranks lineups by real prize dollars. Takes about a minute.</p>
   <form id="f-build">
     <label class="full">FanDuel salary CSV
-      <input type="file" name="csv" accept=".csv" required></label>
+      <input type="file" name="csv" accept=".csv">
+      <span class="k" id="b-stored" style="color:var(--dim);font:12px var(--mono)"></span></label>
     <label>Season <input type="number" name="season" value="2026" required></label>
     <label>Week <input type="number" name="week" min="1" max="22" required></label>
     <label>Contest type
@@ -283,6 +284,20 @@ $('#b-profile').onchange=()=>{
 };
 $('#f-swap').onsubmit=e=>{e.preventDefault();runJob(e.target,'#o-swap','/api/swap','#swap-links')};
 $('#f-capture').onsubmit=e=>{e.preventDefault();runJob(e.target,'#o-capture','/api/capture',null)};
+/* stored-slate awareness on the Build tab */
+async function checkStored(){
+  const f=document.querySelector('#f-build');
+  if(!f.season.value||!f.week.value)return;
+  try{
+    const s=await (await fetch(`/api/slates?season=${f.season.value}&week=${f.week.value}`)).json();
+    $('#b-stored').textContent=s.length
+      ?`${s.length} stored CSV(s) for this week — leave the file empty to reuse the latest (${s[0].file}, ${s[0].rows} players)`
+      :'no stored CSV for this week yet — upload one';
+  }catch(e){}
+}
+document.querySelector('#f-build').week.addEventListener('change',checkStored);
+document.querySelector('#f-build').season.addEventListener('change',checkStored);
+setTimeout(checkStored,600);
 /* week picker */
 async function loadWeek(){
   const wk=$('#w-week').value?('&week='+$('#w-week').value):'';
