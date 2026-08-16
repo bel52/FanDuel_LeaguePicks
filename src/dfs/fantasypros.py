@@ -109,8 +109,11 @@ class FantasyProsClient:
         return out
 
     def injuries(self, season: int) -> list[dict]:
-        data = self._get(f"{season}/injuries")
-        return data.get("players", data.get("injuries", []))
+        """Season is a QUERY param here, not a path segment — `{season}/injuries`
+        returns a CloudFront MissingAuthenticationToken 403 (route does not exist),
+        which reads like an auth failure but is not. Verified live 2026-08-16."""
+        data = self._get("injuries", {"season": season})
+        return data.get("injuries", data.get("players", []))
 
     def news(self, limit: int = 50) -> list[dict]:
         data = self._get("news", {"limit": limit})

@@ -906,3 +906,32 @@ def test_auto_context_flows_from_log(tmp_path):
                      SeasonContext(leaderboard=Leaderboard.TOTAL_SCORES, weeks_total=21))
     w1 = weights_for("friends_league", ctx)
     assert w1.w_points > w0.w_points                   # fewer weeks left -> pricier points
+
+
+# ---- FantasyPros injuries: verified live schema (2026-08-16) ----
+def test_fp_injury_schema_parsed():
+    rows = [{"name": "Alec Pierce", "status": "PUP", "team_id": "IND",
+             "injury_type": "", "comment": "", "practice_1": None,
+             "probability_of_playing": None},
+            {"name": "Q Full", "status": "Q", "team_id": "PHI", "injury_type": "Knee",
+             "practice_1": "LP", "practice_2": "FP", "practice_3": "FP",
+             "probability_of_playing": 80},
+            {"name": "Q Nopractice", "status": "Q", "team_id": "DAL",
+             "injury_type": "Hamstring", "practice_1": "DNP", "practice_2": "DNP",
+             "practice_3": "DNP", "probability_of_playing": 20}]
+    recs = records_from_fantasypros(rows)
+    assert recs[_norm("Alec Pierce")].status is Status.IR
+    # practice participation must separate two identically-tagged Questionables
+    assert recs[_norm("Q Full")].status is Status.PROBABLE
+    assert recs[_norm("Q Nopractice")].status is Status.DOUBTFUL
+    assert recs[_norm("Q Nopractice")].action is Action.REMOVE
+    assert "practice DNP/DNP/DNP" in recs[_norm("Q Nopractice")].detail
+
+
+def test_injury_detail_is_human_readable():
+    recs = records_from_fantasypros([{"name": "X Y", "status": "Q", "team_id": "KC",
+                                      "injury_type": "Ankle", "practice_1": "LP",
+                                      "probability_of_playing": 50,
+                                      "comment": "expected to test pregame"}])
+    d = recs[_norm("X Y")].detail
+    assert "Ankle" in d and "practice LP" in d and "50% to play" in d

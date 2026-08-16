@@ -70,7 +70,7 @@ def parse_status(raw: str) -> Status:
     s = raw.strip()
     if s.upper() in ("O", "OUT"):
         return Status.OUT
-    if s.upper() in ("IR", "PUP", "NFI", "SUSP", "NA"):
+    if s.upper() in ("IR", "PUP", "NFI", "SUSP", "NA", "IR-R", "IR/R"):
         return Status.IR
     if s.upper() == "D":
         return Status.DOUBTFUL
@@ -141,20 +141,58 @@ class SweepResult:
         return " | ".join(parts)
 
 
+# FP practice codes: DNP = did not participate, LP = limited, FP = full.
+# A Q tag with three DNPs is a very different player from a Q tag with a full Friday.
+_PRACTICE_RANK = {"DNP": 0, "LP": 1, "FP": 2, "FULL": 2, "LIMITED": 1}
+
+
+def _practice_trend(r: dict) -> tuple[str, int | None]:
+    seq = [str(r.get(f"practice_{n}") or "").upper().strip() for n in (1, 2, 3)]
+    seq = [s for s in seq if s]
+    if not seq:
+        return "", None
+    ranks = [_PRACTICE_RANK.get(s, None) for s in seq]
+    ranks = [x for x in ranks if x is not None]
+    return "/".join(seq), (ranks[-1] if ranks else None)
+
+
 def records_from_fantasypros(rows: list[dict]) -> dict[str, InjuryRecord]:
-    """Normalize the FP injuries payload. Field names vary; probe defensively."""
+    """Normalize the FP injuries payload (verified schema, 2026-08-16).
+
+    Fields used: name, team_id, status / status_short, injury_type, comment,
+    practice_1..3, probability_of_playing, injury_update_date.
+
+    Practice participation escalates a Questionable to Doubtful when the player has
+    not practiced: a Q tag with three DNPs historically plays far less often than a Q
+    with a full session, and under Total Points a zero is unrecoverable.
+    """
     out: dict[str, InjuryRecord] = {}
     for r in rows or []:
         name = r.get("name") or r.get("player_name") or ""
         if not name:
             continue
-        raw = (r.get("player_injury_status") or r.get("injury_status")
-               or r.get("status") or r.get("game_status") or "")
-        detail = (r.get("player_injury_details") or r.get("injury")
-                  or r.get("details") or r.get("injury_type") or "")
-        rec = InjuryRecord(name=name, team=norm_team(r.get("team_id") or r.get("team") or ""),
-                           status=parse_status(str(raw)), detail=str(detail),
-                           source="fantasypros")
+        raw = r.get("status") or r.get("status_short") or ""
+        status = parse_status(str(raw))
+        practice, last_rank = _practice_trend(r)
+        prob = r.get("probability_of_playing")
+        if status is Status.QUESTIONABLE and last_rank == 0:
+            status = Status.DOUBTFUL          # Q but did not practice
+        if isinstance(prob, (int, float)) and prob is not None:
+            if prob <= 25 and status in (Status.QUESTIONABLE, Status.PROBABLE):
+                status = Status.DOUBTFUL
+            elif prob >= 75 and status is Status.QUESTIONABLE:
+                status = Status.PROBABLE
+        bits = [str(r.get("injury_type") or "").strip(),
+                f"practice {practice}" if practice else "",
+                f"{prob}% to play" if prob is not None else "",
+                str(r.get("comment") or "").strip()[:60]]
+        rec = InjuryRecord(name=name,
+                           team=norm_team(r.get("team_id") or r.get("team") or ""),
+                           status=status,
+                           detail=" · ".join(b for b in bits if b),
+                           source="fantasypros",
+                           fetched_ts=str(r.get("injury_update_date") or "") or None
+                           or datetime.now(timezone.utc).isoformat())
         if rec.status is not Status.UNKNOWN:
             out[rec.key] = rec
     return out
