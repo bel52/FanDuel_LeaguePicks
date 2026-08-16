@@ -35,7 +35,7 @@ Trust that number, not the selection estimate.
 
     # Monday: ingest the contest results page (Cmd-A / Cmd-C into a text file)
     ./run.sh capture <pasted_page.txt> --season 2026 --week 1
-    ./run.sh standings --season 2026 --me xleathy
+    ./run.sh standings --season 2026 --me brettleath
 
 ## Design rules (each learned from a specific v5 failure)
 

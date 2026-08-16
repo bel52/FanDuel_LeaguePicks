@@ -239,9 +239,13 @@ def _prior_field_showdown(slate: PlayerSlate, spec: ContestSpec, n_opponents: in
         picks = [pool[i] for i in idx]
         if len({p.team for p in picks}) != 2:
             continue
-        if sum(p.salary for p in picks) > spec.salary_cap:
-            continue
         mw = mvp_w[idx]; mvp_i = idx[int(np.argmax(rng.random(len(idx)) ** (1.0 / mw)))]
+        # MVP premium counts against the cap — checking base salary alone generates
+        # opponent lineups FanDuel would reject.
+        charged = (sum(p.salary for p in picks)
+                   + (spec.mvp_salary_mult - 1.0) * pool[mvp_i].salary)
+        if charged > spec.salary_cap:
+            continue
         lineups.append(tuple(pool[i].fd_id for i in idx))
         mvps.append(pool[mvp_i].fd_id)
     if len(lineups) != n_opponents:

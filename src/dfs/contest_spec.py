@@ -35,10 +35,10 @@ class ContestSpec(BaseModel):
     winner_take_all: bool = True
     late_swap: bool = True
     salary_cap: int = 60000
-    # VERIFY against a real 2026 showdown salary CSV before Week 1: whether FanDuel
-    # charges 1.5x salary for the MVP slot (points multiplier is confirmed 1.5x;
-    # salary treatment is contested — a second review claims 1.5x salary now applies).
-    mvp_salary_mult: float = 1.0
+    # CONFIRMED (FanDuel, 2025 rules onward): the single-game MVP costs 1.5x salary
+    # AND scores 1.5x points. Defaulting to 1.0 produced cap-illegal lineups that
+    # FanDuel would reject on upload.
+    mvp_salary_mult: float = 1.5
 
     @model_validator(mode="after")
     def _check(self) -> "ContestSpec":

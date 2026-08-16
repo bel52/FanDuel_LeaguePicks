@@ -1,7 +1,7 @@
 # DFS Optimizer v6 — Project State
 
 **Living document. Replace this file in the project library whenever it changes.**
-Last updated: 2026-08-16 · Target: NFL Week 1, Sunday 2026-09-13 (~4 weeks out)
+Last updated: 2026-08-16 (rev 2 — post second adversarial review) · Target: NFL Week 1, Sunday 2026-09-13 (~4 weeks out)
 
 A new session should be able to read this file and pick up without re-deriving anything.
 
@@ -35,15 +35,20 @@ lineup. Until validated against out-of-sample outcomes it is an internal consist
 check, not evidence of profit. Every build prints an INDEPENDENT EVALUATION block
 (fresh sims + fresh fields) and a selection-optimism gap; trust that number.
 
-**A structural finding that matters:** under Total Points, expected points is ~89% of
-the league objective, and expected points is *exactly* the sum of projections
-(linearity of expectation). So for league Sunday Main the optimizer correctly reduces
-to "maximize projected points" — correlation modeling, field ensembles, and opponent
-models affect only the weekly-prize sliver (~11%). The sophisticated machinery earns
-its keep in **showdown and H2H**, where P(win) is the entire objective. Projection
-*quality*, not optimization cleverness, is the lever for league play.
+**A correction to an earlier conclusion.** I previously argued that because expected
+points is ~89% of the league objective, league play reduces to "maximize projections."
+The second adversarial review showed this reasoning is wrong: when comparing two
+lineups the common value cancels, so what matters is the *marginal* trade —
 
-Code: ~4,400 lines, **90 tests**, all passing.
+    Δobjective = $0.164 × Δ(expected points) + $12.84 × Δ P(win)
+
+One projected point trades against ~1.28 percentage points of win probability, and
+among near-max lineups that margin genuinely can change the winner. Correlation
+modeling and the field model are therefore not decorative in league play. The
+conclusion that survives is narrower: showdown and H2H are where the machinery matters
+*most*, and projection quality is the single largest lever — but not the only one.
+
+Code: ~4,500 lines, **94 tests**, all passing.
 
 ## 3. Where things live
 
@@ -122,11 +127,22 @@ Build → Sunday swap → Capture results → Season.
 - Winning a league week takes ~135–140 FD points (league average ~117).
 - Brett's history: 8.5% weekly win rate (vs 8.2% random), 0.55–0.63 percentile finish —
   consistently good, rarely spiky. This is why Total Points suits him.
-- Calibration: n=3,602 (2025 residuals). K and D have **no** calibrated pools — generic spread.
+- Calibration: n=3,602 (2025 residuals). K and D have **no** calibrated pools — generic
+  spread. Cells now carry `mean_ratio`; the simulator pins sampled means to it.
 - FP projections correlate ~0.60 with outcomes (~36% of variance).
 
 ## 7. Hard-won lessons (do not re-derive)
 
+- **Simulated means ran 14% hot** (RB +16%, TE +15%, WR +14%) because a distribution
+  reconstructed from 7 quantiles plus an interpolated tail does not preserve the mean
+  of its residuals. Fixed by storing `mean_ratio` per cell at calibration time and
+  rescaling sampled ratios to match. **Distributions built before this must be rebuilt**
+  — the CLI prints a loud banner if `mean_ratio` is absent. Regression-tested.
+- **FanDuel showdown MVP costs 1.5x salary** (and scores 1.5x). Default was 1.0, which
+  produced cap-illegal lineups FanDuel would reject. Now enforced in the optimizer, the
+  opponent field, and reported salary.
+- **2026 opens on WEDNESDAY Sep 9** (NE@SEA) because the Thursday game is in Melbourne
+  (LAR/SF). Weekday bucketing must cover Wed and Fri, not just Thu/Sat/Sun/Mon.
 - **FP injuries endpoint:** `nfl/injuries?season=YYYY` — season is a **query param**.
   The path form returns a CloudFront 403 that looks like an auth failure but is a
   nonexistent route.
@@ -145,37 +161,49 @@ Build → Sunday swap → Capture results → Season.
 
 ## 8. Remaining before Week 1 (2026-09-13)
 
-**Priority order:**
+Reordered per the second adversarial review: **fix correctness before automating it.**
+Automating a flawed swap or showdown path just makes the flaw run unattended.
 
-1. **n8n cadence + Pushover** — Wed build reminder, Thu CSV nag, Sun 11:30/15:45/19:45
-   swap checks via `POST /api/swap`, Pushover delivery of lineups and swap alerts.
-   *This is the piece that makes Sundays hands-off and prevents the worst failure mode:
-   forgetting, or missing an inactive and taking a zero.*
-2. **Showdown validation against a real 2-team FanDuel CSV** — two open questions:
-   does FanDuel charge **1.5× salary** for the MVP slot (flag `mvp_salary_mult`, default
-   1.0), and how are kickers priced? Cannot be resolved without a live showdown slate.
-3. **Rotate both API keys** (FantasyPros + Odds) — exposed in chat transcripts. New
-   values only in `/srv/appdata/dfs/.env`.
-4. **Backup coverage** — add `/srv/appdata/dfs/data`, `/srv/appdata/dfs/.env`, and
-   `/srv/compose/dfs/` to `backup-home-configs.sh` (Tedious tier: RAID1 + QNAP).
-5. **NOC delta** — new service, ports, exposure path, backup row, key-rotation items.
-6. **FanDuel entries template** — after the first real entry, download the entries CSV
-   from My Entries and feed it via `--template` so the export mirrors real headers.
-   Until then the export warns that headers are unverified.
-7. **Week 1 dry run** when slates post (~Sep 8–9).
+1. **Rotate both API keys** (FantasyPros + Odds) — exposed in chat transcripts.
+2. **Rebuild distributions on the box** so `mean_ratio` exists (see §7). Until then
+   every simulated figure is ~14% high.
+3. **Independent evaluation must be genuinely comparable** — it currently drops
+   measured ownership and evaluates only the selected lineup. Fix: identical
+   conditioning, and evaluate the max-projection baseline on the same fresh paths.
+4. **Showdown correctness** — enumerate every feasible (5-player set, MVP) combination
+   rather than using a projection-only MIP pool; add a kicker scorer and request `K`
+   from FantasyPros (kickers currently ingest but have no production projection path);
+   MVP-aware candidate identity (done).
+5. **Near-neighbour candidate search** — the pool requires 3-player differences, which
+   excludes exactly the 1–2 player pivots that trade points for win probability.
+6. **Late swap: slot-faithful, season context preserved, ensemble field, and condition
+   on completed players' ACTUAL scores** rather than re-simulating them.
+7. **Validate real salary and entry templates** for both classic and showdown.
+8. **Full failure-mode dry run** before the Week 1 slate posts.
+9. **Only then** automate: n8n reminders and alerts. Do **not** auto-apply swap
+   recommendations.
+10. **Backup coverage + NOC delta.**
 
 **Post-launch backlog:**
 
-- **AI advisory layer** — news deltas ("X named starter an hour ago; projection stale"),
-  flag-only, never auto-adjusting, ~$10/wk cap, with an on/off toggle. **No AI is in the
-  decision path today; AI cost in testing is currently $0.**
-- **Live-score late window** — condition the 4:00/SNF swap on the live league scoreboard
-  (trailing → prefer ceiling, leading → prefer floor). Needs a live-scores feed.
-  Valuable for weekly prize and showdown, minor for season points.
-- **Per-opponent tendency model** (~Week 6) — chalk appetite, team bias, stack habits,
-  heavily shrunk. **Gate: must beat the generic prior on leave-one-week-out prediction
-  before it is trusted.** Stage 1 (ownership-calibrated field) is already shipped.
-- Drive-level showdown simulation; slot-faithful export; walk-forward replay harness.
+- Immutable pre-lock snapshots (projections, raw API responses, salaries, injuries,
+  Vegas, calibration hash, candidates, seeds) starting immediately — this is the
+  foundation of any real validation.
+- Prospective pre-registration of 2026 lineups and ablations: max-projection, no-Vegas,
+  independent-outcomes, generic-field, measured-field. Bootstrap by week, never by
+  simulation row.
+- Empirical correlation estimation (current loadings are hand-selected, not fitted).
+- Vegas tilt: keep only if a walk-forward ablation wins — it may duplicate information
+  already inside FantasyPros projections.
+- Per-opponent tendencies (~Week 6), gated on beating the generic prior out-of-sample.
+- Season equity currently assigns all opponents the leader's total and ignores candidate
+  variance; model E[season prize] and weekly prize separately, then sum.
+
+**Cut from the four-week scope:** AI-assigned numerical deltas (a source-linked staleness
+flagger only, and only if logs show real stale-projection failures), drive-level showdown
+simulation, per-opponent random effects, and the "trailing → ceiling / leading → floor"
+heuristic (a variance trap unless the late swap directly simulates remaining players
+against actual scores and revealed opponent rosters).
 
 ## 9. Weekly operating rhythm (once n8n lands)
 

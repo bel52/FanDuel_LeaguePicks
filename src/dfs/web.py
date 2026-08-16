@@ -122,16 +122,20 @@ def api_schedule(season: int | None = None, week: int | None = None) -> dict:
                       "dow": et.weekday(), "hour": et.hour,
                       "game_id": g.game_id, "started": g.locked()})
     def window(g):
+        # 2026 opens on a WEDNESDAY (Sep 9, NE@SEA) because the Thursday game is in
+        # Melbourne — so weekday buckets must cover Wed/Fri too, not fall into "Other".
         d, h = g["dow"], g["hour"]
+        if d == 2: return "Wednesday Kickoff"
         if d == 3: return "Thursday Night"
+        if d == 4: return "Friday"
         if d == 5: return "Saturday"
         if d == 6 and h < 16: return "Sunday Early"
         if d == 6 and h < 19: return "Sunday Late"
         if d == 6: return "Sunday Night"
         if d == 0: return "Monday Night"
         return "Other"
-    order = ["Thursday Night", "Saturday", "Sunday Early", "Sunday Late",
-             "Sunday Night", "Monday Night", "Other"]
+    order = ["Wednesday Kickoff", "Thursday Night", "Friday", "Saturday",
+             "Sunday Early", "Sunday Late", "Sunday Night", "Monday Night", "Other"]
     grouped: dict[str, list] = {}
     for g in sorted(games, key=lambda x: x["iso"]):
         grouped.setdefault(window(g), []).append(g)

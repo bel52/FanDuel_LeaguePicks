@@ -192,7 +192,11 @@ def test_lineup_p90_below_summed_marginals():
     c = pool[0]
     joint = sim.score(c.player_ids).pct(90)
     summed = sum(byid[i].ceiling_p90 for i in c.player_ids)
-    assert joint < summed * 0.9
+    # The v5 bug was summing player p90s to claim a lineup ceiling (~45 pts too high).
+    # The joint p90 must be strictly lower. Threshold is 0.95, not 0.90: once simulated
+    # means are pinned to the empirical residual mean, tails are less extreme and the
+    # honest gap narrows. Tightening below this would test the inflation, not the math.
+    assert joint < summed * 0.95
 
 
 def test_ranking_produces_win_probs():
@@ -1028,3 +1032,48 @@ def test_slate_library_reuse(tmp_path, monkeypatch):
         open(FIX / "fd_full_slate.csv", encoding="utf-8-sig").read())
     s = c.get("/api/slates", params={"season": 2031, "week": 3}).json()
     assert len(s) == 1 and s[0]["rows"] > 100
+
+
+# ---- adversarial review round 2 (2026-08-16) ----
+def test_simulated_means_match_projections():
+    """The reconstructed distribution ran ~14% hot (RB +16%). Simulated player means
+    must equal projection x the cell's empirical mean ratio, not drift above it."""
+    slate = _projected_slate()
+    sim = SlateSimulator(slate, DIST, n_sims=20000, seed=11)
+    ratios = [sim.score([p.fd_id]).totals.mean() / p.projection
+              for p in slate.players[:80] if p.projection > 3]
+    m = float(np.mean(ratios))
+    assert 0.93 < m < 1.07, f"simulated/projected mean ratio {m:.3f} — mean pinning broken"
+
+
+def test_mvp_salary_premium_charged_and_reported():
+    """FanDuel charges 1.5x salary for the showdown MVP. Default must be 1.5, the
+    premium must count against the cap, and reported salary must include it."""
+    spec = ContestSpec(name="SD", profile=Profile.SHOWDOWN_FRIENDS,
+                       slate_type=SlateType.SINGLE_GAME, field_size=6)
+    assert spec.mvp_salary_mult == 1.5
+    slate = _showdown_slate()
+    sal = {p.fd_id: p.salary for p in slate.players}
+    for c in generate_pool(slate, spec, n=3, min_unique=1):
+        charged = sum(sal[i] for i in c.player_ids) + 0.5 * sal[c.mvp_id]
+        assert charged <= spec.salary_cap + 1
+        assert c.salary == pytest.approx(charged, abs=1), \
+            "reported salary must include the MVP premium"
+
+
+def test_showdown_field_respects_mvp_premium():
+    slate = _showdown_slate()
+    spec = ContestSpec(name="SD", profile=Profile.SHOWDOWN_FRIENDS,
+                       slate_type=SlateType.SINGLE_GAME, field_size=6)
+    fm = build_prior_field(slate, spec, n_opponents=5, seed=7)
+    sal = {p.fd_id: p.salary for p in slate.players}
+    for l, mvp in zip(fm.lineups, fm.mvp_ids):
+        assert sum(sal[i] for i in l) + 0.5 * sal[mvp] <= spec.salary_cap
+
+
+def test_candidate_identity_includes_mvp():
+    """Same five players, different MVP = a different lineup."""
+    from dfs.optimize import Candidate
+    a = Candidate(player_ids=("1", "2", "3"), salary=100, proj_sum=10.0, mvp_id="1")
+    b = Candidate(player_ids=("1", "2", "3"), salary=100, proj_sum=10.0, mvp_id="2")
+    assert a.key != b.key

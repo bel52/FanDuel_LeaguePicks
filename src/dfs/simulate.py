@@ -81,12 +81,13 @@ class SlateSimulator:
             # K and D have no calibrated pools; a generic spread until they are built.
             pcts = {"5": 0.15, "10": 0.35, "25": 0.65, "50": 0.95,
                     "75": 1.35, "90": 1.85, "95": 2.15}
-            zero = 0.02
+            zero, mean_ratio = 0.02, 1.0
         else:
             pcts, zero = cell["pcts"], cell["zero_rate"]
+            mean_ratio = cell.get("mean_ratio")
         qs = np.array([5, 10, 25, 50, 75, 90, 95]) / 100.0
         vals = np.array([pcts[k] for k in ("5", "10", "25", "50", "75", "90", "95")])
-        return qs, vals, zero
+        return qs, vals, zero, mean_ratio
 
     def _draw_from_curve(self, u: np.ndarray, qs, vals, zero: float) -> np.ndarray:
         """Map correlated uniforms through the empirical curve, with tail extension."""
@@ -119,8 +120,18 @@ class SlateSimulator:
                  + c * team_z.get(p.opponent, 0.0)
                  + np.sqrt(resid) * self.rng.standard_normal(self.n_sims))
             u = _std_normal_cdf(z)
-            qs, vals, zero = self._pool_curve(p)
-            out[i] = np.clip(p.projection * self._draw_from_curve(u, qs, vals, zero), 0, None)
+            qs, vals, zero, mean_ratio = self._pool_curve(p)
+            ratios = self._draw_from_curve(u, qs, vals, zero)
+            # MEAN PINNING. Reconstructing a distribution from 7 quantiles plus an
+            # interpolated upper tail does not preserve the mean of the residuals it
+            # came from — measured drift was +14% (RB +16%, WR +14%). Rescale the
+            # sampled ratios so their mean equals the cell's empirical mean ratio.
+            # Without this, every ceiling, P(win), and dollar figure is inflated.
+            if mean_ratio:
+                drawn = float(ratios.mean())
+                if drawn > 1e-6:
+                    ratios = ratios * (mean_ratio / drawn)
+            out[i] = np.clip(p.projection * ratios, 0, None)
         return out
 
     # ---- lineup scoring ----

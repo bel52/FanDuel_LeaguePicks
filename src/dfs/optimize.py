@@ -183,9 +183,13 @@ def _solve_showdown(players: list[SlatePlayer], spec: ContestSpec, stack: StackR
         return None
     chosen = [i for i in range(n) if x[i].varValue and x[i].varValue > 0.5]
     mvp = next((i for i in range(n) if m[i].varValue and m[i].varValue > 0.5), None)
+    # Reported salary includes the MVP premium, so what we print matches what
+    # FanDuel charges against the cap.
+    mvp_prem = (int(round((spec.mvp_salary_mult - 1.0) * players[mvp].salary))
+                if mvp is not None else 0)
     return Candidate(
         player_ids=tuple(players[i].fd_id for i in chosen),
-        salary=sum(players[i].salary for i in chosen),
+        salary=sum(players[i].salary for i in chosen) + mvp_prem,
         proj_sum=round(sum(players[i].projection * (MVP_MULTIPLIER if i == mvp else 1.0)
                            for i in chosen), 2),
         mvp_id=players[mvp].fd_id if mvp is not None else None,

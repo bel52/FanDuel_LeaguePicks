@@ -116,6 +116,10 @@ def rebuild_distributions(data: dict, min_proj: float = 3.0, min_n: int = 50) ->
             dist[pos][key] = {
                 "n": int(len(ratios)),
                 "pcts": {str(p): round(float(np.percentile(ratios, p)), 4) for p in PCTS},
+                # The reconstructed curve (7 quantiles + interpolated tails) does NOT
+                # preserve the mean of the underlying residuals — it ran ~14% hot.
+                # Store the empirical mean so the simulator can pin it explicitly.
+                "mean_ratio": round(float(np.mean(ratios)), 4),
                 "mean": round(float(ratios.mean()), 4),
                 "zero_rate": round(float((ratios <= 0.05).mean()), 4),
             }

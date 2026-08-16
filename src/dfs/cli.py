@@ -53,6 +53,15 @@ def _dist():
         print("!" * 72)
     else:
         print(f"distributions: {method} (n={d['meta'].get('n_obs')})")
+    sample = next((v for pos in ("QB", "RB", "WR", "TE")
+                   for v in (d.get(pos) or {}).values() if v), None)
+    if sample is not None and "mean_ratio" not in sample:
+        print("!" * 72)
+        print("!! DISTRIBUTIONS PREDATE MEAN PINNING — simulated outcomes run ~14% HOT.")
+        print("!! Every ceiling, P(win) and dollar figure below is inflated.")
+        print("!! Rebuild: python3 -m dfs.calibrate --rebuild-distributions "
+              "data/calibration_2025.json --dist-out data/distributions.json")
+        print("!" * 72)
     return d
 
 
@@ -480,7 +489,7 @@ def main(argv=None) -> int:
 
     st = sub.add_parser("standings", help="season standings + objective weights from the log")
     st.add_argument("--season", type=int, required=True)
-    st.add_argument("--me", default="xleathy")
+    st.add_argument("--me", default="brettleath")
     st.add_argument("--weeks-total", type=int, default=21)
     st.add_argument("--contest", default="Leather League",
                     help="scope standings to this contest (league by default)")
