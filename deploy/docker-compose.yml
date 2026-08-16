@@ -1,0 +1,18 @@
+# /srv/compose/dfs/docker-compose.yml
+services:
+  dfs:
+    build:
+      context: /srv/appdata/dfs/src-checkout
+    container_name: dfs
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8093:8093"     # tunnel-only; never LAN-exposed
+    env_file:
+      - /srv/appdata/dfs/.env
+    volumes:
+      - /srv/appdata/dfs/data:/app/data
+    healthcheck:
+      test: ["CMD","python3","-c","import urllib.request;urllib.request.urlopen('http://localhost:8093/health',timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3

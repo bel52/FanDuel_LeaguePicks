@@ -5,3 +5,6 @@ PuLP==3.3.2
 pyarrow==25.0.1
 pydantic==2.13.4
 pytest==9.1.1
+fastapi>=0.115
+uvicorn>=0.30
+python-multipart>=0.0.9

@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leather League Ops</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ── Stadium-at-night console: charcoal turf, chalk lines, sodium-lamp amber ── */
+:root{
+  --turf:#101418; --turf-2:#161c22; --line:#2a333c; --chalk:#e8ecef;
+  --dim:#93a1ad; --lamp:#f5a524; --lamp-dim:#8a6414; --live:#3fb68b; --flag:#e5484d;
+  --mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box} html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--turf);color:var(--chalk);
+  font:15px/1.5 Barlow,system-ui,sans-serif}
+a{color:var(--lamp)}
+.wrap{max-width:1060px;margin:0 auto;padding:0 20px 80px}
+
+/* header = the scoreboard */
+header{border-bottom:2px solid var(--line);padding:26px 0 0;margin-bottom:0}
+h1{font:700 34px/1 'Barlow Condensed';letter-spacing:.04em;text-transform:uppercase;margin:0}
+h1 .yr{color:var(--lamp)}
+.sub{color:var(--dim);margin:6px 0 18px;font-size:14px}
+nav{display:flex;gap:2px;flex-wrap:wrap}
+nav button{appearance:none;border:0;background:transparent;color:var(--dim);
+  font:600 15px/1 'Barlow Condensed';letter-spacing:.08em;text-transform:uppercase;
+  padding:12px 18px;cursor:pointer;border-bottom:3px solid transparent}
+nav button.on{color:var(--chalk);border-bottom-color:var(--lamp)}
+nav button:focus-visible{outline:2px solid var(--lamp);outline-offset:-2px}
+
+/* objective ticker — the signature strip */
+#ticker{display:flex;gap:28px;flex-wrap:wrap;background:var(--turf-2);
+  border:1px solid var(--line);border-top:0;padding:12px 18px;font-family:var(--mono);
+  font-size:13px;color:var(--dim)}
+#ticker b{color:var(--lamp);font-weight:600}
+#ticker .ok{color:var(--live)} #ticker .bad{color:var(--flag)}
+
+main{padding-top:26px}
+section{display:none} section.on{display:block}
+h2{font:600 22px/1.2 'Barlow Condensed';letter-spacing:.05em;text-transform:uppercase;
+  margin:0 0 4px}
+.hint{color:var(--dim);font-size:13.5px;margin:0 0 18px;max-width:70ch}
+
+form{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;
+  background:var(--turf-2);border:1px solid var(--line);padding:18px;margin-bottom:18px}
+label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--dim);
+  text-transform:uppercase;letter-spacing:.06em}
+input,select,textarea{background:var(--turf);border:1px solid var(--line);color:var(--chalk);
+  padding:9px 10px;font:14px var(--mono);border-radius:2px;min-width:0}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--lamp);outline-offset:-1px}
+input[type=file]{padding:6px;font-family:Barlow}
+.full{grid-column:1/-1}
+.actions{grid-column:1/-1;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+button.go{appearance:none;border:0;background:var(--lamp);color:#1a1206;
+  font:700 15px 'Barlow Condensed';letter-spacing:.1em;text-transform:uppercase;
+  padding:12px 26px;cursor:pointer;border-radius:2px}
+button.go:disabled{background:var(--lamp-dim);cursor:wait}
+button.go:focus-visible{outline:2px solid var(--chalk)}
+.dl{font:600 13px var(--mono);border:1px solid var(--lamp);color:var(--lamp);
+  padding:8px 14px;text-decoration:none;border-radius:2px}
+
+pre.out{background:#0b0e11;border:1px solid var(--line);padding:16px;overflow:auto;
+  font:12.5px/1.55 var(--mono);white-space:pre;min-height:70px;max-height:560px}
+pre.out .spin::after{content:'';animation:d 1.2s steps(4) infinite}
+@keyframes d{0%{content:''}25%{content:'.'}50%{content:'..'}75%{content:'...'}}
+
+table{width:100%;border-collapse:collapse;font:13.5px var(--mono)}
+th{font:600 12px 'Barlow Condensed';letter-spacing:.08em;text-transform:uppercase;
+  color:var(--dim);text-align:right;padding:8px 10px;border-bottom:2px solid var(--line)}
+th:first-child,td:first-child{text-align:left}
+td{padding:8px 10px;text-align:right;border-bottom:1px solid var(--line)}
+tr.me td{color:var(--lamp);font-weight:600}
+.card{background:var(--turf-2);border:1px solid var(--line);padding:16px;margin-bottom:14px}
+.card h3{font:600 16px 'Barlow Condensed';letter-spacing:.06em;text-transform:uppercase;margin:0 0 8px}
+.metrics{font:12.5px var(--mono);color:var(--dim);margin-bottom:8px}
+.metrics b{color:var(--live)}
+@media (prefers-reduced-motion:reduce){pre.out .spin::after{animation:none;content:'...'}}
+@media (max-width:640px){h1{font-size:26px}#ticker{gap:14px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>Leather League <span class="yr">Ops</span></h1>
+  <p class="sub">Build Wednesday. Sweep Sunday 11:30. Capture Monday. Every number traceable.</p>
+  <nav id="tabs">
+    <button data-t="build" class="on">Build</button>
+    <button data-t="swap">Sunday swap</button>
+    <button data-t="capture">Capture results</button>
+    <button data-t="season">Season</button>
+  </nav>
+  <div id="ticker">loading system state…</div>
+</header>
+
+<main>
+<section id="t-build" class="on">
+  <h2>Build lineups</h2>
+  <p class="hint">Drop the FanDuel salary CSV (contest lobby → Download players list). The build pulls FantasyPros projections and Vegas team totals, sweeps injuries, simulates the slate, and ranks lineups by real prize dollars. Takes about a minute.</p>
+  <form id="f-build">
+    <label class="full">FanDuel salary CSV
+      <input type="file" name="csv" accept=".csv" required></label>
+    <label>Season <input type="number" name="season" value="2026" required></label>
+    <label>Week <input type="number" name="week" min="1" max="22" required></label>
+    <label>Contest type
+      <select name="profile">
+        <option value="friends_league">League (Sunday main)</option>
+        <option value="showdown_friends">Single game vs friends</option>
+        <option value="h2h">Head-to-head</option>
+        <option value="public_gpp">Public tournament</option>
+      </select></label>
+    <label>Field size <input type="number" name="field" value="12"></label>
+    <label>Entry fee $ <input type="number" step="0.01" name="entry_fee" value="0"></label>
+    <label>Prize pool $ (one-offs) <input type="text" name="prize_pool" placeholder="auto"></label>
+    <label>Lineups to show <input type="number" name="show" value="3"></label>
+    <div class="actions">
+      <button class="go" type="submit">Build lineups</button>
+      <span id="build-links"></span>
+    </div>
+  </form>
+  <pre class="out" id="o-build">Ready.</pre>
+</section>
+
+<section id="t-swap">
+  <h2>Sunday swap check</h2>
+  <p class="hint">Run at 11:30, before the 4:00 window, and before Sunday night. Re-checks inactives and Vegas, reads real kickoff times, and re-optimizes only the slots that haven't locked. Uses this week's logged lineup and the CSV you built with — nothing to upload unless the slate changed.</p>
+  <form id="f-swap">
+    <label>Season <input type="number" name="season" value="2026" required></label>
+    <label>Week <input type="number" name="week" min="1" max="22" required></label>
+    <label class="full">Slate CSV (only if changed)
+      <input type="file" name="csv" accept=".csv"></label>
+    <div class="actions"><button class="go" type="submit">Run swap check</button>
+      <span id="swap-links"></span></div>
+  </form>
+  <pre class="out" id="o-swap">Ready.</pre>
+</section>
+
+<section id="t-capture">
+  <h2>Capture contest results</h2>
+  <p class="hint">Monday: open the contest results page, ⌘A ⌘C, paste below. This logs every opponent's score and lineup plus measured ownership, updates the season standings, and re-derives next week's objective weights.</p>
+  <form id="f-capture">
+    <label>Season <input type="number" name="season" value="2026" required></label>
+    <label>Week <input type="number" name="week" min="1" max="22" required></label>
+    <label class="full">Pasted page text
+      <textarea name="text" rows="7" placeholder="⌘V the whole page here"></textarea></label>
+    <label class="full">…or upload the saved file
+      <input type="file" name="page" accept=".txt,.rtf,.zip"></label>
+    <div class="actions"><button class="go" type="submit">Log results</button></div>
+  </form>
+  <pre class="out" id="o-capture">Ready.</pre>
+</section>
+
+<section id="t-season">
+  <h2>Season</h2>
+  <p class="hint">Standings from logged results, the objective the next build will use, and whether projections are holding up in-season.</p>
+  <div class="actions" style="margin-bottom:14px">
+    <label style="flex-direction:row;align-items:center;gap:8px">Season
+      <input type="number" id="s-season" value="2026" style="width:90px"></label>
+    <button class="go" id="s-refresh" type="button">Refresh</button>
+  </div>
+  <div id="s-body"><p class="hint">No results logged yet. Capture a week first.</p></div>
+</section>
+</main>
+</div>
+
+<script>
+const $=q=>document.querySelector(q);
+/* tabs */
+document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#tabs button').forEach(x=>x.classList.toggle('on',x===b));
+  document.querySelectorAll('main section').forEach(s=>s.classList.toggle('on',s.id==='t-'+b.dataset.t));
+  if(b.dataset.t==='season')loadSeason();
+});
+/* ticker */
+async function ticker(){
+  try{
+    const h=await (await fetch('/health')).json();
+    const cal=h.calibrated_distributions
+      ?'<span class="ok">calibrated distributions</span>'
+      :'<span class="bad">PROXY DISTRIBUTIONS — rebuild calibration</span>';
+    let obj='';
+    try{const s=await (await fetch('/api/standings?season='+($('#s-season')?.value||2026))).json();
+      if(s.objective) obj=`objective <b>$${s.objective.w_points}/pt</b> · <b>$${s.objective.w_win}/win</b> · week ${s.context.weeks_played+1}`;
+    }catch(e){}
+    $('#ticker').innerHTML=`${cal}${obj?' &nbsp;·&nbsp; '+obj:''} &nbsp;·&nbsp; <span>${new Date(h.time).toLocaleString()}</span>`;
+  }catch(e){$('#ticker').innerHTML='<span class="bad">backend unreachable</span>'}
+}
+ticker();
+/* job runner */
+async function runJob(form,outSel,url,linksSel){
+  const out=$(outSel),btn=form.querySelector('button.go');
+  btn.disabled=true;out.innerHTML='<span class="spin">Working</span>';
+  try{
+    const r=await fetch(url,{method:'POST',body:new FormData(form)});
+    if(!r.ok){out.textContent='Request failed: '+await r.text();btn.disabled=false;return}
+    const {job}=await r.json();
+    const poll=async()=>{
+      const j=await (await fetch('/api/job/'+job)).json();
+      out.textContent=j.output||'';
+      if(j.status==='running'){out.innerHTML+='\n<span class="spin">running</span>';setTimeout(poll,2500);return}
+      btn.disabled=false;
+      out.textContent=(j.output||'')+(j.status==='failed'?'\n\n*** FAILED — read the error above ***':'\n\n*** DONE ***');
+      out.scrollTop=out.scrollHeight;
+      if(linksSel&&j.status==='done'){
+        const week=form.week?.value,season=form.season?.value;
+        const f=(url.includes('build')?`upload-${season}-w${String(week).padStart(2,'0')}.csv`
+                                      :`swap-${season}-w${String(week).padStart(2,'0')}.csv`);
+        $(linksSel).innerHTML=`<a class="dl" href="/api/download/${f}">Download FanDuel upload CSV</a>`;
+      }
+      ticker();
+    };
+    poll();
+  }catch(e){out.textContent='Error: '+e;btn.disabled=false}
+}
+$('#f-build').onsubmit=e=>{e.preventDefault();runJob(e.target,'#o-build','/api/build','#build-links')};
+$('#f-swap').onsubmit=e=>{e.preventDefault();runJob(e.target,'#o-swap','/api/swap','#swap-links')};
+$('#f-capture').onsubmit=e=>{e.preventDefault();runJob(e.target,'#o-capture','/api/capture',null)};
+/* season tab */
+async function loadSeason(){
+  const season=$('#s-season').value;
+  const s=await (await fetch('/api/standings?season='+season)).json();
+  if(!s.standings.length){$('#s-body').innerHTML='<p class="hint">No results logged for '+season+' yet. Capture a week first.</p>';return}
+  let h='<div class="card"><h3>Standings — Total Points</h3><table><tr><th>#</th><th>Entrant</th><th>Total</th><th>Avg</th><th>Wks</th><th>Wins</th><th>Best</th></tr>';
+  s.standings.forEach((r,i)=>{h+=`<tr class="${r.me?'me':''}"><td>${i+1}</td><td>${r.entrant}${r.me?' ◀':''}</td><td>${r.total.toFixed(1)}</td><td>${r.avg.toFixed(1)}</td><td>${r.weeks}</td><td>${r.wins}</td><td>${r.best.toFixed(1)}</td></tr>`});
+  h+='</table></div>';
+  h+=`<div class="card"><h3>Next build objective</h3><div class="metrics">${s.objective.rationale}</div>
+      <div class="metrics">behind leader by <b>${s.context.deficit}</b> pts · <b>${s.context.weeks_left}</b> weeks left</div></div>`;
+  if(s.accuracy&&Object.keys(s.accuracy).length){
+    h+='<div class="card"><h3>In-season projection accuracy</h3><table><tr><th>Pos</th><th>n</th><th>MAE</th><th>Bias</th><th>Corr</th></tr>';
+    for(const[p,v]of Object.entries(s.accuracy))h+=`<tr><td>${p}</td><td>${v.n}</td><td>${v.mae}</td><td>${v.bias}</td><td>${v.corr??'—'}</td></tr>`;
+    h+='</table></div>';
+  }
+  $('#s-body').innerHTML=h;
+}
+$('#s-refresh').onclick=loadSeason;
+</script>
+</body>
+</html>

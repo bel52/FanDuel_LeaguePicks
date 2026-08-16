@@ -798,3 +798,45 @@ def test_baseline_and_ranking_use_same_evaluation_path():
     mp = rank_candidates([mx], sim, fields, SPEC, w)[0]
     assert ranked[0].dollars >= mp.dollars - 1e-9, \
         "the selected lineup cannot score below a candidate it was ranked against"
+
+
+# ---- web API (offline smoke) ----
+def test_web_health_and_index():
+    from fastapi.testclient import TestClient
+    from dfs.web import app
+    c = TestClient(app)
+    h = c.get("/health")
+    assert h.status_code == 200 and h.json()["ok"] is True
+    assert "calibrated_distributions" in h.json()
+    i = c.get("/")
+    assert i.status_code == 200 and "Leather League" in i.text
+
+
+def test_web_capture_roundtrip(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    import dfs.web as web
+    monkeypatch.setattr(web, "DB", tmp_path / "r.db")
+    monkeypatch.setattr(web, "UPLOADS", tmp_path)
+    c = TestClient(web.app)
+    r = c.post("/api/capture",
+               files={"page": ("w18.zip", open(CONTEST_FIX, "rb"), "application/zip")},
+               data={"season": 2025, "week": 18})
+    assert r.status_code == 200
+    job = r.json()["job"]
+    import time
+    for _ in range(60):
+        j = c.get(f"/api/job/{job}").json()
+        if j["status"] != "running":
+            break
+        time.sleep(0.3)
+    assert j["status"] == "done", j["output"][-400:]
+    s = c.get("/api/standings", params={"season": 2025, "me": "xleathy"}).json()
+    assert s["standings"][0]["entrant"] == "xleathy"
+    assert s["objective"]["w_points"] > 0
+
+
+def test_web_download_traversal_blocked():
+    from fastapi.testclient import TestClient
+    from dfs.web import app
+    c = TestClient(app)
+    assert c.get("/api/download/..%2F..%2F.env").status_code == 404
