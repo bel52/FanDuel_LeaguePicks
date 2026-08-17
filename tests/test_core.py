@@ -145,12 +145,34 @@ def test_pool_respects_roster_rules():
 
 
 def test_pool_diversity_enforced():
+    """Phase 1 of the pool spreads across the projection frontier: the first lineups
+    must differ from each other by min_unique players."""
     slate = _projected_slate()
-    pool = generate_pool(slate, SPEC, n=8, min_unique=3)
-    for i in range(len(pool)):
-        for j in range(i + 1, len(pool)):
-            overlap = len(set(pool[i].player_ids) & set(pool[j].player_ids))
-            assert overlap <= ROSTER_FULL_SIZE - 3
+    pool = generate_pool(slate, SPEC, n=12, min_unique=3)
+    assert len(pool) >= 4
+    frontier = pool[:6]
+    for i, a in enumerate(frontier):
+        for b in frontier[i + 1:]:
+            shared = len(set(a.player_ids) & set(b.player_ids))
+            assert shared <= len(a.player_ids) - 3, "frontier lineups must be diverse"
+
+
+def test_pool_includes_near_neighbour_pivots():
+    """Phase 2 adds 1-2 player pivots. The diversity constraint excludes exactly these,
+    yet at $0.164/pt vs $12.84/win-prob they are the trades most likely to pay."""
+    slate = _projected_slate()
+    pool = generate_pool(slate, SPEC, n=60, min_unique=3)
+    assert len(pool) > 12
+    n = len(pool[0].player_ids)
+    # at least one pair differing by only 1-2 players must exist
+    close = 0
+    for i, a in enumerate(pool):
+        for b in pool[i + 1:]:
+            d = n - len(set(a.player_ids) & set(b.player_ids))
+            if 1 <= d <= 2:
+                close += 1
+    assert close > 0, "no near-neighbour pivots generated"
+    assert len({c.key for c in pool}) == len(pool), "pool must not contain duplicates"
 
 
 def test_qb_stack_constraint():

@@ -237,40 +237,45 @@ def cmd_build(a) -> int:
     best = ranked[0]
     best_players = [byid[i] for i in best.candidate.player_ids]
 
-    # ---- independent evaluation: fresh simulation + fresh fields ----
-    # Selection and evaluation on the same paths is self-grading (winner's curse):
-    # the argmax of noisy estimates is biased high. The number to trust is this one.
+    # ---- independent evaluation ----
+    # Selection and evaluation on the same simulation paths is self-grading: the argmax
+    # of noisy estimates is biased high. Fresh paths remove that Monte Carlo winner's
+    # curse. Two requirements the first version got wrong:
+    #   (1) IDENTICAL CONDITIONING. If selection used measured ownership, evaluation
+    #       must too; silently dropping it changes the model, not just the seed, and
+    #       makes the two numbers incomparable.
+    #   (2) EVALUATE THE BASELINES on the same fresh paths. Comparing a fresh estimate
+    #       of our lineup against a stale estimate of max-projection is not a delta.
+    # This still only corrects simulation noise. It does NOT validate the model or
+    # demonstrate predictive edge.
     eval_sim = SlateSimulator(slate, dist, n_sims=a.sims, seed=a.seed + 777)
     eval_fields = build_field_ensemble(slate, spec, n_opponents=spec.field_size - 1,
-                                       n_fields=a.fields, seed=a.seed + 7777)
-    ev = rank_candidates([best.candidate], eval_sim, eval_fields, spec, weights)[0]
-    print("\nINDEPENDENT EVALUATION of selected lineup (fresh sims + fresh fields):")
-    print(f"  selection estimate: ${best.dollars:.2f}  P(win)={best.p_win:.1%}")
-    print(f"  independent est.  : ${ev.dollars:.2f}  P(win)={ev.p_win:.1%}±{ev.mean_rank:.1%} across fields")
-    shrink = ev.dollars - best.dollars
-    print(f"  selection optimism: {shrink:+.2f}  — trust the independent number")
-
-    if a.export:
-        ex = export_upload_csv(best_players, a.export, slate_type=slate.slate_type,
-                               mvp_id=best.candidate.mvp_id, template=a.template,
-                               contest_name=spec.name)
-        print("\n" + ex.summary())
-
-    if a.log_db:
-        rl = ResultLog(a.log_db)
-        rl.log_entry(a.season, a.week, spec.name, best_players, slate_id=a.slate_id,
-                     objective=a.leaderboard, exp_points=best.exp_points,
-                     p_win=best.p_win)
-        print(f"Logged entry -> {a.log_db}")
-
-    if a.pushover_out:
-        Path(a.pushover_out).parent.mkdir(parents=True, exist_ok=True)
-        Path(a.pushover_out).write_text(pushover_body(
-            best_players,
-            f"W{a.week} ${best.dollars:.2f} | E[pts] {best.exp_points:.1f} | "
-            f"P(win) {best.p_win:.0%}",
-            mvp_id=best.candidate.mvp_id))
-        print(f"Pushover body -> {a.pushover_out}")
+                                       n_fields=a.fields, seed=a.seed + 7777,
+                                       measured_ownership=measured,
+                                       ownership_weeks=own_weeks)
+    ev_rows = rank_candidates([best.candidate, max_proj], eval_sim, eval_fields,
+                              spec, weights)
+    ev_best = next(r for r in ev_rows if r.candidate.key == best.candidate.key)
+    ev_mp = next(r for r in ev_rows if r.candidate.key == max_proj.key)
+    print("\nINDEPENDENT EVALUATION (fresh sims + fresh fields, same conditioning)")
+    print(f"  {'':22s} {'$obj':>8s} {'E[pts]':>7s} {'P(win)':>8s}")
+    print(f"  max-projection        {ev_mp.dollars:8.2f} {ev_mp.exp_points:7.1f} "
+          f"{ev_mp.p_win:7.1%}±{ev_mp.mean_rank:.1%}")
+    print(f"  our #1                {ev_best.dollars:8.2f} {ev_best.exp_points:7.1f} "
+          f"{ev_best.p_win:7.1%}±{ev_best.mean_rank:.1%}")
+    fresh_edge = ev_best.dollars - ev_mp.dollars
+    sel_edge = best.dollars - mp.dollars
+    print(f"  fresh edge vs max-proj {fresh_edge:+8.2f}   "
+          f"(selection claimed {sel_edge:+.2f}; optimism {sel_edge - fresh_edge:+.2f})")
+    if fresh_edge <= 0.02:
+        print("  VERDICT: no edge demonstrated over max-projection on this slate.")
+        print("           The lineup is defensible; the claim of an edge is not.")
+    else:
+        print(f"  VERDICT: {fresh_edge:+.2f}/week vs max-projection on fresh paths. Still")
+        print("           model-graded — not out-of-sample validation.")
+    print(f"  ownership conditioning: "
+          f"{'measured (' + str(own_weeks) + 'wk)' if measured else 'generic prior'} "
+          "— identical in selection and evaluation")
 
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
