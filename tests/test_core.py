@@ -194,15 +194,54 @@ def test_simulator_deterministic():
 
 
 def test_correlation_structure():
+    """The simulator must reproduce correlations MEASURED from real outcomes
+    (nflverse 2023-2025, residualized within player-season — see corrfit.py):
+
+        QB - same-team WR   +0.246
+        WR - same-team WR   +0.017   <- the old factor model forced this positive
+        QB - opposing QB    +0.134
+        cross-game           0.000
+
+    Targets are checked with tolerance because the copula transform through skewed
+    marginals attenuates rank correlation somewhat. The critical assertion is the
+    ORDERING and that WR-WR is near zero: a factor model cannot do both, and
+    overstating stack correlation inflates stacked ceilings and P(win).
+    """
     slate = _projected_slate()
-    sim = SlateSimulator(slate, DIST, n_sims=20000, seed=1729)
-    g = lambda pos, team: next(p for p in slate.players if p.position == pos and p.team == team)
-    c = lambda a, b: np.corrcoef(sim.matrix[sim.index[a.fd_id]], sim.matrix[sim.index[b.fd_id]])[0, 1]
-    qb, wr = g("QB", "PHI"), g("WR", "PHI")
-    assert 0.25 < c(qb, wr) < 0.55                      # same-team stack
-    assert abs(c(qb, g("WR", "KC"))) < 0.05             # different game ~ independent
-    assert c(g("D", "PHI"), g("WR", "DAL")) < -0.10     # DEF vs opposing offense
-    assert 0.0 < c(qb, g("WR", "DAL")) < 0.20           # bring-back
+    sim = SlateSimulator(slate, DIST, n_sims=15000, seed=5)
+    M, idx = sim.matrix, sim.index
+
+    def r(a, b):
+        return float(np.corrcoef(M[idx[a.fd_id]], M[idx[b.fd_id]])[0, 1])
+
+    qb = next(p for p in slate.players if p.position == "QB")
+    same_wr = [p for p in slate.players if p.position == "WR" and p.team == qb.team]
+    opp_qb = next((p for p in slate.players
+                   if p.position == "QB" and p.team == qb.opponent), None)
+    cross = next(p for p in slate.players
+                 if p.team not in (qb.team, qb.opponent) and p.position == "WR")
+
+    assert abs(r(qb, cross)) < 0.05, "cross-game correlation must be ~0"
+    if same_wr:
+        qb_wr = r(qb, same_wr[0])
+        assert 0.12 < qb_wr < 0.35, f"QB-WR {qb_wr:+.3f} should approach +0.246"
+    if len(same_wr) > 1:
+        wr_wr = r(same_wr[0], same_wr[1])
+        assert abs(wr_wr) < 0.10, \
+            f"WR-WR {wr_wr:+.3f} must be near zero (measured +0.017)"
+        assert qb_wr > wr_wr + 0.08, "QB-WR must exceed WR-WR — the whole point of " \
+                                     "replacing the factor model"
+    if opp_qb:
+        assert 0.04 < r(qb, opp_qb) < 0.25, "bring-back should approach +0.134"
+
+
+def test_correlation_table_loads_measured_values():
+    from dfs.simulate import _load_corr_table, pair_corr
+    tbl = _load_corr_table()
+    assert pair_corr(tbl, "QB", "WR", True) > pair_corr(tbl, "WR", "WR", True)
+    assert abs(pair_corr(tbl, "WR", "WR", True)) < 0.08
+    assert pair_corr(tbl, "QB", "QB", False) > 0.05      # bring-back is real
+    assert pair_corr(tbl, "D", "QB", False) < 0           # DEF hurt by opposing QB
 
 
 def test_lineup_p90_below_summed_marginals():

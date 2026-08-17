@@ -1,0 +1,89 @@
+{
+ "meta": {
+  "seasons": [
+   2023,
+   2024,
+   2025
+  ],
+  "method": "within-player-season residual z, within-game pairs",
+  "null_cross_game": -0.0216
+ },
+ "pairs": {
+  "QB-WR same team": {
+   "r": 0.2457,
+   "n": 6960
+  },
+  "QB-TE same team": {
+   "r": 0.2009,
+   "n": 3468
+  },
+  "QB-QB opposing": {
+   "r": 0.1338,
+   "n": 871
+  },
+  "QB-TE opposing": {
+   "r": 0.0537,
+   "n": 3481
+  },
+  "QB-RB same team": {
+   "r": 0.0494,
+   "n": 4241
+  },
+  "RB-RB same team": {
+   "r": 0.0458,
+   "n": 3445
+  },
+  "QB-WR opposing": {
+   "r": 0.0416,
+   "n": 6950
+  },
+  "RB-RB opposing": {
+   "r": -0.0377,
+   "n": 5198
+  },
+  "TE-TE same team": {
+   "r": 0.0306,
+   "n": 2291
+  },
+  "TE-TE opposing": {
+   "r": 0.0206,
+   "n": 3459
+  },
+  "WR-WR opposing": {
+   "r": 0.0201,
+   "n": 13939
+  },
+  "WR-WR same team": {
+   "r": 0.0171,
+   "n": 11221
+  },
+  "TE-WR opposing": {
+   "r": 0.0145,
+   "n": 13944
+  },
+  "RB-WR opposing": {
+   "r": 0.0143,
+   "n": 16990
+  },
+  "TE-WR same team": {
+   "r": 0.0123,
+   "n": 13919
+  },
+  "QB-RB opposing": {
+   "r": 0.0101,
+   "n": 4240
+  },
+  "RB-TE same team": {
+   "r": 0.0094,
+   "n": 8544
+  },
+  "RB-WR same team": {
+   "r": -0.0071,
+   "n": 17025
+  },
+  "RB-TE opposing": {
+   "r": 0.0007,
+   "n": 8552
+  }
+ }
+}
