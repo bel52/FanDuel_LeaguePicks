@@ -88,19 +88,57 @@ def generate_pool(slate: PlayerSlate, spec: ContestSpec, n: int = 150,
         for base in seeds:
             if len(candidates) >= n:
                 break
+            from itertools import combinations
             for k in (1, 2):
-                for drop in range(len(base.player_ids)):
+                for dropped in combinations(base.player_ids, k):
                     if len(candidates) >= n:
                         break
-                    keep = set(base.player_ids)
-                    for d in range(k):
-                        keep.discard(base.player_ids[(drop + d) % len(base.player_ids)])
-                    piv = solve(pool_players, spec, stack, locked_ids | keep, [], 0)
+                    keep = set(base.player_ids) - set(dropped)
+                    # exclude the dropped players so the re-solve cannot hand them back
+                    cand_players = [p for p in pool_players if p.fd_id not in dropped]
+                    piv = solve(cand_players, spec, stack, locked_ids | keep, [], 0)
                     if piv is None or piv.key in seen:
                         continue
                     seen.add(piv.key)
                     candidates.append(piv)
     return candidates
+
+
+def max_projection_lineup(slate: PlayerSlate, spec: ContestSpec) -> Candidate:
+    """TRUE max-projection baseline: the highest-projection lineup under FanDuel
+    LEGALITY ONLY — cap, roster shape, and (showdown) both-teams + MVP pricing.
+    No stack, diversity, or pool-truncation constraints. Every claimed edge is
+    measured against this yardstick, so it must not inherit the candidate pool's
+    constraints (that gap measured 1.96 projected points on the test fixture)."""
+    slate.require_projections()
+    if spec.slate_type == SlateType.SINGLE_GAME:
+        cand = _solve_showdown(slate.players, spec, StackRule(require_qb_stack=0),
+                               set(), [], 0)
+        if cand is None:
+            raise SlateError("max-projection showdown solve infeasible")
+        return cand
+    players = slate.players
+    prob = pulp.LpProblem("maxproj", pulp.LpMaximize)
+    x = {i: pulp.LpVariable(f"x{i}", cat="Binary") for i in range(len(players))}
+    prob += pulp.lpSum(players[i].projection * x[i] for i in x)
+    prob += pulp.lpSum(players[i].salary * x[i] for i in x) <= spec.salary_cap
+    prob += pulp.lpSum(x.values()) == ROSTER_FULL_SIZE
+    for pos, (lo, hi) in ROSTER_FULL.items():
+        ix = [i for i, p in enumerate(players) if p.position == pos]
+        if not ix:
+            raise SlateError(f"no {pos} in pool")
+        prob += pulp.lpSum(x[i] for i in ix) >= lo
+        prob += pulp.lpSum(x[i] for i in ix) <= hi
+    for i, p in enumerate(players):
+        if p.position not in ROSTER_FULL:
+            prob += x[i] == 0
+    prob.solve(pulp.PULP_CBC_CMD(msg=0))
+    if pulp.LpStatus[prob.status] != "Optimal":
+        raise SlateError("max-projection solve infeasible")
+    ids = tuple(players[i].fd_id for i in x if x[i].value() == 1)
+    chosen = [p for p in players if p.fd_id in set(ids)]
+    return Candidate(player_ids=ids, salary=sum(p.salary for p in chosen),
+                     proj_sum=round(sum(p.projection for p in chosen), 2))
 
 
 def _diversity_constraints(prob, players, x, prior: list[Candidate], min_unique: int, size: int):
@@ -126,6 +164,12 @@ def _solve_full(players: list[SlatePlayer], spec: ContestSpec, stack: StackRule,
             raise SlateError(f"no {pos} in pool")
         prob += pulp.lpSum(x[i] for i in ix) >= lo
         prob += pulp.lpSum(x[i] for i in ix) <= hi
+    # Positions outside the classic roster (K ingests for showdown reuse) can never
+    # fill a classic slot: the position ranges sum to a minimum of 8 against a
+    # roster size of 9, so without this an unlisted position could take the 9th.
+    for i, p in enumerate(players):
+        if p.position not in ROSTER_FULL:
+            prob += x[i] == 0
     for i, p in enumerate(players):
         if p.fd_id in locked:
             prob += x[i] == 1
@@ -179,7 +223,7 @@ def _solve_full(players: list[SlatePlayer], spec: ContestSpec, stack: StackRule,
 
 def _solve_showdown(players: list[SlatePlayer], spec: ContestSpec, stack: StackRule,
                     locked: set[str], prior: list[Candidate], min_unique: int) -> Optional[Candidate]:
-    """5 players (1 MVP at 1.5x + 4 utility), both teams represented."""
+    """6 players (1 MVP at 1.5x points and salary + 5 FLEX), both teams represented."""
     prob = pulp.LpProblem("sd", pulp.LpMaximize)
     n = len(players)
     x = {i: pulp.LpVariable(f"x{i}", cat="Binary") for i in range(n)}   # in lineup

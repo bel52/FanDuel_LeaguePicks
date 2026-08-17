@@ -249,8 +249,13 @@ async def api_swap(csv: UploadFile | None = File(None),
         dest = UPLOADS / f"swap-{season}-w{week:02d}-{uuid.uuid4().hex[:6]}.csv"
         dest.write_bytes(await csv.read())
         path = str(dest)
-    elif slate_csv and Path(slate_csv).exists():
-        path = slate_csv
+    elif slate_csv:
+        # Only stored uploads are acceptable — a raw form path would let any caller
+        # feed an arbitrary server-readable file into the parser.
+        p = Path(slate_csv).resolve()
+        if not p.is_file() or UPLOADS.resolve() not in p.parents:
+            raise HTTPException(400, "slate_csv must reference a stored upload")
+        path = str(p)
     else:
         # reuse the most recent upload for this week
         cands = sorted(UPLOADS.glob(f"{season}-w{week:02d}-*.csv"))
@@ -283,7 +288,8 @@ async def api_capture(page: UploadFile | None = File(None),
     else:
         raise HTTPException(400, "Paste the contest page text or upload the file.")
     argv = ["capture", str(dest), "--season", str(season), "--week", str(week),
-            "--contest", contest, "--log-db", str(DB)]
+            "--contest", contest, "--log-db", str(DB),
+            "--me", load_settings()["me"]]
     return {"job": _start_job("capture", argv)}
 
 

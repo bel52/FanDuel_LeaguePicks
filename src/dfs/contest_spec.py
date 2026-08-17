@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field, model_validator
 
 class SlateType(str, Enum):
     FULL = "full"          # Sunday Main classic
-    SINGLE_GAME = "single_game"  # showdown MVP+4
+    SINGLE_GAME = "single_game"  # showdown: 1 MVP + 5 FLEX (6 slots)
 
 
 class Profile(str, Enum):
@@ -58,5 +58,5 @@ class ContestSpec(BaseModel):
 # Roster templates (verified against FanDuel rules; re-verify live in 2.1)
 ROSTER_FULL = {"QB": (1, 1), "RB": (2, 3), "WR": (3, 4), "TE": (1, 2), "D": (1, 1)}
 ROSTER_FULL_SIZE = 9
-ROSTER_SHOWDOWN_SIZE = 5  # 1 MVP (1.5x) + 4 utility, any position
+ROSTER_SHOWDOWN_SIZE = 6  # 1 MVP (1.5x pts AND salary) + 5 FLEX — FanDuel single-game, 2025 rules onward
 MVP_MULTIPLIER = 1.5

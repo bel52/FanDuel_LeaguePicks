@@ -26,7 +26,7 @@ from typing import Any, Optional
 from .scoring import score
 
 BASE = "https://api.fantasypros.com/public/v2/json/nfl"
-POSITIONS = ["QB", "RB", "WR", "TE", "DST"]
+POSITIONS = ["QB", "RB", "WR", "TE", "K", "DST"]
 
 
 class FantasyProsError(Exception):

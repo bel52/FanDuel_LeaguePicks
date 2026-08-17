@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from .slate import PlayerSlate, SlateError
 from .fantasypros import FPProjection
 from .vegas import TeamLine
+from .matching import norm_team
 from .distributions import floor_ceiling
 from .matching import match_slate, MatchReport
 
@@ -41,7 +42,7 @@ def apply_projections(slate: PlayerSlate, fp_projections: list[FPProjection],
         if fp is None or fp.points <= 0:
             continue
         base = fp.points                      # already true FanDuel points (scoring.py)
-        line = team_lines.get(sp.team)
+        line = team_lines.get(norm_team(sp.team))
         tilt = 0.0
         if line and sp.position != "D":
             tilt = max(-VEGAS_TILT_CAP,

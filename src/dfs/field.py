@@ -265,7 +265,8 @@ class RankedLineup:
     median: float
     p10: float
     p90: float
-    mean_rank: float
+    mean_rank: float        # NOTE: std of P(win) ACROSS FIELD DRAWS (ensemble spread),
+                            # not an estimate of total uncertainty — excludes sim noise
     weights: "ObjectiveWeights"
 
     def summary(self) -> str:
@@ -273,7 +274,7 @@ class RankedLineup:
         parts = [f"${self.dollars:6.2f}"]
         if w.w_points:
             parts.append(f"E[pts]={self.exp_points:6.1f}")
-        parts += [f"P(win)={self.p_win:5.1%}±{self.mean_rank:4.1%}",
+        parts += [f"P(win)={self.p_win:5.1%} (field spread ±{self.mean_rank:4.1%})",
                   f"P(top3)={self.p_top3:5.1%}",
                   f"med={self.median:6.1f}", f"[{self.p10:5.1f}-{self.p90:6.1f}]",
                   f"${self.candidate.salary}"]

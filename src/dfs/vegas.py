@@ -15,6 +15,8 @@ import urllib.error
 from dataclasses import dataclass
 from typing import Optional
 
+from .matching import norm_team
+
 BASE = "https://api.the-odds-api.com/v4"
 SPORT = "americanfootball_nfl"
 
@@ -103,18 +105,22 @@ class OddsClient:
             if total is None or home not in spreads or away not in spreads:
                 continue
             for team, opp in ((home, away), (away, home)):
-                out[team] = TeamLine(
-                    team=team, opponent=opp, game_total=float(total),
+                # Canonicalize through norm_team so a FanDuel "JAC" slate matches an
+                # Odds-board "JAX" (and any future alias) — never key on raw abbrs.
+                tn, on = norm_team(team), norm_team(opp)
+                out[tn] = TeamLine(
+                    team=tn, opponent=on, game_total=float(total),
                     spread=spreads[team],
                     implied_total=round(float(total) / 2 - spreads[team] / 2, 2),
                     kickoff_iso=g.get("commence_time", ""),
                 )
         if slate_teams:
-            out = {t: v for t, v in out.items() if t in slate_teams}
-            missing = slate_teams - set(out)
-            if missing:
-                raise VegasError(f"no Vegas lines for slate teams: {sorted(missing)} — "
-                                 "verify slate vs odds board before proceeding")
+            want = {norm_team(t) for t in slate_teams}
+            out = {t: v for t, v in out.items() if t in want}
+            # A slate team missing from the board is NORMAL on Sunday (TNF has kicked
+            # off; lines vanish). Degrade to a warning the caller can print — a single
+            # off-board team must never cost the build the entire Vegas layer.
+            self.missing_teams = sorted(want - set(out))
         if not out:
             raise VegasError("zero team lines parsed — API/schema problem")
         return out

@@ -102,12 +102,23 @@ class ResultLog:
 
     def log_entry(self, season: int, week: int, contest: str, players: list,
                   slate_id: str = "", objective: str = "", exp_points: float = 0.0,
-                  p_win: float = 0.0) -> None:
-        """Record a submitted lineup WITH the projections believed at lock time."""
+                  p_win: float = 0.0, mvp_id: str | None = None,
+                  mvp_salary_mult: float = 1.5) -> None:
+        """Record a submitted lineup WITH the projections believed at lock time.
+
+        Showdown: the MVP is part of the lineup's identity (scores 1.5x, costs 1.5x),
+        so it is stored per-player in lineup_json and the salary column records the
+        CHARGED total (base + MVP premium), which is what FanDuel validated."""
         lineup = [{"fd_id": p.fd_id, "name": p.name, "pos": p.position, "team": p.team,
                    "salary": p.salary, "projection": p.projection,
-                   "proj_source": p.proj_source, "implied_total": p.implied_team_total}
+                   "proj_source": p.proj_source, "implied_total": p.implied_team_total,
+                   "mvp": p.fd_id == mvp_id}
                   for p in players]
+        charged = sum(p.salary for p in players)
+        if mvp_id:
+            charged += int(round((mvp_salary_mult - 1.0)
+                                 * next((p.salary for p in players
+                                         if p.fd_id == mvp_id), 0)))
         with self._c() as c:
             c.execute("""INSERT OR REPLACE INTO entries
                 (season,week,contest,slate_id,submitted_ts,objective,exp_points,p_win,
@@ -119,7 +130,7 @@ class ResultLog:
                     (SELECT winnings     FROM entries WHERE season=? AND week=? AND contest=?))""",
                 (season, week, contest, slate_id,
                  datetime.now(timezone.utc).isoformat(timespec="seconds"), objective,
-                 exp_points, p_win, sum(p.salary for p in players), json.dumps(lineup),
+                 exp_points, p_win, charged, json.dumps(lineup),
                  season, week, contest, season, week, contest,
                  season, week, contest, season, week, contest))
             for p in players:

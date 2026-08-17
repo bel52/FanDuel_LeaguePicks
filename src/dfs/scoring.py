@@ -121,5 +121,26 @@ def score_dst(stats: dict) -> tuple[float, dict]:
     return round(sum(b.values()), 2), b
 
 
+# FanDuel kicker scoring: XP made = 1; FG made 0-39 yds = 3, 40-49 = 4, 50+ = 5.
+# FantasyPros consensus projects total FG made ("fg") and XP made ("xpt") with no
+# distance split, so expected FG value uses the league-wide made-distance mix
+# (nflverse 2023-2025: ~62%% under 40, ~24%% 40-49, ~14%% 50+ -> 3*.62+4*.24+5*.14).
+# TODO: replace the fixed mix with per-kicker measured splits when K calibration lands.
+FG_EXPECTED_VALUE = 3.52
+
+
+def score_kicker(stats: dict) -> tuple[float, dict]:
+    """FanDuel points for a kicker from an FP projected stat line."""
+    b = {
+        "fg": round(_f(stats, "fg") * FG_EXPECTED_VALUE, 3),
+        "xp": round(_f(stats, "xpt") * 1.0, 3),
+    }
+    return round(sum(b.values()), 2), b
+
+
 def score(stats: dict, position: str) -> tuple[float, dict]:
-    return score_dst(stats) if position in ("D", "DST", "DEF") else score_skill(stats)
+    if position in ("D", "DST", "DEF"):
+        return score_dst(stats)
+    if position == "K":
+        return score_kicker(stats)
+    return score_skill(stats)

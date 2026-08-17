@@ -777,8 +777,9 @@ def test_showdown_field_generates_exact_count():
     assert len(fm.lineups) == 5 and fm.mvp_ids and len(fm.mvp_ids) == 5
     sal = {p.fd_id: p.salary for p in slate.players}
     for l, mvp in zip(fm.lineups, fm.mvp_ids):
-        assert len(l) == 5 and mvp in l
-        assert sum(sal[i] for i in l) <= SD_SPEC.salary_cap
+        assert len(l) == 6 and mvp in l          # FanDuel single game: 1 MVP + 5 FLEX
+        assert (sum(sal[i] for i in l)
+                + 0.5 * sal[mvp]) <= SD_SPEC.salary_cap   # MVP premium counts
         teams = {next(p.team for p in slate.players if p.fd_id == i) for i in l}
         assert len(teams) == 2
 
@@ -786,7 +787,7 @@ def test_showdown_field_generates_exact_count():
 def test_showdown_end_to_end_ranks():
     slate = _showdown_slate()
     pool = generate_pool(slate, SD_SPEC, n=8, min_unique=1)
-    assert pool and all(len(c.player_ids) == 5 and c.mvp_id for c in pool)
+    assert pool and all(len(c.player_ids) == 6 and c.mvp_id for c in pool)
     sim = SlateSimulator(slate, DIST, n_sims=3000, seed=5)
     fields = build_field_ensemble(slate, SD_SPEC, n_opponents=5, n_fields=5, seed=9)
     w = weights_for("showdown_friends", SeasonContext(), entry_fee=5.0)
@@ -920,20 +921,44 @@ def test_entry_history_csv_rejected_with_clear_message(tmp_path):
         ingest_csv(bad, "x", 2026, 1)
 
 
-def test_vegas_missing_slate_teams_is_warning_not_fatal():
-    """After TNF kicks off, its lines vanish from the board — a Sunday build must
-    not lose ALL Vegas because one team is off-board."""
+def _fake_odds_board(games):
+    """Odds-API-shaped payload: [(home_full, away_full, total, home_spread), ...]"""
+    out = []
+    for home, away, total, hsp in games:
+        out.append({
+            "home_team": home, "away_team": away, "commence_time": "2026-09-13T17:00:00Z",
+            "bookmakers": [{"markets": [
+                {"key": "totals", "outcomes": [{"point": total}, {"point": total}]},
+                {"key": "spreads", "outcomes": [{"name": home, "point": hsp},
+                                                {"name": away, "point": -hsp}]},
+            ]}]})
+    return out
+
+
+def test_vegas_missing_slate_teams_is_warning_not_fatal(monkeypatch):
+    """REAL code path: team_lines() must return the teams it has and populate
+    missing_teams for the ones it doesn't — never raise for a partial board.
+    (The previous version of this test re-implemented the filter inline and passed
+    while production raised; every regression test must call the real function.)"""
     from dfs.vegas import OddsClient
-    import dfs.vegas as vg
-    oc = OddsClient.__new__(OddsClient)
-    oc.last_quota = {}; oc.missing_teams = []
-    lines = {"PHI": vg.TeamLine("PHI", "DAL", 47.0, -3.0, 25.0, "")}
-    oc._get = lambda *a, **k: []                      # not used in this path
-    # simulate the filter step directly
-    want = {"PHI", "JAC"}
-    out = {t: v for t, v in lines.items() if t in want}
-    oc.missing_teams = sorted(want - set(out))
-    assert out and oc.missing_teams == ["JAC"]
+    oc = OddsClient(api_key="test")
+    board = _fake_odds_board([("Philadelphia Eagles", "Dallas Cowboys", 47.0, -3.0)])
+    monkeypatch.setattr(oc, "_get", lambda *a, **k: board)
+    out = oc.team_lines(slate_teams={"PHI", "DAL", "JAC"})   # JAC kicked off Thursday
+    assert set(out) == {"PHI", "DAL"}
+    assert oc.missing_teams == ["JAC"]
+    assert out["PHI"].implied_total == 25.0
+
+
+def test_vegas_jax_jac_normalization(monkeypatch):
+    """A FanDuel 'JAC' slate must match the Odds board's 'Jacksonville Jaguars' —
+    both sides route through matching.norm_team, no hardcoded abbreviations."""
+    from dfs.vegas import OddsClient
+    oc = OddsClient(api_key="test")
+    board = _fake_odds_board([("Jacksonville Jaguars", "Tennessee Titans", 41.5, -2.5)])
+    monkeypatch.setattr(oc, "_get", lambda *a, **k: board)
+    out = oc.team_lines(slate_teams={"JAC", "TEN"})
+    assert set(out) == {"JAC", "TEN"} and oc.missing_teams == []
 
 
 def test_ownership_weights_blend_and_shrink():
@@ -1138,3 +1163,158 @@ def test_candidate_identity_includes_mvp():
     a = Candidate(player_ids=("1", "2", "3"), salary=100, proj_sum=10.0, mvp_id="1")
     b = Candidate(player_ids=("1", "2", "3"), salary=100, proj_sum=10.0, mvp_id="2")
     assert a.key != b.key
+
+
+# ---- adversarial review round 3: operational-correctness fixes (2026-08-17) ----
+from dfs.optimize import max_projection_lineup
+
+
+def test_max_projection_baseline_beats_pool_max():
+    """The reported 'edge vs max-projection' is only meaningful against the TRUE
+    unconstrained cap-legal optimum. Selecting the baseline from the constrained
+    candidate pool measured 1.96 projected points short on this fixture — enough
+    to flip the sign of the claimed edge."""
+    slate = _projected_slate()
+    pool = generate_pool(slate, SPEC, n=120,
+                         stack=StackRule(require_qb_stack=1), min_unique=3)
+    pool_max = max(c.proj_sum for c in pool)
+    true_max = max_projection_lineup(slate, SPEC)
+    assert true_max.proj_sum >= pool_max - 1e-6
+    # regression pin on the fixture: the gap is real and material
+    assert true_max.proj_sum - pool_max > 1.0
+    # and the baseline is actually legal
+    assert len(true_max.player_ids) == 9
+    byid = {p.fd_id: p for p in slate.players}
+    assert sum(byid[i].salary for i in true_max.player_ids) <= SPEC.salary_cap
+
+
+def test_kicker_scorer_real_path():
+    """score() must route K through a real kicker scorer — score_skill reads a
+    kicker's FG stat line as ~0, which silently zeroes every K projection."""
+    from dfs.scoring import score
+    pts, breakdown = score({"fg": 2.0, "xpt": 3.0}, "K")
+    assert pts > 8.0                       # 2 FG + 3 XP is never ~0
+    assert breakdown["fg"] > 0 and breakdown["xp"] == 3.0
+    zero, _ = score({"fg": 2.0, "xpt": 3.0}, "RB")   # skill scorer ignores FG stats
+    assert zero == 0.0
+
+
+def test_fantasypros_requests_kickers():
+    from dfs.fantasypros import POSITIONS
+    assert "K" in POSITIONS
+
+
+def test_kicker_never_fills_a_classic_slot():
+    """Classic FanDuel rosters have no K slot. The position ranges sum to a minimum
+    of 8 against a roster size of 9, so without an explicit exclusion a projected
+    kicker could take the 9th slot the moment K projections go live."""
+    slate = _projected_slate()
+    from dfs.slate import SlatePlayer
+    from dfs.distributions import floor_ceiling
+    k = SlatePlayer(fd_id="k-test", name="Test Kicker", position="K", team="PHI",
+                    opponent="DAL", salary=4000, game="DAL@PHI")
+    k.projection = 999.0                   # irresistible unless excluded
+    k.floor_p10, k.ceiling_p90 = floor_ceiling(9.0, "K", DIST)
+    slate.players.append(k)
+    true_max = max_projection_lineup(slate, SPEC)
+    assert "k-test" not in true_max.player_ids
+    pool = generate_pool(slate, SPEC, n=4, min_unique=3)
+    for c in pool:
+        assert "k-test" not in c.player_ids
+
+
+def test_log_entry_mvp_roundtrip(tmp_path):
+    """Showdown entry must persist MVP identity and CHARGED salary, and swap must
+    be able to recover the MVP from the log."""
+    import json as _json
+    slate = _showdown_slate()
+    pool = generate_pool(slate, SD_SPEC, n=2, min_unique=1)
+    cand = pool[0]
+    byid = {p.fd_id: p for p in slate.players}
+    players = [byid[i] for i in cand.player_ids]
+    db = tmp_path / "r.db"
+    rl = ResultLog(db)
+    rl.log_entry(2026, 1, "SNF", players, mvp_id=cand.mvp_id, mvp_salary_mult=1.5)
+    with rl._c() as c:
+        row = c.execute("SELECT salary, lineup_json FROM entries").fetchone()
+    lineup = _json.loads(row["lineup_json"])
+    recovered_mvp = next(p["fd_id"] for p in lineup if p.get("mvp"))
+    assert recovered_mvp == cand.mvp_id
+    base = sum(p.salary for p in players)
+    mvp_sal = byid[cand.mvp_id].salary
+    assert row["salary"] == base + int(round(0.5 * mvp_sal))   # charged, not base
+
+
+def test_showdown_export_has_six_player_columns(tmp_path):
+    from dfs.export import export_upload_csv, DEFAULT_SHOWDOWN_COLS
+    assert DEFAULT_SHOWDOWN_COLS.count("AnyFLEX") == 5 and "MVP" in DEFAULT_SHOWDOWN_COLS
+    slate = _showdown_slate()
+    pool = generate_pool(slate, SD_SPEC, n=1, min_unique=1)
+    byid = {p.fd_id: p for p in slate.players}
+    players = [byid[i] for i in pool[0].player_ids]
+    out = tmp_path / "u.csv"
+    ex = export_upload_csv(players, out, slate_type=SlateType.SINGLE_GAME,
+                           mvp_id=pool[0].mvp_id)
+    import csv as _csv
+    rows = list(_csv.reader(out.open()))
+    hdr, row = rows[0], rows[1]
+    ids = [v for c, v in zip(hdr, row) if c in ("MVP", "AnyFLEX")]
+    assert len(ids) == 6 and ids[0] == pool[0].mvp_id and all(ids)
+
+
+def test_build_end_to_end_produces_artifacts(tmp_path, monkeypatch):
+    """THE test that was missing: a full `build` run must leave behind (1) the upload
+    CSV, (2) a logged entry that `swap` can find (with MVP recoverable), (3) the
+    pushover card, (4) the lineup JSON. 96 unit tests passed while all four were
+    silently gone — never again."""
+    import json as _json
+    from dfs import cli as cli_mod
+    from dfs.fantasypros import FPProjection
+
+    slate_probe, _ = ingest_csv(FIX / "fd_full_slate.csv", "e2e", 2026, 1)
+
+    def fake_projections(self, season, week, positions=None):
+        import random as _r
+        _r.seed(11)
+        return [FPProjection(player_id=f"fp{i}", name=p.name, team=p.team,
+                             position=p.position,
+                             points=round(max(1.0, (p.fppg or 5.0) * _r.uniform(0.9, 1.1)), 2),
+                             stats={}, breakdown={})
+                for i, p in enumerate(slate_probe.players)]
+
+    monkeypatch.setattr("dfs.fantasypros.FantasyProsClient.weekly_projections",
+                        fake_projections)
+    monkeypatch.setenv("FANTASYPROS_API_KEY", "test")   # ctor check; method is stubbed
+
+    export = tmp_path / "upload.csv"
+    log_db = tmp_path / "results.db"
+    push = tmp_path / "push.txt"
+    outj = tmp_path / "lineups.json"
+    rc = cli_mod.main([
+        "build", "--csv", str(FIX / "fd_full_slate.csv"),
+        "--season", "2026", "--week", "1", "--slate-id", "e2e",
+        "--no-vegas", "--no-injuries",
+        "--pool", "10", "--sims", "400", "--fields", "3", "--show", "1",
+        "--export", str(export), "--log-db", str(log_db),
+        "--pushover-out", str(push), "--out", str(outj),
+    ])
+    assert rc == 0
+    # (1) upload CSV: header + one lineup row with 9 populated player columns
+    import csv as _csv
+    rows = list(_csv.reader(export.open()))
+    assert len(rows) == 2
+    player_cells = [v for c, v in zip(rows[0], rows[1])
+                    if c not in ("entry_id", "contest_id", "contest_name")]
+    assert len(player_cells) == 9 and all(player_cells)
+    # (2) logged entry, findable exactly the way cmd_swap looks for it
+    rl = ResultLog(log_db)
+    with rl._c() as c:
+        row = c.execute("""SELECT lineup_json, salary FROM entries
+                           WHERE season=2026 AND week=1
+                           AND contest='Leather League'""").fetchone()
+    assert row is not None
+    lineup = _json.loads(row["lineup_json"])
+    assert len(lineup) == 9 and all(p["fd_id"] for p in lineup)
+    assert row["salary"] == sum(p["salary"] for p in lineup)  # classic: no MVP premium
+    # (3) pushover card and (4) lineup JSON exist and are non-trivial
+    assert push.read_text().strip() and _json.loads(outj.read_text())["lineups"]

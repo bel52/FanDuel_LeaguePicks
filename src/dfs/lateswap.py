@@ -37,6 +37,7 @@ class SwapProposal:
     old_dollars: float
     new_dollars: float
     reason: str
+    proposed_mvp: str | None = None   # showdown: MVP of the proposed lineup
 
     @property
     def improves(self) -> bool:
@@ -63,8 +64,13 @@ def propose_swap(slate: PlayerSlate, current_ids: tuple, spec: ContestSpec,
                  schedule: KickoffSchedule, sim: SlateSimulator, field_model: FieldModel,
                  weights, now: datetime | None = None,
                  stack: StackRule | None = None, pool_size: int = 60,
-                 reason: str = "scheduled late-swap check") -> SwapProposal:
-    """Re-optimize the unlocked portion of a lineup. Never touches locked players."""
+                 reason: str = "scheduled late-swap check",
+                 mvp_id: str | None = None) -> SwapProposal:
+    """Re-optimize the unlocked portion of a lineup. Never touches locked players.
+
+    Showdown: the whole lineup is one game, so lock is all-or-nothing — once the game
+    kicks off nothing can change; before kickoff everything (including MVP) can. The
+    current lineup is scored WITH its MVP, and any proposal carries its own MVP."""
     now = now or datetime.now(timezone.utc)
     locked_teams = schedule.locked_teams(now)
     byid = {p.fd_id: p for p in slate.players}
@@ -82,14 +88,19 @@ def propose_swap(slate: PlayerSlate, current_ids: tuple, spec: ContestSpec,
 
     from .objectives import score_lineup
     fm = field_model[0] if isinstance(field_model, list) else field_model
-    field_totals = sim.score_many([(l, None) for l in fm.lineups])
-    # score current lineup with swept players contributing ZERO (they will not play)
-    cur = score_lineup(sim.score(tuple(present)).totals, field_totals, weights)
+    fm_mvps = getattr(fm, "mvp_ids", None)
+    field_totals = sim.score_many(
+        [(l, fm_mvps[i] if fm_mvps else None) for i, l in enumerate(fm.lineups)])
+    # score current lineup with swept players contributing ZERO (they will not play);
+    # a swept MVP scores zero either way, so drop the multiplier with the player
+    cur_mvp = mvp_id if (mvp_id in byid and mvp_id not in swept) else None
+    cur = score_lineup(sim.score(tuple(present), cur_mvp).totals, field_totals, weights)
 
     if not open_ids:
         return SwapProposal(current_ids, current_ids, locked_ids, [],
                             cur.dollars, cur.dollars,
-                            "all players locked — nothing can be changed")
+                            "all players locked — nothing can be changed",
+                            proposed_mvp=cur_mvp)
     if swept and all(byid.get(i) is None or byid[i].team in locked_teams
                      for i in current_ids if i not in swept):
         pass  # swept slots stay open even when everything else is locked
@@ -104,15 +115,18 @@ def propose_swap(slate: PlayerSlate, current_ids: tuple, spec: ContestSpec,
     if not pool:
         return SwapProposal(current_ids, current_ids, locked_ids, [],
                             cur.dollars, cur.dollars,
-                            "no valid alternative lineups under lock constraints")
+                            "no valid alternative lineups under lock constraints",
+                            proposed_mvp=cur_mvp)
 
     ranked = rank_candidates(pool, sim, field_model, spec, weights)
     best = ranked[0]
 
     # any valid lineup beats one with a guaranteed zero, so a swept slot forces a swap
-    if set(best.candidate.player_ids) == set(current_ids) or (not swept and best.dollars <= cur.dollars):
+    same_lineup = (set(best.candidate.player_ids) == set(current_ids)
+                   and best.candidate.mvp_id == cur_mvp)
+    if same_lineup or (not swept and best.dollars <= cur.dollars):
         return SwapProposal(current_ids, current_ids, locked_ids, [],
-                            cur.dollars, cur.dollars, reason)
+                            cur.dollars, cur.dollars, reason, proposed_mvp=cur_mvp)
 
     out_ids = set(current_ids) - set(best.candidate.player_ids)
     in_ids = set(best.candidate.player_ids) - set(current_ids)
@@ -124,4 +138,5 @@ def propose_swap(slate: PlayerSlate, current_ids: tuple, spec: ContestSpec,
     swaps = list(zip(sorted((_ghost(i) for i in out_ids), key=lambda p: p.position),
                      sorted((byid[i] for i in in_ids), key=lambda p: p.position)))
     return SwapProposal(current_ids, best.candidate.player_ids, locked_ids, swaps,
-                        cur.dollars, best.dollars, reason)
+                        cur.dollars, best.dollars, reason,
+                        proposed_mvp=best.candidate.mvp_id)

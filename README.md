@@ -9,7 +9,8 @@ single-game showdown, and public contests.
 ## Status — honest
 
 The data layer, modeling core, and Sunday operating loop are complete and tested
-(69 offline tests). **Edge is not yet demonstrated.** The system reports a positive
+(104 offline tests, including an end-to-end build test that asserts the upload CSV,
+entry log, and pushover card actually exist). **Edge is not yet demonstrated.** The system reports a positive
 objective delta over a max-projection baseline, but that number is produced by the
 same simulator that selects the lineup. Until it is validated against out-of-sample
 outcomes, treat it as an internal consistency check, not evidence of profitability.
@@ -22,7 +23,7 @@ Trust that number, not the selection estimate.
 
     pip install -r requirements.txt
     cp .env.example .env        # add FANTASYPROS_API_KEY and ODDS_API_KEY
-    python3 -m pytest tests/ -q # 69 tests, offline, no keys required
+    python3 -m pytest tests/ -q # offline, no keys required
 
     # Wednesday: build from the FanDuel salary CSV
     ./run.sh build --csv <fanduel_salaries.csv> --season 2026 --week 1 \
@@ -93,8 +94,9 @@ Trust that number, not the selection estimate.
 - Kickers and defenses have no calibrated distributions — both use a generic spread.
 - FanDuel upload CSV headers are unverified; the export warns until `--template`
   supplies a real entries file.
-- Whether FanDuel charges 1.5× salary for the showdown MVP slot is unconfirmed;
-  `ContestSpec.mvp_salary_mult` toggles it in one place.
+- FanDuel single-game format (confirmed, 2025 rules onward): 6 slots — 1 MVP + 5 FLEX;
+  the MVP costs AND scores 1.5×. `ContestSpec.mvp_salary_mult` toggles the salary rule
+  in one place if FanDuel ever changes it.
 
 ## Data files
 

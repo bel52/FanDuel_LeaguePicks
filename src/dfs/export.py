@@ -21,7 +21,7 @@ from .contest_spec import SlateType
 DEFAULT_CLASSIC_COLS = ["entry_id", "contest_id", "contest_name",
                         "QB", "RB", "RB", "WR", "WR", "WR", "TE", "FLEX", "DEF"]
 DEFAULT_SHOWDOWN_COLS = ["entry_id", "contest_id", "contest_name",
-                         "MVP", "AnyFLEX", "AnyFLEX", "AnyFLEX", "AnyFLEX"]
+                         "MVP", "AnyFLEX", "AnyFLEX", "AnyFLEX", "AnyFLEX", "AnyFLEX"]
 # Roster order FanDuel expects for a classic lineup.
 CLASSIC_FILL_ORDER = ["QB", "RB", "RB", "WR", "WR", "WR", "TE", "FLEX", "DEF"]
 

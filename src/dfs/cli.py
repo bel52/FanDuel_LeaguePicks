@@ -20,7 +20,7 @@ from .fantasypros import FantasyProsClient, FantasyProsError
 from .vegas import OddsClient, VegasError
 from .blend import apply_projections
 from .distributions import load_distributions, build_distributions
-from .optimize import generate_pool, StackRule
+from .optimize import generate_pool, StackRule, max_projection_lineup
 from .simulate import SlateSimulator
 from .field import (build_prior_field, build_field_ensemble, rank_candidates,
                     baseline_lineups)
@@ -202,7 +202,16 @@ def cmd_build(a) -> int:
 
     bl = baseline_lineups(slate, spec, n=200, seed=a.seed + 2)
     rand = [_obj(l) for l in bl["random"]]
-    max_proj = max(pool, key=lambda c: c.proj_sum)
+    # TRUE max-projection: its own legality-only solve. Taking max() over the
+    # candidate pool inherits the pool's stack/diversity constraints and measured
+    # 1.96 projected points short of the real optimum on the test fixture — an
+    # invalid yardstick that flips the sign of small edges.
+    max_proj = max_projection_lineup(slate, spec)
+    pool_best_proj = max(c.proj_sum for c in pool)
+    if max_proj.proj_sum > pool_best_proj + 1e-6:
+        print(f"  (pool's best projection {pool_best_proj:.2f} vs unconstrained "
+              f"{max_proj.proj_sum:.2f} — constraints cost "
+              f"{max_proj.proj_sum - pool_best_proj:.2f} pts)")
     mp = _obj(max_proj.player_ids, max_proj.mvp_id)
     best = ranked[0]
 
@@ -214,7 +223,7 @@ def cmd_build(a) -> int:
     print(f"  {'':32s} {'$obj':>8s} {'E[pts]':>7s} {'P(win)':>7s}")
     print(f"  coin flip among {n_opp + 1:<16d} {'-':>8s} {'-':>7s} {naive:7.1%}")
     print(f"  random valid lineup (n={len(rand):<3d})       {ar_d:8.2f} {ar_e:7.1f} {ar_p:7.1%}")
-    print(f"  max-projection lineup            {mp.dollars:8.2f} {mp.exp_points:7.1f} {mp.p_win:7.1%}")
+    print(f"  max-projection (unconstrained)   {mp.dollars:8.2f} {mp.exp_points:7.1f} {mp.p_win:7.1%}")
     print(f"  our #1 lineup                    {best.dollars:8.2f} {best.exp_points:7.1f} {best.p_win:7.1%}")
     edge = best.dollars - mp.dollars
     print(f"  delta vs max-projection          {edge:+8.2f}")
@@ -260,9 +269,9 @@ def cmd_build(a) -> int:
     print("\nINDEPENDENT EVALUATION (fresh sims + fresh fields, same conditioning)")
     print(f"  {'':22s} {'$obj':>8s} {'E[pts]':>7s} {'P(win)':>8s}")
     print(f"  max-projection        {ev_mp.dollars:8.2f} {ev_mp.exp_points:7.1f} "
-          f"{ev_mp.p_win:7.1%}±{ev_mp.mean_rank:.1%}")
+          f"{ev_mp.p_win:7.1%} (field spread ±{ev_mp.mean_rank:.1%})")
     print(f"  our #1                {ev_best.dollars:8.2f} {ev_best.exp_points:7.1f} "
-          f"{ev_best.p_win:7.1%}±{ev_best.mean_rank:.1%}")
+          f"{ev_best.p_win:7.1%} (field spread ±{ev_best.mean_rank:.1%})")
     fresh_edge = ev_best.dollars - ev_mp.dollars
     sel_edge = best.dollars - mp.dollars
     print(f"  fresh edge vs max-proj {fresh_edge:+8.2f}   "
@@ -301,6 +310,32 @@ def cmd_build(a) -> int:
     out.write_text(json.dumps(payload, indent=1))
     print(f"\nSaved: {out}")
 
+    # ---- artifacts: upload CSV, entry log, phone card ----
+    # This block IS the operating loop. `swap` reads the logged entry; the upload CSV
+    # is what actually gets entered. (A block-replace edit deleted this once — the
+    # end-to-end test in tests/test_core.py now asserts these artifacts exist.)
+    if a.export:
+        ex = export_upload_csv(best_players, a.export, slate_type=slate.slate_type,
+                               mvp_id=best.candidate.mvp_id, template=a.template,
+                               contest_name=spec.name)
+        print("\n" + ex.summary())
+    if a.log_db:
+        ResultLog(a.log_db).log_entry(a.season, a.week, spec.name, best_players,
+                                      slate_id=a.slate_id or "",
+                                      objective=weights.rationale,
+                                      exp_points=best.exp_points, p_win=best.p_win,
+                                      mvp_id=best.candidate.mvp_id,
+                                      mvp_salary_mult=spec.mvp_salary_mult)
+        print(f"Entry logged -> {a.log_db}")
+    if a.pushover_out:
+        metrics = (f"{spec.name} w{a.week}: proj {best.candidate.proj_sum:.1f}, "
+                   f"E[pts] {best.exp_points:.1f}, P(win) {best.p_win:.0%}")
+        po = Path(a.pushover_out)
+        po.parent.mkdir(parents=True, exist_ok=True)
+        po.write_text(pushover_body(best_players, metrics,
+                                    mvp_id=best.candidate.mvp_id))
+        print(f"Pushover card -> {po}")
+
     if a.db:
         SlateStore(a.db).save(slate)
         print(f"Slate persisted: {a.db}")
@@ -321,7 +356,9 @@ def cmd_swap(a) -> int:
         print(f"No logged entry for {a.contest} {a.season} w{a.week}. "
               "Run `build --log-db` first.")
         return 2
-    current_ids = tuple(p["fd_id"] for p in _json.loads(row["lineup_json"]))
+    logged_lineup = _json.loads(row["lineup_json"])
+    current_ids = tuple(p["fd_id"] for p in logged_lineup)
+    current_mvp = next((p["fd_id"] for p in logged_lineup if p.get("mvp")), None)
 
     slate, irep = ingest_csv(a.csv, a.slate_id, a.season, a.week, strict=False)
     print(irep.summary())
@@ -375,27 +412,58 @@ def cmd_swap(a) -> int:
     reason = ("inactives affected the lineup" if sw.lineup_affected
               else "scheduled late-swap check")
     prop = propose_swap(slate, current_ids, spec, sched, sim, fieldm, weights,
-                        reason=reason)
+                        reason=reason, mvp_id=current_mvp)
     byid = {p.fd_id: p for p in slate.players}
     print("\n" + "=" * 72)
     print(prop.summary(byid))
     if prop.improves and a.export:
         best_players = [byid[i] for i in prop.proposed_ids]
         ex = export_upload_csv(best_players, a.export, slate_type=slate.slate_type,
-                               contest_name=spec.name)
+                               mvp_id=prop.proposed_mvp, contest_name=spec.name)
         print("\n" + ex.summary())
     return 0
 
 
 def cmd_capture(a) -> int:
+    import json as _json
     from .contest_parse import parse_contest
+    from .matching import norm_name
     capture = parse_contest(a.path, a.season, a.week, a.contest)
     print(capture.summary())
     rl = ResultLog(a.log_db)
     rl.log_capture(capture)
-    mine = next((e for e in capture.leaderboard if e.rank == 1), None)
     print(f"\nLogged {len(capture.leaderboard)} entrants and "
           f"{len(capture.ownership())} ownership records -> {a.log_db}")
+
+    # ---- close the loop on MY entry: outcome + per-player actuals ----
+    # Without this, entries.actual_score and player_results.actual stay NULL and
+    # projection_accuracy() is never fed — the advertised workflow must feed it.
+    mine = next((e for e in capture.leaderboard if e.entrant == a.me), None)
+    if mine is not None and mine.score is not None:
+        rl.log_outcome(a.season, a.week, a.contest, mine.score, mine.rank or 0,
+                       len(capture.leaderboard), winnings=mine.won or 0.0)
+        print(f"Outcome recorded for {a.me}: {mine.score:.2f} pts, "
+              f"rank {mine.rank} of {len(capture.leaderboard)}")
+    else:
+        print(f"NOTE: entrant '{a.me}' not on this page — outcome not recorded "
+              "(pass --me if your FanDuel handle differs).")
+
+    lu = next((e for e in capture.entries_with_lineups if e.entrant == a.me), None)
+    if lu and lu.players:
+        with rl._c() as conn:
+            row = conn.execute("""SELECT lineup_json FROM entries
+                                  WHERE season=? AND week=? AND contest=?""",
+                               (a.season, a.week, a.contest)).fetchone()
+        if row:
+            by_name = {norm_name(p.name): p.actual_points for p in lu.players
+                       if p.actual_points is not None}
+            actuals = {p["fd_id"]: by_name[norm_name(p["name"])]
+                       for p in _json.loads(row["lineup_json"])
+                       if norm_name(p["name"]) in by_name}
+            n = rl.log_player_actuals(a.season, a.week, actuals)
+            print(f"Player actuals recorded: {n} (feeds projection_accuracy)")
+        else:
+            print("NOTE: no logged entry to attach player actuals to.")
     return 0
 
 
@@ -489,6 +557,8 @@ def main(argv=None) -> int:
     cap.add_argument("--season", type=int, required=True)
     cap.add_argument("--week", type=int, required=True)
     cap.add_argument("--contest", default="Leather League")
+    cap.add_argument("--me", default="brettleath",
+                     help="your FanDuel handle on the results page")
     cap.add_argument("--log-db", default="data/results.db")
     cap.set_defaults(func=cmd_capture)
 
