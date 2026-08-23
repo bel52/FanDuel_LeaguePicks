@@ -1818,3 +1818,35 @@ def test_web_job_latest_enables_reconnect(tmp_path, monkeypatch):
     finally:
         with web._jobs_lock:
             web._jobs.clear()
+
+
+def test_web_api_entry_returns_entry_and_shadow(tmp_path, monkeypatch):
+    """/api/entry powers the readable lineup cards: it must return the logged entry
+    with parsed lineup + arm, the shadow row, and honor the test-DB switch."""
+    from fastapi.testclient import TestClient
+    import dfs.web as web
+    slate = _projected_slate()
+    mp = max_projection_lineup(slate, SPEC)
+    byid = {p.fd_id: p for p in slate.players}
+    players = [byid[i] for i in mp.player_ids]
+    prod = tmp_path / "prod.db"
+    ResultLog(prod).log_entry(2026, 1, "Leather League", players,
+                              objective="arm=max-proj; test", exp_points=123.0,
+                              p_win=0.17)
+    ResultLog(prod).log_entry(2026, 1, "Leather League [shadow:model]", players,
+                              objective="arm=model; test", exp_points=122.0,
+                              p_win=0.16)
+    monkeypatch.setattr(web, "DB", prod)
+    monkeypatch.setattr(web, "DB_TEST", tmp_path / "missing.db")
+    c = TestClient(web.app)
+
+    d = c.get("/api/entry", params={"season": 2026, "week": 1}).json()
+    assert d["entry"]["arm"] == "max-proj" and len(d["entry"]["lineup"]) == 9
+    assert all(k in d["entry"]["lineup"][0] for k in ("name", "pos", "salary",
+                                                      "projection"))
+    assert d["shadow"]["arm"] == "model"
+    # missing week -> clean 404, not a crash
+    assert c.get("/api/entry", params={"season": 2026, "week": 9}).status_code == 404
+    # test switch points at the (absent) sandbox DB -> 404
+    assert c.get("/api/entry", params={"season": 2026, "week": 1,
+                                       "test": "true"}).status_code == 404

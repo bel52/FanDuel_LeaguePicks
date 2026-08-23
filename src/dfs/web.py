@@ -334,6 +334,38 @@ async def api_capture(page: UploadFile | None = File(None),
     return {"job": _start_job("capture", argv)}
 
 
+@app.get("/api/entry")
+def api_entry(season: int, week: int, contest: str = "Leather League",
+              test: bool = False):
+    """The logged entry for a week, plus its shadow arm — the page renders these as
+    readable lineup cards so a lineup can be hand-entered into FanDuel without
+    reading console text."""
+    import sqlite3
+    db = DB_TEST if test else DB
+    if not Path(db).exists():
+        raise HTTPException(404, "no results database yet")
+    rl = ResultLog(db)
+    def _row_to_dict(r):
+        if r is None:
+            return None
+        d = dict(r)
+        d["lineup"] = json.loads(d.pop("lineup_json"))
+        arm = "model"
+        if (d.get("objective") or "").startswith("arm=max-proj"):
+            arm = "max-proj"
+        d["arm"] = arm
+        return d
+    with rl._c() as c:
+        row = c.execute("""SELECT * FROM entries WHERE season=? AND week=? AND
+                           contest=?""", (season, week, contest)).fetchone()
+        shadow = c.execute("""SELECT * FROM entries WHERE season=? AND week=? AND
+                              contest LIKE ?""",
+                           (season, week, f"{contest} [shadow:%")).fetchone()
+    if row is None:
+        raise HTTPException(404, f"no logged entry for {contest} {season} w{week}")
+    return {"entry": _row_to_dict(row), "shadow": _row_to_dict(shadow)}
+
+
 @app.get("/api/job-latest/{kind}")
 def api_job_latest(kind: str):
     """Most recent job of a kind, so the page can RECONNECT when the POST response

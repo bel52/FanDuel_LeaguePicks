@@ -129,10 +129,10 @@ tr.me td{color:var(--lamp);font-weight:600}
     <label class="full">FanDuel salary CSV
       <input type="file" name="csv" accept=".csv">
       <span class="k" id="b-stored" style="color:var(--dim);font:12px var(--mono)"></span>
-      <span class="k" style="color:var(--dim);font:12px var(--mono)">Leave empty to
-      reuse the stored player list for this week and contest type. A file for the
-      wrong contest (single-game vs Sunday main) is rejected, not silently used —
-      the run prints which file it used.</span></label>
+      <span class="k" style="color:var(--dim);font:12px/1.4 -apple-system,sans-serif;
+        text-transform:none;letter-spacing:0">Leave empty to reuse the stored player
+      list for this week and contest type. A file for the wrong contest (single-game
+      vs Sunday main) is rejected, not silently used.</span></label>
     <label>Season <input type="number" name="season" value="2026" required></label>
     <label>Week <input type="number" name="week" min="1" max="22" required></label>
     <label>Contest type
@@ -151,17 +151,24 @@ tr.me td{color:var(--lamp);font-weight:600}
     <label>Entry fee $ <input type="number" step="0.01" name="entry_fee" value="0"></label>
     <label>Prize pool $ (one-offs) <input type="text" name="prize_pool" placeholder="auto"></label>
     <label>Lineups to show <input type="number" name="show" value="3"></label>
-    <label class="full" style="display:flex;align-items:center;gap:8px">
-      <input type="checkbox" name="test_mode" value="true" style="width:auto">
-      Test run — sandbox: logs and exports go to a separate test area, season records
-      untouched. (Real runs are also safe to repeat: rebuilding the same week simply
-      replaces the previous lineup with the latest.)</label>
+    <label class="full" style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;
+        border:1px solid var(--line,#444);border-radius:8px;padding:10px 12px">
+      <input type="checkbox" name="test_mode" value="true"
+        style="width:18px;height:18px;flex:0 0 auto;margin-top:1px;accent-color:#e8a33d">
+      <span style="text-transform:none;letter-spacing:0;font:13px/1.45 -apple-system,sans-serif;
+        color:var(--dim,#aaa)"><b style="color:inherit">Test run (sandbox)</b> — results go to a
+      separate test area; season records untouched. Real runs are also safe to repeat:
+      rebuilding the same week replaces the previous lineup.</span></label>
     <div class="actions">
       <button class="go" type="submit">Build lineups</button>
       <span id="build-links"></span>
     </div>
   </form>
-  <pre class="out" id="o-build">Ready.</pre>
+  <div id="entry-card"></div>
+  <details style="margin-top:10px"><summary style="cursor:pointer;color:var(--dim);
+    font:600 13px 'Barlow Condensed';letter-spacing:.06em;text-transform:uppercase">
+    Full build log</summary>
+  <pre class="out" id="o-build">Ready.</pre></details>
 </section>
 
 <section id="t-swap">
@@ -172,9 +179,13 @@ tr.me td{color:var(--lamp);font-weight:600}
     <label>Week <input type="number" name="week" min="1" max="22" required></label>
     <label class="full">Slate CSV (only if changed)
       <input type="file" name="csv" accept=".csv"></label>
-    <label class="full" style="display:flex;align-items:center;gap:8px">
-      <input type="checkbox" name="test_mode" value="true" style="width:auto">
-      Test run — reads/writes the sandbox from a test build, not season records.</label>
+    <label class="full" style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;
+        border:1px solid var(--line,#444);border-radius:8px;padding:10px 12px">
+      <input type="checkbox" name="test_mode" value="true"
+        style="width:18px;height:18px;flex:0 0 auto;margin-top:1px;accent-color:#e8a33d">
+      <span style="text-transform:none;letter-spacing:0;font:13px/1.45 -apple-system,sans-serif;
+        color:var(--dim,#aaa)"><b style="color:inherit">Test run (sandbox)</b> — reads the
+      lineup from a test build, not season records.</span></label>
     <div class="actions"><button class="go" type="submit">Run swap check</button>
       <span id="swap-links"></span></div>
   </form>
@@ -262,8 +273,70 @@ $('#s-save').onclick=async()=>{
 /* job runner */
 function jobKind(url){return url.includes('build')?'build':url.includes('swap')?'swap':'capture'}
 
+/* ---- readable lineup cards: hand-mappable to the FanDuel entry screen ---- */
+function fdSlots(lineup){
+  /* classic: QB, RB1-2, WR1-3, TE, FLEX, DEF — the extra RB/WR/TE with the LOWEST
+     projection is the FLEX, matching how you'd fill the FanDuel form. */
+  const base={QB:1,RB:2,WR:3,TE:1,D:1};
+  const by={};lineup.forEach(p=>{(by[p.pos]=by[p.pos]||[]).push(p)});
+  Object.values(by).forEach(l=>l.sort((a,b)=>b.projection-a.projection));
+  const slots=[];let flex=null;
+  for(const pos of ['QB','RB','WR','TE']){
+    const l=by[pos]||[],n=base[pos];
+    l.slice(0,n).forEach((p,i)=>slots.push([n>1?pos+(i+1):pos,p]));
+    if(l.length>n)flex=l[n];
+  }
+  if(flex)slots.push(['FLEX',flex]);
+  (by['D']||[]).forEach(p=>slots.push(['DEF',p]));
+  return slots;
+}
+function sdSlots(lineup){
+  const mvp=lineup.find(p=>p.mvp),rest=lineup.filter(p=>!p.mvp)
+    .sort((a,b)=>b.projection-a.projection);
+  return [['MVP ★',mvp],...rest.map((p,i)=>['FLEX'+(i+1),p])].filter(s=>s[1]);
+}
+function lineupCard(title,e,muted){
+  const lineup=e.lineup,sd=lineup.some(p=>p.mvp!==undefined)&&lineup.length===6;
+  const slots=sd?sdSlots(lineup):fdSlots(lineup);
+  const proj=lineup.reduce((s,p)=>s+(p.projection||0)*(p.mvp?1.5:1),0);
+  const rows=slots.map(([slot,p])=>`<tr>
+    <td style="color:var(--dim);font:600 12px 'Barlow Condensed';letter-spacing:.06em">${slot}</td>
+    <td><b>${p.name}</b></td><td style="color:var(--dim)">${p.team}</td>
+    <td style="text-align:right">$${p.salary.toLocaleString()}</td>
+    <td style="text-align:right">${(p.projection||0).toFixed(1)}</td></tr>`).join('');
+  return `<div class="card" style="margin-top:12px;${muted?'opacity:.62':''}">
+    <h3>${title}</h3>
+    <table style="width:100%;border-collapse:collapse">
+      <tr><th style="text-align:left">Slot</th><th style="text-align:left">Player</th>
+      <th style="text-align:left">Team</th><th style="text-align:right">Salary</th>
+      <th style="text-align:right">Proj</th></tr>${rows}
+      <tr><td></td><td style="color:var(--dim)">Total</td><td></td>
+      <td style="text-align:right"><b>$${e.salary.toLocaleString()}</b></td>
+      <td style="text-align:right"><b>${proj.toFixed(1)}</b></td></tr>
+    </table>
+    <div style="color:var(--dim);font:12px var(--mono);margin-top:6px">
+      E[pts] ${(+e.exp_points).toFixed(1)} · P(win) ${(100*e.p_win).toFixed(0)}%
+      · logged ${e.submitted_ts?.slice(0,16).replace('T',' ')} UTC</div>
+  </div>`;
+}
+async function showEntryCard(form){
+  const holder=document.querySelector('#entry-card');if(!holder)return;
+  try{
+    const q=new URLSearchParams({season:form.season.value,week:form.week.value,
+      contest:form.contest.value,test:form.test_mode?.checked?'true':'false'});
+    const d=await (await fetch('/api/entry?'+q)).json();
+    if(!d.entry)return;
+    const tag=form.test_mode?.checked?' — TEST RUN (sandbox)':'';
+    holder.innerHTML=
+      lineupCard(`Enter this lineup (${d.entry.arm})${tag}`,d.entry,false)+
+      (d.shadow?lineupCard(`Shadow — ${d.shadow.arm} (tracked, not entered)`,
+                           d.shadow,true):'');
+  }catch(_){holder.innerHTML=''}
+}
+
 function pollJob(job,form,outSel,url,linksSel){
   const out=$(outSel),btn=form.querySelector('button.go');
+  const det=out.closest('details');if(det)det.open=true;
   let misses=0;
   const poll=async()=>{
     let j;
@@ -286,6 +359,7 @@ function pollJob(job,form,outSel,url,linksSel){
       const f=(url.includes('build')?`upload-${season}-w${String(week).padStart(2,'0')}.csv`
                                     :`swap-${season}-w${String(week).padStart(2,'0')}.csv`);
       $(linksSel).innerHTML=`<a class="dl" href="/api/download/${f}">Download FanDuel upload CSV</a>`;
+      if(url.includes('build'))showEntryCard(form);
     }
     ticker();
   };
