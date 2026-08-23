@@ -34,6 +34,11 @@ DATA = ROOT / "data"
 UPLOADS = DATA / "uploads"
 LINEUPS = DATA / "lineups"
 DB = DATA / "results.db"
+# Test sandbox: a "Test run" routes ALL writes (entry log, exports, snapshots) here,
+# so a test can never touch season records regardless of what was typed in the form.
+TEST = DATA / "test"
+DB_TEST = TEST / "results.db"
+LINEUPS_TEST = TEST / "lineups"
 STATIC = Path(__file__).parent / "static"
 SETTINGS_FILE = DATA / "settings.json"
 DEFAULT_SETTINGS = {"me": "brettleath", "season": 2026, "field": 12,
@@ -200,7 +205,8 @@ async def api_build(csv: UploadFile | None = File(None), season: int = Form(0),
                     grand_prizes: str = Form("135,81,54"),
                     weeks_total: int = Form(21), pool: int = Form(120),
                     show: int = Form(3), contest: str = Form("Leather League"),
-                    prize_pool: str = Form(""), strict_injuries: bool = Form(False)):
+                    prize_pool: str = Form(""), strict_injuries: bool = Form(False),
+                    test_mode: bool = Form(False)):
     if not season or not week:
         from .nflcal import current_week
         wi = current_week()
@@ -219,6 +225,8 @@ async def api_build(csv: UploadFile | None = File(None), season: int = Form(0),
                                      "upload one.")
         dest = stored[0]
     slate_id = f"{season}-w{week:02d}"
+    log_db, lineups_dir = (DB_TEST, LINEUPS_TEST) if test_mode else (DB, LINEUPS)
+    lineups_dir.mkdir(parents=True, exist_ok=True)
     argv = ["build", "--csv", str(dest), "--season", str(season), "--week", str(week),
             "--profile", profile, "--leaderboard", leaderboard,
             "--field", str(field), "--entry-fee", str(entry_fee),
@@ -226,9 +234,11 @@ async def api_build(csv: UploadFile | None = File(None), season: int = Form(0),
             "--weeks-total", str(weeks_total), "--pool", str(pool),
             "--show", str(show), "--contest", contest,
             "--critical-salary", "7000",
-            "--log-db", str(DB), "--auto-context", "--me", load_settings()["me"],
-            "--export", str(LINEUPS / f"upload-{slate_id}.csv"),
-            "--out", str(LINEUPS / f"{slate_id}.json")]
+            "--log-db", str(log_db), "--auto-context", "--me", load_settings()["me"],
+            "--export", str(lineups_dir / f"upload-{slate_id}.csv"),
+            "--out", str(lineups_dir / f"{slate_id}.json")]
+    if test_mode:
+        argv += ["--snapshot-dir", str(TEST / "snapshots")]
     if prize_pool:
         argv += ["--prize-pool", prize_pool]
     if strict_injuries:
@@ -239,7 +249,8 @@ async def api_build(csv: UploadFile | None = File(None), season: int = Form(0),
 @app.post("/api/swap")
 async def api_swap(csv: UploadFile | None = File(None),
                    slate_csv: str = Form(""), season: int = Form(0),
-                   week: int = Form(0), contest: str = Form("Leather League")):
+                   week: int = Form(0), contest: str = Form("Leather League"),
+                   test_mode: bool = Form(False)):
     if not season or not week:
         from .nflcal import current_week
         wi = current_week()
@@ -262,10 +273,12 @@ async def api_swap(csv: UploadFile | None = File(None),
         if not cands:
             raise HTTPException(400, "No slate CSV for this week — upload one.")
         path = str(cands[-1])
+    log_db, lineups_dir = (DB_TEST, LINEUPS_TEST) if test_mode else (DB, LINEUPS)
+    lineups_dir.mkdir(parents=True, exist_ok=True)
     argv = ["swap", "--csv", path, "--season", str(season), "--week", str(week),
             "--contest", contest, "--critical-salary", "7000",
-            "--log-db", str(DB),
-            "--export", str(LINEUPS / f"swap-{season}-w{week:02d}.csv")]
+            "--log-db", str(log_db),
+            "--export", str(lineups_dir / f"swap-{season}-w{week:02d}.csv")]
     return {"job": _start_job("swap", argv)}
 
 

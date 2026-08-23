@@ -147,6 +147,11 @@ tr.me td{color:var(--lamp);font-weight:600}
     <label>Entry fee $ <input type="number" step="0.01" name="entry_fee" value="0"></label>
     <label>Prize pool $ (one-offs) <input type="text" name="prize_pool" placeholder="auto"></label>
     <label>Lineups to show <input type="number" name="show" value="3"></label>
+    <label class="full" style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" name="test_mode" value="true" style="width:auto">
+      Test run — sandbox: logs and exports go to a separate test area, season records
+      untouched. (Real runs are also safe to repeat: rebuilding the same week simply
+      replaces the previous lineup with the latest.)</label>
     <div class="actions">
       <button class="go" type="submit">Build lineups</button>
       <span id="build-links"></span>
@@ -163,6 +168,9 @@ tr.me td{color:var(--lamp);font-weight:600}
     <label>Week <input type="number" name="week" min="1" max="22" required></label>
     <label class="full">Slate CSV (only if changed)
       <input type="file" name="csv" accept=".csv"></label>
+    <label class="full" style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" name="test_mode" value="true" style="width:auto">
+      Test run — reads/writes the sandbox from a test build, not season records.</label>
     <div class="actions"><button class="go" type="submit">Run swap check</button>
       <span id="swap-links"></span></div>
   </form>

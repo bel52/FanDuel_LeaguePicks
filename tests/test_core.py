@@ -1663,3 +1663,49 @@ def test_maxproj_swap_forced_when_player_swept():
     assert gone not in prop.proposed_ids
     assert any(out_p.fd_id == gone for out_p, _ in prop.swaps)
     assert len(prop.proposed_ids) == 9
+
+
+def test_web_test_mode_routes_to_sandbox(tmp_path, monkeypatch):
+    """The 'Test run' checkbox must route EVERY write (entry log, exports, snapshots)
+    into the test sandbox, so a UI test can never touch season records — and an
+    unchecked box must route to production paths."""
+    from fastapi.testclient import TestClient
+    import dfs.web as web
+    captured = {}
+    monkeypatch.setattr(web, "_start_job",
+                        lambda kind, argv: captured.setdefault(kind, argv) or "job-x")
+    monkeypatch.setattr(web, "UPLOADS", tmp_path / "up")
+    monkeypatch.setattr(web, "TEST", tmp_path / "test")
+    monkeypatch.setattr(web, "DB_TEST", tmp_path / "test" / "results.db")
+    monkeypatch.setattr(web, "LINEUPS_TEST", tmp_path / "test" / "lineups")
+    monkeypatch.setattr(web, "DB", tmp_path / "prod.db")
+    monkeypatch.setattr(web, "LINEUPS", tmp_path / "lineups")
+    c = TestClient(web.app)
+
+    r = c.post("/api/build",
+               files={"csv": ("w1.csv", REAL_W1.open("rb"), "text/csv")},
+               data={"season": 2026, "week": 1, "test_mode": "true"})
+    assert r.status_code == 200
+    argv = captured["build"]
+    dbi = argv.index("--log-db") + 1
+    assert "test" in argv[dbi] and "prod.db" not in argv[dbi]
+    assert "--snapshot-dir" in argv
+    exi = argv.index("--export") + 1
+    assert str(tmp_path / "test" / "lineups") in argv[exi]
+
+    captured.clear()
+    r = c.post("/api/build",
+               files={"csv": ("w1.csv", REAL_W1.open("rb"), "text/csv")},
+               data={"season": 2026, "week": 1})
+    assert r.status_code == 200
+    argv = captured["build"]
+    assert argv[argv.index("--log-db") + 1].endswith("prod.db")
+    assert "--snapshot-dir" not in argv
+
+    captured.clear()
+    r = c.post("/api/swap",
+               files={"csv": ("w1.csv", REAL_W1.open("rb"), "text/csv")},
+               data={"season": 2026, "week": 1, "test_mode": "true"})
+    assert r.status_code == 200
+    argv = captured["swap"]
+    assert "test" in argv[argv.index("--log-db") + 1]
