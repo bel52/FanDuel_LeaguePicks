@@ -80,9 +80,14 @@ class FantasyProsClient:
     def weekly_projections(self, season: int, week: int,
                            positions: list[str] = POSITIONS) -> list[FPProjection]:
         out: list[FPProjection] = []
+        # Raw payloads are retained for the at-lock snapshot (revision auditing):
+        # canonical response + request params per position, exactly as received.
+        self.last_raw: dict[str, dict] = {}
         for pos_req in positions:
-            data = self._get(f"{season}/projections",
-                             {"position": pos_req, "week": week})
+            params = {"position": pos_req, "week": week}
+            data = self._get(f"{season}/projections", params)
+            self.last_raw[pos_req] = {"endpoint": f"{season}/projections",
+                                      "params": params, "response": data}
             players = data.get("players")
             if players is None:
                 raise FantasyProsError(

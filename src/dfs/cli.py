@@ -76,8 +76,15 @@ def cmd_build(a) -> int:
 
     print("\n" + "=" * 72)
     print("Pulling FantasyPros projections...")
-    fp = FantasyProsClient().weekly_projections(a.season, a.week)
+    fp_client = FantasyProsClient()
+    fp = fp_client.weekly_projections(a.season, a.week)
     print(f"  {len(fp)} players projected (FanDuel-scored from stat lines)")
+    if not a.no_snapshot:
+        from .snapshots import write_snapshot
+        snap = write_snapshot(a.snapshot_dir, a.season, a.week, a.slate_id or "",
+                              getattr(fp_client, "last_raw", {}) or {})
+        if snap:
+            print(f"  at-lock snapshot -> {snap}")
 
     team_lines = {}
     if not a.no_vegas:
@@ -310,30 +317,61 @@ def cmd_build(a) -> int:
     out.write_text(json.dumps(payload, indent=1))
     print(f"\nSaved: {out}")
 
+    # ---- entry-arm selection ----
+    # Agreed strategy (review round 3): the LEAGUE entry is the true max-projection
+    # lineup; the simulator's pick rides along as a SHADOW so the two-arm record
+    # accumulates every week. The sim's win-probability is not yet trusted enough to
+    # pay projection points for (its claimed edge was measured against an invalid
+    # baseline). --entry model flips this for contests where the sim is load-bearing.
+    entry_arm = a.entry
+    if entry_arm == "auto":
+        entry_arm = ("max-proj" if spec.profile == Profile.FRIENDS_LEAGUE else "model")
+    if entry_arm == "max-proj":
+        entry_eval, shadow_eval, shadow_arm = ev_mp, ev_best, "model"
+    else:
+        entry_eval, shadow_eval, shadow_arm = ev_best, ev_mp, "max-proj"
+    entry_cand = entry_eval.candidate
+    entry_players = [byid[i] for i in entry_cand.player_ids]
+    shadow_players = [byid[i] for i in shadow_eval.candidate.player_ids]
+    print(f"\nENTRY ARM: {entry_arm}  (proj {entry_cand.proj_sum:.1f}, "
+          f"E[pts] {entry_eval.exp_points:.1f}, P(win) {entry_eval.p_win:.0%})  "
+          f"[shadow: {shadow_arm}]")
+
     # ---- artifacts: upload CSV, entry log, phone card ----
     # This block IS the operating loop. `swap` reads the logged entry; the upload CSV
     # is what actually gets entered. (A block-replace edit deleted this once — the
     # end-to-end test in tests/test_core.py now asserts these artifacts exist.)
     if a.export:
-        ex = export_upload_csv(best_players, a.export, slate_type=slate.slate_type,
-                               mvp_id=best.candidate.mvp_id, template=a.template,
+        ex = export_upload_csv(entry_players, a.export, slate_type=slate.slate_type,
+                               mvp_id=entry_cand.mvp_id, template=a.template,
                                contest_name=spec.name)
         print("\n" + ex.summary())
     if a.log_db:
-        ResultLog(a.log_db).log_entry(a.season, a.week, spec.name, best_players,
-                                      slate_id=a.slate_id or "",
-                                      objective=weights.rationale,
-                                      exp_points=best.exp_points, p_win=best.p_win,
-                                      mvp_id=best.candidate.mvp_id,
-                                      mvp_salary_mult=spec.mvp_salary_mult)
-        print(f"Entry logged -> {a.log_db}")
+        rl_out = ResultLog(a.log_db)
+        rl_out.log_entry(a.season, a.week, spec.name, entry_players,
+                         slate_id=a.slate_id or "",
+                         objective=f"arm={entry_arm}; {weights.rationale}",
+                         exp_points=entry_eval.exp_points, p_win=entry_eval.p_win,
+                         mvp_id=entry_cand.mvp_id,
+                         mvp_salary_mult=spec.mvp_salary_mult)
+        # Shadow arm: logged under a suffixed contest name so it can never collide
+        # with the real entry (PK is season/week/contest) and never receives money
+        # results — capture only grades the real contest name. projection_accuracy
+        # and the two-arm comparison read it by the [shadow:...] suffix.
+        rl_out.log_entry(a.season, a.week, f"{spec.name} [shadow:{shadow_arm}]",
+                         shadow_players, slate_id=a.slate_id or "",
+                         objective=f"arm={shadow_arm}; {weights.rationale}",
+                         exp_points=shadow_eval.exp_points, p_win=shadow_eval.p_win,
+                         mvp_id=shadow_eval.candidate.mvp_id,
+                         mvp_salary_mult=spec.mvp_salary_mult)
+        print(f"Entry logged ({entry_arm}) + shadow ({shadow_arm}) -> {a.log_db}")
     if a.pushover_out:
-        metrics = (f"{spec.name} w{a.week}: proj {best.candidate.proj_sum:.1f}, "
-                   f"E[pts] {best.exp_points:.1f}, P(win) {best.p_win:.0%}")
+        metrics = (f"{spec.name} w{a.week} [{entry_arm}]: proj {entry_cand.proj_sum:.1f}, "
+                   f"E[pts] {entry_eval.exp_points:.1f}, P(win) {entry_eval.p_win:.0%}")
         po = Path(a.pushover_out)
         po.parent.mkdir(parents=True, exist_ok=True)
-        po.write_text(pushover_body(best_players, metrics,
-                                    mvp_id=best.candidate.mvp_id))
+        po.write_text(pushover_body(entry_players, metrics,
+                                    mvp_id=entry_cand.mvp_id))
         print(f"Pushover card -> {po}")
 
     if a.db:
@@ -548,6 +586,14 @@ def main(argv=None) -> int:
                    help="a real FanDuel entries template to mirror column headers from")
     b.add_argument("--log-db", default=None, help="SQLite result log to record this entry in")
     b.add_argument("--pushover-out", default=None, help="write a phone-sized lineup here")
+    b.add_argument("--snapshot-dir", default="data/snapshots",
+                   help="where at-lock raw projection snapshots are written")
+    b.add_argument("--no-snapshot", action="store_true",
+                   help="skip the at-lock snapshot (tests/offline)")
+    b.add_argument("--entry", choices=["auto", "max-proj", "model"], default="auto",
+                   help="which arm gets exported/logged as THE entry. auto: max-proj "
+                        "for the friends league, model otherwise. The other arm is "
+                        "always logged as a shadow row.")
     b.add_argument("--out", default="data/lineups/latest.json")
     b.add_argument("--db", default=None)
     b.set_defaults(func=cmd_build)

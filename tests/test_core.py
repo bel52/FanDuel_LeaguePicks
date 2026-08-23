@@ -1290,11 +1290,13 @@ def test_build_end_to_end_produces_artifacts(tmp_path, monkeypatch):
     log_db = tmp_path / "results.db"
     push = tmp_path / "push.txt"
     outj = tmp_path / "lineups.json"
+    snapdir = tmp_path / "snaps"
     rc = cli_mod.main([
         "build", "--csv", str(FIX / "fd_full_slate.csv"),
         "--season", "2026", "--week", "1", "--slate-id", "e2e",
         "--no-vegas", "--no-injuries",
         "--pool", "10", "--sims", "400", "--fields", "3", "--show", "1",
+        "--snapshot-dir", str(snapdir),
         "--export", str(export), "--log-db", str(log_db),
         "--pushover-out", str(push), "--out", str(outj),
     ])
@@ -1306,15 +1308,90 @@ def test_build_end_to_end_produces_artifacts(tmp_path, monkeypatch):
     player_cells = [v for c, v in zip(rows[0], rows[1])
                     if c not in ("entry_id", "contest_id", "contest_name")]
     assert len(player_cells) == 9 and all(player_cells)
-    # (2) logged entry, findable exactly the way cmd_swap looks for it
+    # (2) logged entry, findable exactly the way cmd_swap looks for it — and it must
+    # be the MAX-PROJECTION arm for the friends league (--entry auto), with the
+    # model lineup logged as a shadow row under a suffixed contest name
+    from dfs.optimize import max_projection_lineup as _mpl
+    from dfs.contest_spec import ContestSpec as _CS, Profile as _P
+    from dfs.slate import SlateType as _ST
     rl = ResultLog(log_db)
     with rl._c() as c:
-        row = c.execute("""SELECT lineup_json, salary FROM entries
+        row = c.execute("""SELECT lineup_json, salary, objective FROM entries
                            WHERE season=2026 AND week=1
                            AND contest='Leather League'""").fetchone()
+        shadow = c.execute("""SELECT lineup_json, objective FROM entries
+                              WHERE season=2026 AND week=1
+                              AND contest LIKE 'Leather League [shadow:%'""").fetchone()
     assert row is not None
     lineup = _json.loads(row["lineup_json"])
     assert len(lineup) == 9 and all(p["fd_id"] for p in lineup)
     assert row["salary"] == sum(p["salary"] for p in lineup)  # classic: no MVP premium
-    # (3) pushover card and (4) lineup JSON exist and are non-trivial
-    assert push.read_text().strip() and _json.loads(outj.read_text())["lineups"]
+    assert row["objective"].startswith("arm=max-proj")
+    assert shadow is not None and shadow["objective"].startswith("arm=model")
+    assert len(_json.loads(shadow["lineup_json"])) == 9
+    # entered lineup IS the true unconstrained max-projection lineup: rebuild an
+    # identically-projected slate (same seed as the stub), solve independently,
+    # and require the same player set — a REAL comparison, not a re-implementation
+    import random as _r
+    _r.seed(11)
+    proj_by_name = {p2.name: round(max(1.0, (p2.fppg or 5.0) * _r.uniform(0.9, 1.1)), 2)
+                    for p2 in slate_probe.players}
+    slate2, _ = ingest_csv(FIX / "fd_full_slate.csv", "e2e", 2026, 1)
+    from dfs.distributions import floor_ceiling as _fc
+    for p2 in slate2.players:
+        p2.projection = proj_by_name.get(p2.name, 1.0)
+        p2.proj_source = "test"
+        p2.floor_p10, p2.ceiling_p90 = _fc(p2.projection, p2.position, DIST)
+    spec2 = _CS(name="Leather League", profile=_P.FRIENDS_LEAGUE,
+                slate_type=_ST.FULL, field_size=12, entry_fee=15.0)
+    expected = _mpl(slate2, spec2)
+    assert set(p["fd_id"] for p in lineup) == set(expected.player_ids)
+    # (3) pushover card names the arm; (4) lineup JSON exists
+    assert "[max-proj]" in push.read_text()
+    assert _json.loads(outj.read_text())["lineups"]
+    # (5) at-lock snapshot written and readable, with audit fields
+    from dfs.snapshots import read_snapshot
+    snaps = list(snapdir.glob("fp-2026-w01-*.json.gz"))
+    assert len(snaps) == 1
+    sd = read_snapshot(snaps[0])
+    assert sd["kind"] == "fp_at_lock" and sd["payload_sha256"] and sd["scorer_source_sha256"]
+    assert sd["season"] == 2026 and sd["week"] == 1
+
+
+
+def test_entry_arm_model_flag(tmp_path, monkeypatch):
+    """--entry model must enter the sim-ranked lineup and shadow max-proj."""
+    import json as _json
+    from dfs import cli as cli_mod
+    from dfs.fantasypros import FPProjection
+
+    slate_probe2, _ = ingest_csv(FIX / "fd_full_slate.csv", "arm", 2026, 1)
+
+    def fake_projections(self, season, week, positions=None):
+        import random as _r
+        _r.seed(11)
+        return [FPProjection(player_id=f"fp{i}", name=p.name, team=p.team,
+                             position=p.position,
+                             points=round(max(1.0, (p.fppg or 5.0) * _r.uniform(0.9, 1.1)), 2),
+                             stats={}, breakdown={})
+                for i, p in enumerate(slate_probe2.players)]
+
+    monkeypatch.setattr("dfs.fantasypros.FantasyProsClient.weekly_projections",
+                        fake_projections)
+    monkeypatch.setenv("FANTASYPROS_API_KEY", "test")
+    log_db = tmp_path / "r.db"
+    rc = cli_mod.main([
+        "build", "--csv", str(FIX / "fd_full_slate.csv"),
+        "--season", "2026", "--week", "1", "--slate-id", "arm",
+        "--no-vegas", "--no-injuries", "--no-snapshot",
+        "--pool", "8", "--sims", "300", "--fields", "2", "--show", "1",
+        "--entry", "model",
+        "--log-db", str(log_db), "--out", str(tmp_path / "l.json"),
+    ])
+    assert rc == 0
+    rl = ResultLog(log_db)
+    with rl._c() as c:
+        row = c.execute("SELECT objective FROM entries WHERE contest='Leather League'").fetchone()
+        shadow = c.execute("SELECT objective FROM entries WHERE contest LIKE '%[shadow:%'").fetchone()
+    assert row["objective"].startswith("arm=model")
+    assert shadow["objective"].startswith("arm=max-proj")
