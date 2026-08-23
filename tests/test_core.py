@@ -1709,3 +1709,85 @@ def test_web_test_mode_routes_to_sandbox(tmp_path, monkeypatch):
     assert r.status_code == 200
     argv = captured["swap"]
     assert "test" in argv[argv.index("--log-db") + 1]
+
+
+# ---- wrong-CSV-for-contest guard (2026-08-23) ----
+def test_build_rejects_showdown_csv_for_league_profile(tmp_path, monkeypatch):
+    """A single-game player list must not silently build a 6-man lineup logged under
+    the league contest. Stored CSVs are reused by season/week alone, so a leftover
+    showdown file from the same week is a live hazard."""
+    from dfs import cli as cli_mod
+    monkeypatch.setenv("FANTASYPROS_API_KEY", "test")
+    rc = cli_mod.main([
+        "build", "--csv", str(REAL_SD),          # single-game file
+        "--season", "2026", "--week", "1", "--slate-id", "bad",
+        "--profile", "friends_league",            # league = full slate
+        "--no-vegas", "--no-injuries", "--no-snapshot",
+        "--out", str(tmp_path / "x.json"),
+    ])
+    assert rc == 2                                # BUILD STOPPED, not a wrong lineup
+
+
+def test_build_rejects_full_csv_for_showdown_profile(tmp_path, monkeypatch):
+    from dfs import cli as cli_mod
+    monkeypatch.setenv("FANTASYPROS_API_KEY", "test")
+    rc = cli_mod.main([
+        "build", "--csv", str(REAL_W1),           # full slate
+        "--season", "2026", "--week", "1", "--slate-id", "bad2",
+        "--profile", "showdown_friends",          # showdown = single game
+        "--no-vegas", "--no-injuries", "--no-snapshot",
+        "--out", str(tmp_path / "x.json"),
+    ])
+    assert rc == 2
+
+
+def test_ambiguous_profiles_accept_either_slate():
+    """h2h and public_gpp are played both ways — they must assert nothing."""
+    from dfs.contest_spec import expected_slate_type
+    assert expected_slate_type(Profile.FRIENDS_LEAGUE) == SlateType.FULL
+    assert expected_slate_type(Profile.SHOWDOWN_FRIENDS) == SlateType.SINGLE_GAME
+    assert expected_slate_type(Profile.H2H) is None
+    assert expected_slate_type(Profile.PUBLIC_GPP) is None
+
+
+def test_web_stored_csv_picker_is_contest_aware(tmp_path, monkeypatch):
+    """Reusing a stored CSV must match the contest type, not just the week — even
+    when the wrong-type file is newer."""
+    import shutil, time
+    from fastapi.testclient import TestClient
+    import dfs.web as web
+    up = tmp_path / "up"; up.mkdir()
+    shutil.copy(REAL_W1, up / "2026-w01-aaaaaa.csv")          # full slate (older)
+    time.sleep(0.01)
+    shutil.copy(REAL_SD, up / "2026-w01-bbbbbb.csv")          # showdown (NEWER)
+    captured = {}
+    monkeypatch.setattr(web, "_start_job",
+                        lambda kind, argv: captured.setdefault(kind, argv) or "j")
+    monkeypatch.setattr(web, "UPLOADS", up)
+    monkeypatch.setattr(web, "LINEUPS", tmp_path / "l")
+    monkeypatch.setattr(web, "DB", tmp_path / "p.db")
+    c = TestClient(web.app)
+
+    r = c.post("/api/build", data={"season": 2026, "week": 1,
+                                   "profile": "friends_league"})
+    assert r.status_code == 200
+    assert r.json()["slate_csv"].endswith("aaaaaa.csv")       # picked FULL, not newest
+
+    captured.clear()
+    r = c.post("/api/build", data={"season": 2026, "week": 1,
+                                   "profile": "showdown_friends"})
+    assert r.status_code == 200
+    assert r.json()["slate_csv"].endswith("bbbbbb.csv")       # picked SINGLE_GAME
+
+
+def test_web_no_matching_stored_csv_errors_clearly(tmp_path, monkeypatch):
+    import shutil
+    from fastapi.testclient import TestClient
+    import dfs.web as web
+    up = tmp_path / "up"; up.mkdir()
+    shutil.copy(REAL_SD, up / "2026-w01-only.csv")            # showdown only
+    monkeypatch.setattr(web, "UPLOADS", up)
+    c = TestClient(web.app)
+    r = c.post("/api/build", data={"season": 2026, "week": 1,
+                                   "profile": "friends_league"})
+    assert r.status_code == 400 and "different contest type" in r.text

@@ -56,6 +56,20 @@ class ContestSpec(BaseModel):
 
 
 # Roster templates (verified against FanDuel rules; re-verify live in 2.1)
+def expected_slate_type(profile: "Profile") -> "SlateType | None":
+    """The slate type a profile REQUIRES, or None when either is legitimate.
+
+    The Leather League is always the Sunday main slate; showdown_friends is always a
+    single game. h2h and public_gpp are played both ways, so they assert nothing.
+    Used to reject a build whose CSV does not match the contest being played — the
+    build otherwise adapts silently to whatever file it is handed."""
+    if profile == Profile.FRIENDS_LEAGUE:
+        return SlateType.FULL
+    if profile == Profile.SHOWDOWN_FRIENDS:
+        return SlateType.SINGLE_GAME
+    return None
+
+
 ROSTER_FULL = {"QB": (1, 1), "RB": (2, 3), "WR": (3, 4), "TE": (1, 2), "D": (1, 1)}
 ROSTER_FULL_SIZE = 9
 ROSTER_SHOWDOWN_SIZE = 6  # 1 MVP (1.5x pts AND salary) + 5 FLEX — FanDuel single-game, 2025 rules onward

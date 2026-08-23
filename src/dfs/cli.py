@@ -14,7 +14,7 @@ import os
 import sys
 from pathlib import Path
 
-from .contest_spec import ContestSpec, Profile, SlateType
+from .contest_spec import ContestSpec, Profile, SlateType, expected_slate_type
 from .ingest_fanduel import ingest_csv
 from .fantasypros import FantasyProsClient, FantasyProsError
 from .vegas import OddsClient, VegasError
@@ -65,12 +65,32 @@ def _dist():
     return d
 
 
+def _assert_slate_matches_profile(slate, csv_path: str, profile: str) -> None:
+    """A CSV for the wrong contest must STOP the run, not quietly change its shape.
+
+    The build takes its slate type from the file, and the web UI reuses stored CSVs by
+    season/week alone — so a single-game file left over from the same week would
+    otherwise produce a 6-man showdown lineup logged under the league contest name,
+    with no error anywhere."""
+    teams = sorted({p.team for p in slate.players})
+    print(f"  using slate: {Path(csv_path).name} "
+          f"({slate.slate_type.value}, {len(teams)} teams)")
+    want = expected_slate_type(Profile(profile))
+    if want is not None and slate.slate_type != want:
+        raise SlateError(
+            f"CSV is a {slate.slate_type.value} slate but contest type '{profile}' "
+            f"requires {want.value} — this is the wrong player list for the contest "
+            f"you are building.\n  file: {csv_path}\n  teams: {', '.join(teams)}\n"
+            "Upload the correct FanDuel player list, or change the contest type.")
+
+
 def cmd_build(a) -> int:
     dist = _dist()
 
     print("=" * 72)
     slate, irep = ingest_csv(a.csv, a.slate_id, a.season, a.week, strict=False)
     print(irep.summary())
+    _assert_slate_matches_profile(slate, a.csv, a.profile)
     if irep.validation_problems:
         print("\n!! validation problems above — continuing, review before entering lineups")
 
@@ -407,6 +427,7 @@ def cmd_swap(a) -> int:
 
     slate, irep = ingest_csv(a.csv, a.slate_id, a.season, a.week, strict=False)
     print(irep.summary())
+    _assert_slate_matches_profile(slate, a.csv, a.profile)
     fp = FantasyProsClient().weekly_projections(a.season, a.week)
 
     team_lines = {}

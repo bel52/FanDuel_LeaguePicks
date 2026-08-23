@@ -26,6 +26,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 
 from . import cli as dfs_cli
+from .contest_spec import Profile, SlateType, expected_slate_type
 from .results import ResultLog
 from .objectives import weights_for
 
@@ -44,6 +45,20 @@ SETTINGS_FILE = DATA / "settings.json"
 DEFAULT_SETTINGS = {"me": "brettleath", "season": 2026, "field": 12,
                     "weekly_prize": 12.84, "grand_prizes": "135,81,54",
                     "weeks_total": 21, "contest": "Leather League"}
+
+
+def _csv_slate_type(path: Path) -> "SlateType":
+    """Detect FULL vs SINGLE_GAME from a stored salary CSV by counting teams —
+    cheap header-only read, same rule ingest uses."""
+    import csv as _csv
+    try:
+        with path.open(encoding="utf-8-sig", newline="") as f:
+            teams = {(r.get("Team") or "").strip().upper()
+                     for r in _csv.DictReader(f)}
+        teams.discard("")
+        return SlateType.SINGLE_GAME if len(teams) == 2 else SlateType.FULL
+    except Exception:                                          # noqa: BLE001
+        return SlateType.FULL
 
 
 def load_settings() -> dict:
@@ -216,6 +231,10 @@ async def api_build(csv: UploadFile | None = File(None), season: int = Form(0),
         dest = UPLOADS / f"{season}-w{week:02d}-{uuid.uuid4().hex[:6]}.csv"
         dest.write_bytes(await csv.read())
     else:
+        # Reusing a stored CSV must respect the CONTEST, not just the week. Brett
+        # plays single-game more often than league games, so both kinds of file exist
+        # for the same week; picking the newest would hand a showdown player list to a
+        # league build (which then silently builds a 6-man lineup).
         stored = sorted(UPLOADS.glob(f"*{season}-w{week:02d}*.csv"),
                         key=lambda p: p.stat().st_mtime, reverse=True)
         stored = [s for s in stored
@@ -223,6 +242,15 @@ async def api_build(csv: UploadFile | None = File(None), season: int = Form(0),
         if not stored:
             raise HTTPException(400, f"No stored salary CSV for {season} week {week} — "
                                      "upload one.")
+        want = expected_slate_type(Profile(profile))
+        if want is not None:
+            typed = [s for s in stored if _csv_slate_type(s) == want]
+            if not typed:
+                raise HTTPException(
+                    400, f"No stored {want.value} salary CSV for {season} week {week} "
+                         f"— the {len(stored)} stored file(s) are for a different "
+                         "contest type. Upload the right player list.")
+            stored = typed
         dest = stored[0]
     slate_id = f"{season}-w{week:02d}"
     log_db, lineups_dir = (DB_TEST, LINEUPS_TEST) if test_mode else (DB, LINEUPS)

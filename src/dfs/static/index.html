@@ -128,7 +128,11 @@ tr.me td{color:var(--lamp);font-weight:600}
   <form id="f-build">
     <label class="full">FanDuel salary CSV
       <input type="file" name="csv" accept=".csv">
-      <span class="k" id="b-stored" style="color:var(--dim);font:12px var(--mono)"></span></label>
+      <span class="k" id="b-stored" style="color:var(--dim);font:12px var(--mono)"></span>
+      <span class="k" style="color:var(--dim);font:12px var(--mono)">Leave empty to
+      reuse the stored player list for this week and contest type. A file for the
+      wrong contest (single-game vs Sunday main) is rejected, not silently used —
+      the run prints which file it used.</span></label>
     <label>Season <input type="number" name="season" value="2026" required></label>
     <label>Week <input type="number" name="week" min="1" max="22" required></label>
     <label>Contest type
