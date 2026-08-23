@@ -1486,3 +1486,78 @@ def test_showdown_mvp_rotations_present_and_legal():
                    + int(round(0.5 * byid[c.mvp_id].salary)))
         assert charged <= REAL_SD_SPEC.salary_cap
         assert c.salary == charged              # reported salary is the charged one
+
+
+# ---- real FanDuel Week 1 classic slate (Sun 2026-09-13 main, 12 games) ----
+REAL_W1 = FIX / "fd_classic_real_w1.csv"
+
+
+def _real_w1_slate():
+    from dfs.distributions import floor_ceiling
+    slate, rep = ingest_csv(REAL_W1, "real-w1", 2026, 1, strict=False)
+    for p in slate.players:
+        p.projection = max(1.0, p.fppg or 3.0)
+        p.proj_source = "fppg-proxy"
+        p.floor_p10, p.ceiling_p90 = floor_ceiling(p.projection, p.position, DIST)
+    return slate, rep
+
+
+W1_SPEC = ContestSpec(name="H2H", profile=Profile.H2H, slate_type=SlateType.FULL,
+                      field_size=2, entry_fee=5.0)
+
+
+def test_real_w1_slate_ingests():
+    slate, rep = _real_w1_slate()
+    assert rep.detected_slate_type == SlateType.FULL
+    assert len(rep.teams) == 24 and rep.ingested == 703
+    assert rep.mvp_salary_mult_observed is None      # classic CSV has no MVP column
+
+
+def test_real_classic_slate_has_no_kickers():
+    """FanDuel classic rosters have no K slot and the salary file carries no kickers.
+    Kickers only appear on single-game slates. This is why max_projection_lineup and
+    generate_pool must exclude non-classic positions rather than relying on the CSV."""
+    slate, _ = _real_w1_slate()
+    assert not any(p.position == "K" for p in slate.players)
+    assert {p.position for p in slate.players} == {"QB", "RB", "WR", "TE", "D"}
+
+
+def test_real_w1_roster_shape_matches_fanduel_flex():
+    """FanDuel classic: 1 QB, 2 RB, 3 WR, 1 TE, 1 FLEX (RB/WR/TE), 1 DEF = 9. Our
+    ROSTER_FULL encodes the FLEX as widened ranges; verify a real solve lands inside
+    them and that the CSV's own Roster Position column agrees."""
+    import csv as _csv
+    from collections import Counter
+    from dfs.contest_spec import ROSTER_FULL
+    rps = Counter(r["Roster Position"] for r in _csv.DictReader(REAL_W1.open()))
+    assert set(rps) == {"QB", "RB/FLEX", "WR/FLEX", "TE/FLEX", "DEF"}
+    slate, _ = _real_w1_slate()
+    mp = max_projection_lineup(slate, W1_SPEC)
+    byid = {p.fd_id: p for p in slate.players}
+    counts = Counter(byid[i].position for i in mp.player_ids)
+    assert len(mp.player_ids) == 9
+    assert mp.salary <= W1_SPEC.salary_cap
+    for pos, (lo, hi) in ROSTER_FULL.items():
+        assert lo <= counts.get(pos, 0) <= hi, f"{pos}={counts.get(pos,0)} outside {lo}-{hi}"
+    # exactly one flex beyond the base 1/2/3/1/1
+    assert sum(counts.values()) == 9
+
+
+def test_real_w1_pool_fills_to_requested_size():
+    slate, _ = _real_w1_slate()
+    for n in (10, 25):
+        pool = generate_pool(slate, W1_SPEC, n=n,
+                             stack=StackRule(require_qb_stack=1), min_unique=3)
+        assert len(pool) == n
+        assert all(len(c.player_ids) == 9 for c in pool)
+        assert all(c.salary <= W1_SPEC.salary_cap for c in pool)
+
+
+def test_real_w1_contains_jac_the_vegas_regression_team():
+    """The live Week 1 slate really does use 'JAC' — the abbreviation that broke the
+    Vegas layer twice. Odds boards say Jacksonville/JAX; both sides must normalize."""
+    from dfs.matching import norm_team
+    slate, rep = _real_w1_slate()
+    assert "JAC" in rep.teams
+    assert norm_team("JAX") == "JAC" == norm_team("JAC")
+    assert {norm_team(t) for t in rep.teams} == set(rep.teams)   # already canonical
