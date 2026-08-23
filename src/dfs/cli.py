@@ -32,7 +32,7 @@ from .export import export_upload_csv, lineup_card, pushover_body
 from .results import ResultLog
 from .kickoffs import KickoffSchedule
 from .nflcal import current_week
-from .lateswap import propose_swap
+from .lateswap import propose_swap, propose_swap_maxproj
 
 DATA = Path(__file__).resolve().parents[2] / "data"
 
@@ -397,6 +397,13 @@ def cmd_swap(a) -> int:
     logged_lineup = _json.loads(row["lineup_json"])
     current_ids = tuple(p["fd_id"] for p in logged_lineup)
     current_mvp = next((p["fd_id"] for p in logged_lineup if p.get("mvp")), None)
+    # The arm the entry was BUILT with decides the swap criterion. A max-proj entry
+    # must never be churned Sunday morning by the model objective it was chosen over
+    # (first live drill: the model proposed trading 1.0 projected points for +$0.13
+    # of simulator objective on a max-proj entry).
+    entry_arm = "model"
+    if (row["objective"] or "").startswith("arm=max-proj"):
+        entry_arm = "max-proj"
 
     slate, irep = ingest_csv(a.csv, a.slate_id, a.season, a.week, strict=False)
     print(irep.summary())
@@ -449,8 +456,13 @@ def cmd_swap(a) -> int:
                                seed=a.seed + 1)
     reason = ("inactives affected the lineup" if sw.lineup_affected
               else "scheduled late-swap check")
-    prop = propose_swap(slate, current_ids, spec, sched, sim, fieldm, weights,
-                        reason=reason, mvp_id=current_mvp)
+    if entry_arm == "max-proj":
+        print("\nSwap criterion: PROJECTED POINTS (entry arm: max-proj)")
+        prop = propose_swap_maxproj(slate, current_ids, spec, sched, reason=reason)
+    else:
+        print("\nSwap criterion: model objective (entry arm: model)")
+        prop = propose_swap(slate, current_ids, spec, sched, sim, fieldm, weights,
+                            reason=reason, mvp_id=current_mvp)
     byid = {p.fd_id: p for p in slate.players}
     print("\n" + "=" * 72)
     print(prop.summary(byid))

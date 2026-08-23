@@ -1618,3 +1618,48 @@ def test_exact_name_cross_team_still_matches():
     mapping, rep = match_slate(slate, fp)
     assert len(mapping) == 1
     assert rep.team_disagreements and rep.team_disagreements[0][0] == "AJ Brown"
+
+
+# ---- arm-aware late swap (first live swap drill, 2026-08-23) ----
+def test_maxproj_swap_never_trades_projection_away():
+    """LIVE FAILURE: on a max-proj entry, the model-objective swap proposed giving up
+    1.0 projected points for +$0.13 of simulator objective. A max-projection entry
+    must be re-solved on PROJECTION under lock constraints — the sim has no say."""
+    from dfs.lateswap import propose_swap_maxproj
+    from dfs.kickoffs import KickoffSchedule
+    slate = _projected_slate()
+    mp = max_projection_lineup(slate, SPEC)
+    sched = KickoffSchedule({})                      # nothing locked
+    prop = propose_swap_maxproj(slate, mp.player_ids, SPEC, sched)
+    assert not prop.swaps                            # already optimal: no churn
+    assert prop.criterion == "projected pts"
+    assert prop.old_dollars == prop.new_dollars
+
+    # make a better lineup exist: bump a non-lineup player's projection hard
+    byid = {p.fd_id: p for p in slate.players}
+    outsider = next(p for p in slate.players
+                    if p.fd_id not in mp.player_ids and p.position == "WR")
+    outsider.projection = 60.0
+    prop2 = propose_swap_maxproj(slate, mp.player_ids, SPEC, sched)
+    assert prop2.swaps and prop2.new_dollars > prop2.old_dollars
+    assert outsider.fd_id in prop2.proposed_ids
+    # and the proposal never loses projection
+    new_proj = sum(byid[i].projection for i in prop2.proposed_ids)
+    old_proj = sum(byid[i].projection for i in mp.player_ids)
+    assert new_proj > old_proj
+
+
+def test_maxproj_swap_forced_when_player_swept():
+    """A lineup player removed by the inactives sweep forces a swap even if the
+    replacement lineup projects lower than the (now fictional) original total."""
+    from dfs.lateswap import propose_swap_maxproj
+    from dfs.kickoffs import KickoffSchedule
+    slate = _projected_slate()
+    mp = max_projection_lineup(slate, SPEC)
+    gone = mp.player_ids[0]
+    slate.players = [p for p in slate.players if p.fd_id != gone]   # swept
+    prop = propose_swap_maxproj(slate, mp.player_ids, SPEC, KickoffSchedule({}))
+    assert prop.swaps
+    assert gone not in prop.proposed_ids
+    assert any(out_p.fd_id == gone for out_p, _ in prop.swaps)
+    assert len(prop.proposed_ids) == 9

@@ -38,6 +38,7 @@ class SwapProposal:
     new_dollars: float
     reason: str
     proposed_mvp: str | None = None   # showdown: MVP of the proposed lineup
+    criterion: str = "$/wk objective" # what old/new numbers ARE (model $ vs proj pts)
 
     @property
     def improves(self) -> bool:
@@ -46,9 +47,9 @@ class SwapProposal:
     def summary(self, byid: dict) -> str:
         if not self.swaps:
             return (f"NO SWAP — current lineup is still optimal for the unlocked slots "
-                    f"(${self.old_dollars:.2f}). {self.reason}")
-        lines = [f"SWAP PROPOSAL: ${self.old_dollars:.2f} -> ${self.new_dollars:.2f} "
-                 f"({self.new_dollars - self.old_dollars:+.2f}/wk objective)"]
+                    f"({self.old_dollars:.2f} {self.criterion}). {self.reason}")
+        lines = [f"SWAP PROPOSAL: {self.old_dollars:.2f} -> {self.new_dollars:.2f} "
+                 f"({self.new_dollars - self.old_dollars:+.2f} {self.criterion})"]
         for out_p, in_p in self.swaps:
             lines.append(f"  OUT {out_p.position:3s} {out_p.name:24s} "
                          f"(proj {out_p.projection or 0:5.1f}, ${out_p.salary})")
@@ -58,6 +59,67 @@ class SwapProposal:
                      f"{', '.join(byid[i].name for i in sorted(self.locked_ids) if i in byid) or 'none'}")
         lines.append(f"  reason: {self.reason}")
         return "\n".join(lines)
+
+
+def propose_swap_maxproj(slate: PlayerSlate, current_ids: tuple, spec: ContestSpec,
+                         schedule: KickoffSchedule, now: datetime | None = None,
+                         reason: str = "scheduled late-swap check") -> SwapProposal:
+    """Late swap for a MAX-PROJECTION entry: re-solve max projection under lock
+    constraints, and propose a change only if projection strictly improves (or a
+    lineup player was removed). The simulator has NO say here — an entry chosen for
+    projection must not be churned Sunday morning by the model objective it was
+    chosen over. old/new numbers are PROJECTED POINTS, not model dollars."""
+    from .optimize import _solve_full, _solve_showdown, StackRule
+    now = now or datetime.now(timezone.utc)
+    locked_teams = schedule.locked_teams(now)
+    byid = {p.fd_id: p for p in slate.players}
+
+    swept = [i for i in current_ids if i not in byid]        # removed by inactives
+    present = [i for i in current_ids if i in byid]
+    locked_ids = {i for i in present if byid[i].team in locked_teams}
+    cur_proj = round(sum(byid[i].projection for i in present), 2)
+
+    open_slots = [i for i in present if i not in locked_ids] + swept
+    if not open_slots:
+        return SwapProposal(current_ids, current_ids, locked_ids, [],
+                            cur_proj, cur_proj,
+                            "all players locked — nothing can be changed",
+                            criterion="projected pts")
+
+    # players whose games already started cannot fill an open slot
+    startable = [p for p in slate.players
+                 if p.team not in locked_teams or p.fd_id in locked_ids]
+    solve = (_solve_showdown if spec.slate_type == SlateType.SINGLE_GAME
+             else _solve_full)
+    best = solve(startable, spec, StackRule(require_qb_stack=0), locked_ids, [], 0)
+    if best is None:
+        return SwapProposal(current_ids, current_ids, locked_ids, [],
+                            cur_proj, cur_proj,
+                            "no valid alternative under lock constraints",
+                            criterion="projected pts")
+
+    forced = bool(swept)
+    if set(best.player_ids) == set(present) and not forced:
+        return SwapProposal(current_ids, current_ids, locked_ids, [],
+                            cur_proj, cur_proj, reason, criterion="projected pts",
+                            proposed_mvp=best.mvp_id)
+    new_proj = round(sum(byid[i].projection for i in best.player_ids), 2)
+    if not forced and new_proj <= cur_proj + 1e-9:
+        return SwapProposal(current_ids, current_ids, locked_ids, [],
+                            cur_proj, cur_proj, reason, criterion="projected pts")
+
+    out_ids = set(current_ids) - set(best.player_ids)
+    in_ids = set(best.player_ids) - set(current_ids)
+    from .slate import SlatePlayer
+    def _ghost(fd_id):
+        return byid.get(fd_id) or SlatePlayer(fd_id=fd_id, name=f"(ruled out) {fd_id}",
+                                              position="?", team="?", opponent="?",
+                                              salary=0, game="")
+    swaps = list(zip(sorted((_ghost(i) for i in out_ids), key=lambda p: p.position),
+                     sorted((byid[i] for i in in_ids), key=lambda p: p.position)))
+    return SwapProposal(current_ids, best.player_ids, locked_ids, swaps,
+                        cur_proj, new_proj, reason, criterion="projected pts",
+                        proposed_mvp=best.mvp_id)
 
 
 def propose_swap(slate: PlayerSlate, current_ids: tuple, spec: ContestSpec,
