@@ -1561,3 +1561,60 @@ def test_real_w1_contains_jac_the_vegas_regression_team():
     assert "JAC" in rep.teams
     assert norm_team("JAX") == "JAC" == norm_team("JAC")
     assert {norm_team(t) for t in rep.teams} == set(rep.teams)   # already canonical
+
+
+# ---- matcher collision found by the LIVE Week 1 dry run (2026-08-23) ----
+def _fpp(name, team, pos, pts):
+    from dfs.fantasypros import FPProjection
+    return FPProjection(player_id=name, name=name, team=team, position=pos,
+                        points=pts, stats={}, breakdown={})
+
+
+def _sp(name, team, pos, salary, fd_id=None):
+    from dfs.slate import SlatePlayer
+    return SlatePlayer(fd_id=fd_id or name, name=name, position=pos, team=team,
+                       opponent="X", salary=salary, game="A@B")
+
+
+def test_short_key_collision_rejected_cross_team():
+    """LIVE FAILURE: 'Jalon Daniels' (TB backup, $6000) received Jayden Daniels'
+    (WAS) projection via first-initial+lastname+position, then anchored all three
+    winning lineups. Different first name + different team must NOT match."""
+    from dfs.matching import match_slate
+    fp = [_fpp("Jayden Daniels", "WAS", "QB", 19.0),
+          _fpp("Jayden Reed", "GB", "WR", 9.6)]
+    slate = [_sp("Jalon Daniels", "TB", "QB", 6000),
+             _sp("Ja'seem Reed", "CAR", "WR", 4000),
+             _sp("Jayden Daniels", "WAS", "QB", 8500, fd_id="real-jd")]
+    mapping, rep = match_slate(slate, fp)
+    assert "Jalon Daniels" not in mapping            # collision rejected
+    assert "Ja'seem Reed" not in mapping             # collision rejected
+    assert mapping["real-jd"].name == "Jayden Daniels"   # the real one still matches
+    assert {u[0] for u in rep.unmatched} == {"Jalon Daniels", "Ja'seem Reed"}
+
+
+def test_short_key_nickname_variants_still_match():
+    """The tier's legitimate purpose survives the guard: prefix-compatible first
+    names (nicknames) match, and team agreement rescues same-team initial hits."""
+    from dfs.matching import match_slate
+    fp = [_fpp("Cameron Ward", "TEN", "QB", 15.0),
+          _fpp("Kenneth Walker III", "SEA", "RB", 13.5),
+          _fpp("Joshua Palmer", "BUF", "WR", 8.0)]
+    slate = [_sp("Cam Ward", "TEN", "QB", 7000),
+             _sp("Ken Walker", "SEA", "RB", 6800),
+             _sp("Josh Palmer", "BUF", "WR", 5200)]
+    mapping, rep = match_slate(slate, fp)
+    assert len(mapping) == 3 and not rep.unmatched
+    assert rep.by_method.get("short+pos", 0) >= 2
+
+
+def test_exact_name_cross_team_still_matches():
+    """Trades/stale rosters: an EXACT name match across teams must keep matching
+    (that is the documented reason team is not part of the primary key), and it is
+    recorded as a team disagreement."""
+    from dfs.matching import match_slate
+    fp = [_fpp("A.J. Brown", "PHI", "WR", 14.0)]
+    slate = [_sp("AJ Brown", "DAL", "WR", 8700)]     # hypothetical trade
+    mapping, rep = match_slate(slate, fp)
+    assert len(mapping) == 1
+    assert rep.team_disagreements and rep.team_disagreements[0][0] == "AJ Brown"

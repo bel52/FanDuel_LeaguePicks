@@ -38,6 +38,17 @@ def norm_name(name: str) -> str:
     return " ".join(parts)
 
 
+def _first_names_compatible(a: str, b: str) -> bool:
+    """True when two first names are plausibly the same person: one is a prefix of
+    the other ('cam'/'cameron', 'josh'/'joshua', 'ken'/'kenneth'). Single-letter
+    first names are too weak to assert identity. 'jalon'/'jayden' -> False."""
+    fa = (norm_name(a).split() or [""])[0]
+    fb = (norm_name(b).split() or [""])[0]
+    if len(fa) < 2 or len(fb) < 2:
+        return False
+    return fa.startswith(fb) or fb.startswith(fa)
+
+
 def short_key(name: str) -> str:
     """First initial + last name: 'aj brown' -> 'a|brown'."""
     p = norm_name(name).split()
@@ -114,7 +125,19 @@ class ProjectionIndex:
             pick, amb = self._pick(cands, team, position)
             if pick is not None:
                 return pick, "name+pos", amb
-        cands = [c for c in self.by_short.get(short_key(name), []) if c.position == position]
+        # Tier 3 exists for NICKNAME variants of the same person (Cam/Cameron Ward,
+        # Ken/Kenneth Walker). Unguarded, it also welds DIFFERENT players who share an
+        # initial and last name: on the real 2026 W1 slate it handed Jayden Daniels'
+        # (WAS) projection to Jalon Daniels (TB, $6000 backup) and Jayden Reed's (GB)
+        # to Ja'seem Reed (CAR, $4000) — corrupted values that then WON the optimizer.
+        # A short-key hit therefore requires the first names to be prefix-compatible
+        # OR the teams to agree. A cross-team, different-first-name collision is
+        # rejected: better an unmatched backup (dropped from the pool) than a wrong
+        # number that no downstream gate can see.
+        cands = [c for c in self.by_short.get(short_key(name), [])
+                 if c.position == position
+                 and (_first_names_compatible(name, c.name)
+                      or norm_team(c.team) == norm_team(team))]
         if cands:
             pick, amb = self._pick(cands, team, position)
             if pick is not None:
