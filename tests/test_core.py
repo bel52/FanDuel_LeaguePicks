@@ -1791,3 +1791,30 @@ def test_web_no_matching_stored_csv_errors_clearly(tmp_path, monkeypatch):
     r = c.post("/api/build", data={"season": 2026, "week": 1,
                                    "profile": "friends_league"})
     assert r.status_code == 400 and "different contest type" in r.text
+
+
+def test_web_job_latest_enables_reconnect(tmp_path, monkeypatch):
+    """When the POST response is lost in transit the run still starts server-side
+    (observed: app logged 200, Safari reported 'Load failed'). /api/job-latest lets
+    the page find and attach to that run instead of reporting a dead error."""
+    from fastapi.testclient import TestClient
+    import dfs.web as web
+    c = TestClient(web.app)
+    assert c.get("/api/job-latest/build").status_code == 404      # none yet
+
+    with web._jobs_lock:
+        web._jobs.clear()
+        web._jobs["old"] = {"id": "old", "kind": "build", "status": "done",
+                            "output": "old", "argv": [], "started": "2026-01-01T00:00:00"}
+        web._jobs["new"] = {"id": "new", "kind": "build", "status": "running",
+                            "output": "new", "argv": [], "started": "2026-06-01T00:00:00"}
+        web._jobs["swp"] = {"id": "swp", "kind": "swap", "status": "running",
+                            "output": "s", "argv": [], "started": "2026-05-01T00:00:00"}
+    try:
+        j = c.get("/api/job-latest/build").json()
+        assert j["id"] == "new" and j["status"] == "running"      # newest, not oldest
+        assert c.get("/api/job-latest/swap").json()["id"] == "swp"  # kind-scoped
+        assert c.get("/api/job-latest/capture").status_code == 404
+    finally:
+        with web._jobs_lock:
+            web._jobs.clear()

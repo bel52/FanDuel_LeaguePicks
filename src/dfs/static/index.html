@@ -260,32 +260,85 @@ $('#s-save').onclick=async()=>{
   ticker();
 };
 /* job runner */
+function jobKind(url){return url.includes('build')?'build':url.includes('swap')?'swap':'capture'}
+
+function pollJob(job,form,outSel,url,linksSel){
+  const out=$(outSel),btn=form.querySelector('button.go');
+  let misses=0;
+  const poll=async()=>{
+    let j;
+    try{ j=await (await fetch('/api/job/'+job)).json(); }
+    catch(e){
+      /* a dropped poll is not a dead build — keep trying for ~1 min before giving up */
+      if(++misses<25){setTimeout(poll,2500);return}
+      out.textContent='Lost contact with the server while the run was in progress.\n'+
+        'The run may still have finished — reload the page to reconnect.';
+      btn.disabled=false;return;
+    }
+    misses=0;
+    out.textContent=j.output||'';
+    if(j.status==='running'){out.innerHTML+='\n<span class="spin">running</span>';setTimeout(poll,2500);return}
+    btn.disabled=false;
+    out.textContent=(j.output||'')+(j.status==='failed'?'\n\n*** FAILED — read the error above ***':'\n\n*** DONE ***');
+    out.scrollTop=out.scrollHeight;
+    if(linksSel&&j.status==='done'){
+      const week=form.week?.value,season=form.season?.value;
+      const f=(url.includes('build')?`upload-${season}-w${String(week).padStart(2,'0')}.csv`
+                                    :`swap-${season}-w${String(week).padStart(2,'0')}.csv`);
+      $(linksSel).innerHTML=`<a class="dl" href="/api/download/${f}">Download FanDuel upload CSV</a>`;
+    }
+    ticker();
+  };
+  poll();
+}
+
 async function runJob(form,outSel,url,linksSel){
   const out=$(outSel),btn=form.querySelector('button.go');
+  const started=Date.now();
   btn.disabled=true;out.innerHTML='<span class="spin">Working</span>';
   try{
     const r=await fetch(url,{method:'POST',body:new FormData(form)});
     if(!r.ok){out.textContent='Request failed: '+await r.text();btn.disabled=false;return}
     const {job}=await r.json();
-    const poll=async()=>{
-      const j=await (await fetch('/api/job/'+job)).json();
-      out.textContent=j.output||'';
-      if(j.status==='running'){out.innerHTML+='\n<span class="spin">running</span>';setTimeout(poll,2500);return}
-      btn.disabled=false;
-      out.textContent=(j.output||'')+(j.status==='failed'?'\n\n*** FAILED — read the error above ***':'\n\n*** DONE ***');
-      out.scrollTop=out.scrollHeight;
-      if(linksSel&&j.status==='done'){
-        const week=form.week?.value,season=form.season?.value;
-        const f=(url.includes('build')?`upload-${season}-w${String(week).padStart(2,'0')}.csv`
-                                      :`swap-${season}-w${String(week).padStart(2,'0')}.csv`);
-        $(linksSel).innerHTML=`<a class="dl" href="/api/download/${f}">Download FanDuel upload CSV</a>`;
-      }
-      ticker();
-    };
-    poll();
-  }catch(e){out.textContent='Error: '+e;btn.disabled=false}
+    pollJob(job,form,outSel,url,linksSel);
+  }catch(e){
+    /* The POST may have REACHED the server and started the run even though the
+       response never came back (seen with Safari through the tunnel: app logged
+       200, browser reported 'Load failed'). Before surfacing an error, look for a
+       job of this kind that started just now and attach to it. */
+    out.innerHTML='<span class="spin">Reconnecting</span>';
+    for(let i=0;i<6;i++){
+      await new Promise(s=>setTimeout(s,1500));
+      try{
+        const j=await (await fetch('/api/job-latest/'+jobKind(url))).json();
+        if(j&&j.id&&new Date(j.started).getTime()>=started-5000){
+          pollJob(j.id,form,outSel,url,linksSel);return;
+        }
+      }catch(_){}
+    }
+    out.textContent='Could not reach the server: '+e+
+      '\n\nThe run does not appear to have started. If you have been on this page a '+
+      'while, reload it (Cmd-R) to refresh the Cloudflare Access session, then try again.';
+    btn.disabled=false;
+  }
 }
 $('#f-build').onsubmit=e=>{e.preventDefault();runJob(e.target,'#o-build','/api/build','#build-links')};
+/* If a run is already in flight when the page loads (reload, reconnect, second
+   device), attach to it rather than showing an idle box next to a busy server. */
+(async()=>{
+  for(const [kind,form,outSel,url,links] of
+      [['build','#f-build','#o-build','/api/build','#build-links'],
+       ['swap','#f-swap','#o-swap','/api/swap','#swap-links']]){
+    try{
+      const j=await (await fetch('/api/job-latest/'+kind)).json();
+      if(j&&j.status==='running'){
+        const f=document.querySelector(form);
+        f.querySelector('button.go').disabled=true;
+        pollJob(j.id,f,outSel,url,links);
+      }
+    }catch(_){}
+  }
+})();
 /* league profiles use the league contest name; non-league gets a distinct one so
    league standings and ownership can never be polluted by side action */
 $('#b-profile').onchange=()=>{

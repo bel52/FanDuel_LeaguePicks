@@ -334,6 +334,20 @@ async def api_capture(page: UploadFile | None = File(None),
     return {"job": _start_job("capture", argv)}
 
 
+@app.get("/api/job-latest/{kind}")
+def api_job_latest(kind: str):
+    """Most recent job of a kind, so the page can RECONNECT when the POST response
+    is lost in transit (observed 2026-08-23: the build POST reached the app and
+    returned 200, but Safari never received the body and reported 'Load failed'
+    while the build ran on happily). Also lets the page re-attach after a reload,
+    a closed laptop, or a dropped tunnel mid-build."""
+    with _jobs_lock:
+        jobs = [j for j in _jobs.values() if j["kind"] == kind]
+    if not jobs:
+        raise HTTPException(404, "no jobs of that kind yet")
+    return max(jobs, key=lambda j: j["started"])
+
+
 @app.get("/api/job/{job_id}")
 def api_job(job_id: str):
     with _jobs_lock:
