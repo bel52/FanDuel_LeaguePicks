@@ -31,6 +31,7 @@ class IngestReport:
     detected_slate_type: SlateType = SlateType.FULL
     teams: list[str] = field(default_factory=list)
     validation_problems: list[str] = field(default_factory=list)
+    mvp_salary_mult_observed: float | None = None   # from FanDuel's own CSV column
 
     def summary(self) -> str:
         lines = [
@@ -38,6 +39,9 @@ class IngestReport:
             f"  rows={self.total_rows} ingested={self.ingested} "
             f"dropped_injury={len(self.dropped_injury)} dropped_bad={len(self.dropped_bad_row)}",
             f"  slate_type={self.detected_slate_type.value} teams={len(self.teams)}",
+            *( [f"  MVP salary multiplier (from FanDuel CSV): "
+                f"{self.mvp_salary_mult_observed}"]
+               if self.mvp_salary_mult_observed is not None else [] ),
         ]
         if self.dropped_injury:
             lines.append(f"  out/IR: {', '.join(self.dropped_injury[:12])}"
@@ -77,6 +81,7 @@ def ingest_csv(path: str | Path, slate_id: str, season: int, week: int,
             raise SlateError(f"CSV missing name columns {sorted(NAME_COLS - cols)}")
 
         players: list[SlatePlayer] = []
+        observed_mults: list[float] = []
         for row in reader:
             report.total_rows += 1
             try:
@@ -89,6 +94,16 @@ def ingest_csv(path: str | Path, slate_id: str, season: int, week: int,
                 nickname = (row.get("Nickname") or "").strip()
                 name = nickname or f"{row['First Name'].strip()} {row['Last Name'].strip()}".strip()
                 salary = int(float(row["Salary"]))
+                # Single-game CSVs carry FanDuel's own "MVP 1.5x Salary" column. Read
+                # the multiplier from THEIR file rather than trusting our constant —
+                # if FanDuel ever changes it, this catches it instead of silently
+                # mispricing every showdown lineup against the cap.
+                mvp_sal_raw = (row.get("MVP 1.5x Salary") or "").strip()
+                if mvp_sal_raw and salary > 0:
+                    try:
+                        observed_mults.append(float(mvp_sal_raw) / salary)
+                    except ValueError:
+                        pass
                 team = row["Team"].strip().upper()
                 opp = row["Opponent"].strip().upper()
                 if not fd_id or not name or not team:
@@ -109,6 +124,13 @@ def ingest_csv(path: str | Path, slate_id: str, season: int, week: int,
             except (KeyError, ValueError) as e:
                 report.dropped_bad_row.append(f"{row.get('Last Name','?')}: {e}")
 
+    if observed_mults:
+        lo, hi = min(observed_mults), max(observed_mults)
+        if abs(hi - lo) > 1e-6:
+            report.validation_problems.append(
+                f"MVP salary multiplier is not constant across rows ({lo:.3f}-{hi:.3f})")
+        report.mvp_salary_mult_observed = round(sum(observed_mults) / len(observed_mults), 4)
+
     teams = sorted({p.team for p in players})
     report.teams = teams
     report.ingested = len(players)
@@ -116,7 +138,8 @@ def ingest_csv(path: str | Path, slate_id: str, season: int, week: int,
 
     slate = PlayerSlate(slate_id=slate_id, slate_type=report.detected_slate_type,
                         season=season, week=week, source_csv=str(path), players=players)
-    report.validation_problems = slate.validate()
+    # extend, don't assign: the MVP-multiplier check above already appended
+    report.validation_problems.extend(slate.validate())
     if strict and not report.ok:
         raise SlateError("Slate validation failed:\n" + report.summary())
     return slate, report

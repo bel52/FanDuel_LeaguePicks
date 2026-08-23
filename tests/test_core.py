@@ -1395,3 +1395,94 @@ def test_entry_arm_model_flag(tmp_path, monkeypatch):
         shadow = c.execute("SELECT objective FROM entries WHERE contest LIKE '%[shadow:%'").fetchone()
     assert row["objective"].startswith("arm=model")
     assert shadow["objective"].startswith("arm=max-proj")
+
+
+# ---- defects found by the first REAL FanDuel single-game CSV (2026-08-23) ----
+REAL_SD = FIX / "fd_showdown_real.csv"
+
+
+def _real_showdown_slate():
+    """Genuine FanDuel single-game salary file (SEA@TEN preseason, 2026-08-23).
+    Projections proxied from FPPG — the point is the real slate SHAPE, not values."""
+    from dfs.distributions import floor_ceiling
+    slate, rep = ingest_csv(REAL_SD, "real-sd", 2026, 0, strict=False)
+    for p in slate.players:
+        p.projection = max(1.0, p.fppg or 4.0)
+        p.proj_source = "fppg-proxy"
+        p.floor_p10, p.ceiling_p90 = floor_ceiling(p.projection, p.position, DIST)
+    return slate, rep
+
+
+REAL_SD_SPEC = ContestSpec(name="RealSD", profile=Profile.SHOWDOWN_FRIENDS,
+                           slate_type=SlateType.SINGLE_GAME, field_size=100,
+                           entry_fee=5.0)
+
+
+def test_real_fanduel_showdown_csv_ingests():
+    slate, rep = _real_showdown_slate()
+    assert rep.detected_slate_type == SlateType.SINGLE_GAME
+    assert len(rep.teams) == 2 and set(rep.teams) == {"SEA", "TEN"}
+    assert rep.ingested == 60 and len(rep.dropped_injury) == 4
+    assert any(p.position == "K" for p in slate.players)
+    assert any(p.position == "D" for p in slate.players)
+
+
+def test_mvp_multiplier_confirmed_by_fanduel_csv():
+    """FanDuel's own 'MVP 1.5x Salary' column is authoritative — read the multiplier
+    from their file instead of trusting our constant, so a rules change surfaces as
+    a mismatch rather than silently mispricing every lineup against the cap."""
+    _, rep = _real_showdown_slate()
+    assert rep.mvp_salary_mult_observed == 1.5
+    assert rep.mvp_salary_mult_observed == REAL_SD_SPEC.mvp_salary_mult
+    assert not any("multiplier is not constant" in v
+                   for v in rep.validation_problems)
+
+
+def test_showdown_pool_is_not_silently_halved():
+    """Phase 2 of generate_pool was gated to SlateType.FULL, so every showdown pool
+    was capped at n//2 — half the requested candidates never existed. The old test
+    asked for 8 and only asserted the pool was non-empty, so it never caught this."""
+    slate, _ = _real_showdown_slate()
+    for n in (5, 10, 20):
+        pool = generate_pool(slate, REAL_SD_SPEC, n=n, min_unique=1)
+        assert len(pool) == n, f"requested {n}, got {len(pool)}"
+        assert all(len(c.player_ids) == 6 and c.mvp_id for c in pool)
+        keys = [c.key for c in pool]
+        assert len(set(keys)) == len(keys)          # no duplicate candidates
+
+
+def test_showdown_allows_five_one_team_split():
+    """FanDuel single-game requires only that both teams appear, so 5-1 is legal on a
+    6-man roster. The per-team cap was 4 — correct for the old 5-man roster, and it
+    silently made every 5-1 stack unreachable after the roster fix."""
+    from dfs.optimize import _solve_showdown, StackRule as _SR
+    slate, _ = _real_showdown_slate()
+    # make one team overwhelmingly attractive so the optimum WANTS a 5-1 split
+    for p in slate.players:
+        if p.team == "SEA":
+            p.projection *= 10
+    cand = _solve_showdown(slate.players, REAL_SD_SPEC, _SR(require_qb_stack=0),
+                           set(), [], 0)
+    assert cand is not None and len(cand.player_ids) == 6
+    byid = {p.fd_id: p for p in slate.players}
+    from collections import Counter
+    split = Counter(byid[i].team for i in cand.player_ids)
+    assert max(split.values()) == 5 and min(split.values()) == 1
+    assert len(split) == 2                      # both teams still represented
+
+
+def test_showdown_mvp_rotations_present_and_legal():
+    """MVP choice is the biggest single-game decision; rotations over an existing
+    player set are distinct legal lineups and must appear in the pool."""
+    slate, _ = _real_showdown_slate()
+    pool = generate_pool(slate, REAL_SD_SPEC, n=20, min_unique=1)
+    byid = {p.fd_id: p for p in slate.players}
+    by_set = {}
+    for c in pool:
+        by_set.setdefault(frozenset(c.player_ids), set()).add(c.mvp_id)
+    assert any(len(mvps) > 1 for mvps in by_set.values()), "no MVP rotation generated"
+    for c in pool:
+        charged = (sum(byid[i].salary for i in c.player_ids)
+                   + int(round(0.5 * byid[c.mvp_id].salary)))
+        assert charged <= REAL_SD_SPEC.salary_cap
+        assert c.salary == charged              # reported salary is the charged one
