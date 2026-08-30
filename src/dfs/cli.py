@@ -721,10 +721,71 @@ def cmd_capture(a) -> int:
     print(f"\nLogged {len(capture.leaderboard)} entrants and "
           f"{len(capture.ownership())} ownership records -> {a.log_db}")
 
+    # ---- grading gate: never attach results to an UNCONFIRMED recommendation ----
+    # A pending row is a build recommendation, not a fielded lineup. Grading it would
+    # write a real score and real player actuals against players Brett may never have
+    # entered, poisoning projection_accuracy() (the dataset all Phase-2 projection
+    # work depends on) and SeasonContext (which sets the objective weights for every
+    # later week). Both are painful to unwind after the fact.
+    mine = next((e for e in capture.leaderboard if e.entrant == a.me), None)
+    lu = next((e for e in capture.entries_with_lineups if e.entrant == a.me), None)
+    status = rl.entry_status(a.season, a.week, a.contest)
+    if status is None:
+        print(f"\nNOTE: no logged lineup for {a.contest} {a.season} w{a.week} — "
+              "opponents and ownership were recorded, but there is nothing of yours "
+              "to grade.")
+        return 0
+
+    if status != "confirmed":
+        logged_ids = None
+        with rl._c() as conn:
+            row = conn.execute("""SELECT lineup_json FROM entries
+                                  WHERE season=? AND week=? AND contest=?""",
+                               (a.season, a.week, a.contest)).fetchone()
+        if row:
+            logged = _json.loads(row["lineup_json"])
+            logged_ids = {norm_name(p["name"]) for p in logged}
+        actual_ids = ({norm_name(p.name) for p in lu.players}
+                      if lu and lu.players else None)
+
+        if actual_ids and logged_ids == actual_ids and not a.no_reconcile:
+            # The results page proves the fielded lineup matches the recommendation:
+            # Brett clearly entered it and simply never clicked confirm. Reconcile.
+            rl.confirm_entry(a.season, a.week, a.contest)
+            status = "confirmed"
+            print(f"\nRECONCILED: the lineup on the results page matches the logged "
+                  f"recommendation exactly — marking {a.contest} confirmed and "
+                  "grading normally.")
+        else:
+            print(f"\nREFUSING TO GRADE: {a.contest} {a.season} w{a.week} is PENDING "
+                  "— it was never confirmed as entered.")
+            if actual_ids and logged_ids and actual_ids != logged_ids:
+                diff_in = sorted(actual_ids - logged_ids)
+                diff_out = sorted(logged_ids - actual_ids)
+                print("  The lineup you actually fielded DIFFERS from the logged one:")
+                if diff_out:
+                    print(f"    logged but not fielded: {', '.join(diff_out)}")
+                if diff_in:
+                    print(f"    fielded but not logged: {', '.join(diff_in)}")
+                print("  Grading this would attribute your real score to the wrong "
+                      "roster. Rebuild/edit the entry to match what you fielded, "
+                      "confirm it, then re-run capture.")
+            elif mine is not None and mine.score is not None:
+                print(f"  The results page shows a score for '{a.me}' "
+                      f"({mine.score:.2f} pts), so you did enter something — but the "
+                      "page carries no lineup detail to check it against.")
+                print("  If the logged lineup is what you fielded, run:  confirm-entry "
+                      f"--season {a.season} --week {a.week} --contest \"{a.contest}\"")
+            else:
+                print("  If you entered it, run:  confirm-entry --season "
+                      f"{a.season} --week {a.week} --contest \"{a.contest}\"")
+            print("  Opponents and ownership WERE recorded — only your own grading "
+                  "was skipped.")
+            return 2
+
     # ---- close the loop on MY entry: outcome + per-player actuals ----
     # Without this, entries.actual_score and player_results.actual stay NULL and
     # projection_accuracy() is never fed — the advertised workflow must feed it.
-    mine = next((e for e in capture.leaderboard if e.entrant == a.me), None)
     if mine is not None and mine.score is not None:
         rl.log_outcome(a.season, a.week, a.contest, mine.score, mine.rank or 0,
                        len(capture.leaderboard), winnings=mine.won or 0.0)
@@ -734,7 +795,6 @@ def cmd_capture(a) -> int:
         print(f"NOTE: entrant '{a.me}' not on this page — outcome not recorded "
               "(pass --me if your FanDuel handle differs).")
 
-    lu = next((e for e in capture.entries_with_lineups if e.entrant == a.me), None)
     if lu and lu.players:
         with rl._c() as conn:
             row = conn.execute("""SELECT lineup_json FROM entries
@@ -854,6 +914,9 @@ def main(argv=None) -> int:
     cap.add_argument("--season", type=int, required=True)
     cap.add_argument("--week", type=int, required=True)
     cap.add_argument("--contest", default="Leather League")
+    cap.add_argument("--no-reconcile", action="store_true",
+                     help="never auto-confirm a pending entry, even when the results "
+                          "page proves the fielded lineup matches it")
     cap.add_argument("--me", default="brettleath",
                      help="your FanDuel handle on the results page")
     cap.add_argument("--log-db", default="data/results.db")

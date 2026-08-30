@@ -2454,3 +2454,121 @@ def test_upload_csv_link_is_disabled_until_template_validated():
             "index.html").read_text()
     assert "Download FanDuel upload CSV</a>" not in html
     assert "Enter this lineup by hand" in html
+
+
+# ============ review round 7: capture grading gate (2026-08-30) ============
+def _log_pending_for(db, contest, players_named):
+    """Log a pending entry whose lineup matches the given real player names."""
+    from dfs.slate import SlatePlayer
+    ps = [SlatePlayer(fd_id=f"id{i}", name=n, position="WR", team="XX",
+                      opponent="YY", salary=5000, game="X@Y")
+          for i, n in enumerate(players_named)]
+    for x in ps:
+        x.projection = 10.0
+    ResultLog(db).log_entry(2025, 18, contest, ps, objective="arm=max-proj; t")
+
+
+def test_capture_refuses_to_grade_a_pending_entry(tmp_path, capsys):
+    """REVIEW: capture graded whatever was logged, confirmed or not. Attaching a real
+    score and real player actuals to an unentered RECOMMENDATION poisons
+    projection_accuracy() and SeasonContext — both hard to unwind. Uses the REAL
+    contest fixture, where 'brettleath' scored 105.6."""
+    from dfs import cli as cli_mod
+    db = tmp_path / "r.db"
+    _log_pending_for(db, "Leather League", ["Some Guy", "Another Guy"])
+    rc = cli_mod.main(["capture", str(CONTEST_FIX), "--season", "2025", "--week", "18",
+                       "--contest", "Leather League", "--me", "brettleath",
+                       "--log-db", str(db)])
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "REFUSING TO GRADE" in out and "PENDING" in out
+    assert "105.6" in out            # tells him he DID enter something
+    with ResultLog(db)._c() as c:
+        row = c.execute("SELECT actual_score FROM entries "
+                        "WHERE contest='Leather League'").fetchone()
+    assert row["actual_score"] is None
+
+
+def test_capture_grades_a_confirmed_entry(tmp_path):
+    """A confirmed entry grades normally — the gate must not block the real path."""
+    from dfs import cli as cli_mod
+    db = tmp_path / "r.db"
+    _log_pending_for(db, "Leather League", ["Some Guy"])
+    ResultLog(db).confirm_entry(2025, 18, "Leather League")
+    rc = cli_mod.main(["capture", str(CONTEST_FIX), "--season", "2025", "--week", "18",
+                       "--contest", "Leather League", "--me", "brettleath",
+                       "--log-db", str(db)])
+    assert rc == 0
+    with ResultLog(db)._c() as c:
+        row = c.execute("SELECT actual_score, final_rank FROM entries "
+                        "WHERE contest='Leather League'").fetchone()
+    assert row["actual_score"] == pytest.approx(105.6)
+
+
+def test_capture_reconciles_a_pending_entry_that_matches_what_was_fielded(tmp_path,
+                                                                          capsys):
+    """If the results page proves the fielded lineup IS the recommendation, Brett
+    plainly entered it and just never clicked confirm — reconcile and grade."""
+    from dfs import cli as cli_mod
+    cap = parse_contest(CONTEST_FIX, 2025, 18)
+    fielded = next(e for e in cap.entries_with_lineups if e.players)
+    db = tmp_path / "r.db"
+    _log_pending_for(db, "LL2", [p.name for p in fielded.players])
+    rc = cli_mod.main(["capture", str(CONTEST_FIX), "--season", "2025", "--week", "18",
+                       "--contest", "LL2", "--me", fielded.entrant,
+                       "--log-db", str(db)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "RECONCILED" in out
+    assert ResultLog(db).entry_status(2025, 18, "LL2") == "confirmed"
+    # --no-reconcile must refuse instead
+    db2 = tmp_path / "r2.db"
+    _log_pending_for(db2, "LL2", [p.name for p in fielded.players])
+    rc2 = cli_mod.main(["capture", str(CONTEST_FIX), "--season", "2025", "--week", "18",
+                        "--contest", "LL2", "--me", fielded.entrant,
+                        "--no-reconcile", "--log-db", str(db2)])
+    assert rc2 == 2
+    assert ResultLog(db2).entry_status(2025, 18, "LL2") == "pending"
+
+
+def test_capture_refuses_when_fielded_lineup_differs(tmp_path, capsys):
+    """Pending AND the fielded lineup differs — the most dangerous case. Refuse and
+    name the difference."""
+    from dfs import cli as cli_mod
+    cap = parse_contest(CONTEST_FIX, 2025, 18)
+    fielded = next(e for e in cap.entries_with_lineups if e.players)
+    names = [p.name for p in fielded.players][:-1] + ["Nobody Atall"]
+    db = tmp_path / "r.db"
+    _log_pending_for(db, "LL3", names)
+    rc = cli_mod.main(["capture", str(CONTEST_FIX), "--season", "2025", "--week", "18",
+                       "--contest", "LL3", "--me", fielded.entrant,
+                       "--log-db", str(db)])
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "DIFFERS" in out and "nobody atall" in out.lower()
+    assert ResultLog(db).entry_status(2025, 18, "LL3") == "pending"
+
+
+def test_capture_gate_is_silent_when_nothing_was_logged(tmp_path, capsys):
+    """No logged lineup at all: record opponents/ownership, grade nothing, exit 0."""
+    from dfs import cli as cli_mod
+    db = tmp_path / "r.db"
+    ResultLog(db)
+    rc = cli_mod.main(["capture", str(CONTEST_FIX), "--season", "2025", "--week", "18",
+                       "--contest", "Leather League", "--me", "brettleath",
+                       "--log-db", str(db)])
+    assert rc == 0
+    assert "nothing of yours to grade" in capsys.readouterr().out
+
+
+def test_confirm_button_polls_the_job():
+    """REVIEW: the handler fired and blindly waited 1.2s, so a failed confirm looked
+    identical to a successful one. It must poll /api/job and report the outcome."""
+    html = (Path(__file__).parent.parent / "src" / "dfs" / "static" /
+            "index.html").read_text()
+    fn = html[html.index("async function confirmEntry"):
+              html.index("const CONTEST_FOR_PROFILE")]
+    assert "/api/job/" in fn                       # polls
+    assert "setTimeout(()=>showEntryCard" not in fn   # no blind fixed delay
+    assert "FAILED" in fn                          # surfaces failure
+    assert "confirm-btn" in html and "confirm-msg" in html

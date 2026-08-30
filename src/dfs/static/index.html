@@ -344,9 +344,10 @@ function lineupCard(title,e,muted){
            <div style="color:#ffd68a;font:12px/1.5 var(--mono)">PENDING — this is a
            recommendation. Nothing is entered on FanDuel yet, and the Sunday swap check
            will refuse to run until you confirm.</div>
-           <button type="button" class="dl" style="margin-top:8px"
+           <button type="button" class="dl" id="confirm-btn" style="margin-top:8px"
              onclick="confirmEntry('${(e.contest||'').replace(/'/g,"\\'")}',${e.season},${e.week})">
              I entered this lineup on FanDuel</button>
+           <div id="confirm-msg" style="font:12px var(--mono);margin-top:6px"></div>
          </div>`)}
     ${(n=>n?`<div style="color:#ffd68a;font:12px var(--mono);margin-top:4px">⚠ ${n}
       flagged player${n>1?'s':''} in this lineup — re-check status before lock; the
@@ -438,17 +439,42 @@ async function runJob(form,outSel,url,linksSel){
   }
 }
 $('#f-build').onsubmit=e=>{e.preventDefault();runJob(e.target,'#o-build','/api/build','#build-links')};
+function confirmMsg(html){
+  const el=document.querySelector('#confirm-msg');
+  if(el)el.innerHTML=html;
+}
 async function confirmEntry(contest,season,week){
-  const holder=document.querySelector('#entry-card');
   const fd=new FormData();
   fd.append('season',season);fd.append('week',week);fd.append('contest',contest);
   const bf=document.querySelector('#f-build');
   if(bf?.test_mode?.checked)fd.append('test_mode','true');
+  const btn=document.querySelector('#confirm-btn');
+  if(btn)btn.disabled=true;
+  confirmMsg('<span class="spin">Confirming</span>');
   try{
-    await fetch('/api/confirm-entry',{method:'POST',body:fd});
-    setTimeout(()=>showEntryCard(bf),1200);
-  }catch(e){holder.insertAdjacentHTML('beforeend',
-    '<div style="color:var(--text-danger,#e24b4a)">Could not confirm: '+e+'</div>');}
+    const {job}=await (await fetch('/api/confirm-entry',{method:'POST',body:fd})).json();
+    /* Poll the job rather than guessing at a delay: a silent failure would leave the
+       entry pending while the card looked like it had been confirmed. */
+    for(let i=0;i<20;i++){
+      await new Promise(s=>setTimeout(s,800));
+      let j;
+      try{ j=await (await fetch('/api/job/'+job)).json(); }catch(_){ continue; }
+      if(j.status==='running')continue;
+      if(j.status==='done'){ confirmMsg(''); showEntryCard(bf); return; }
+      confirmMsg('<span style="color:var(--text-danger,#e24b4a)">Confirm FAILED — '+
+        'the entry is still pending. '+((j.output||'').split('\n').pop()||'')+
+        '</span>');
+      if(btn)btn.disabled=false;
+      return;
+    }
+    confirmMsg('<span style="color:var(--text-danger,#e24b4a)">No response from the '+
+      'server — reload to check whether the entry was confirmed.</span>');
+    if(btn)btn.disabled=false;
+  }catch(e){
+    confirmMsg('<span style="color:var(--text-danger,#e24b4a)">Could not confirm: '+
+      e+'</span>');
+    if(btn)btn.disabled=false;
+  }
 }
 
 const CONTEST_FOR_PROFILE={friends_league:'Leather League',
