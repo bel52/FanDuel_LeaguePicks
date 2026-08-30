@@ -299,11 +299,15 @@ function lineupCard(title,e,muted){
   const lineup=e.lineup,sd=lineup.some(p=>p.mvp!==undefined)&&lineup.length===6;
   const slots=sd?sdSlots(lineup):fdSlots(lineup);
   const proj=lineup.reduce((s,p)=>s+(p.projection||0)*(p.mvp?1.5:1),0);
-  const rows=slots.map(([slot,p])=>`<tr>
+  const rows=slots.map(([slot,p])=>{
+    const badge=p.inj?` <span title="${(p.inj_detail||'').replace(/"/g,'&quot;')}"
+      style="background:#8a5a00;color:#ffd68a;border-radius:4px;padding:0 5px;
+      font:700 11px var(--mono);cursor:help">${p.inj}${p.inj_detail?' · '+p.inj_detail:''}</span>`:'';
+    return `<tr>
     <td style="color:var(--dim);font:600 12px 'Barlow Condensed';letter-spacing:.06em">${slot}</td>
-    <td><b>${p.name}</b></td><td style="color:var(--dim)">${p.team}</td>
+    <td><b>${p.name}</b>${badge}</td><td style="color:var(--dim)">${p.team}</td>
     <td style="text-align:right">$${p.salary.toLocaleString()}</td>
-    <td style="text-align:right">${(p.projection||0).toFixed(1)}</td></tr>`).join('');
+    <td style="text-align:right">${(p.projection||0).toFixed(1)}</td></tr>`;}).join('');
   return `<div class="card" style="margin-top:12px;${muted?'opacity:.62':''}">
     <h3>${title}</h3>
     <table style="width:100%;border-collapse:collapse">
@@ -317,6 +321,10 @@ function lineupCard(title,e,muted){
     <div style="color:var(--dim);font:12px var(--mono);margin-top:6px">
       E[pts] ${(+e.exp_points).toFixed(1)} · P(win) ${(100*e.p_win).toFixed(0)}%
       · logged ${e.submitted_ts?.slice(0,16).replace('T',' ')} UTC</div>
+    ${(n=>n?`<div style="color:#ffd68a;font:12px var(--mono);margin-top:4px">⚠ ${n}
+      flagged player${n>1?'s':''} in this lineup — re-check status before lock; the
+      Saturday rebuild and Sunday swap check pick up projection changes.</div>`:'')(
+      lineup.filter(p=>p.inj).length)}
   </div>`;
 }
 async function showEntryCard(form){

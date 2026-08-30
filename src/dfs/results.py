@@ -112,7 +112,14 @@ class ResultLog:
         lineup = [{"fd_id": p.fd_id, "name": p.name, "pos": p.position, "team": p.team,
                    "salary": p.salary, "projection": p.projection,
                    "proj_source": p.proj_source, "implied_total": p.implied_team_total,
-                   "mvp": p.fd_id == mvp_id}
+                   "mvp": p.fd_id == mvp_id,
+                   # injury status AT LOG TIME — the card badges these so a Q player
+                   # anchoring the entry is visible on the same screen as the lineup
+                   # (measured 2026-08-30: a week of "Week 1 in doubt" reporting moved
+                   # a Q player's consensus projection by 0.1 pts — consensus is slow,
+                   # the human needs to see the flag)
+                   "inj": (getattr(p, "injury_indicator", "") or ""),
+                   "inj_detail": (getattr(p, "injury_details", "") or "")}
                   for p in players]
         charged = sum(p.salary for p in players)
         if mvp_id:

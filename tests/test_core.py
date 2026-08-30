@@ -1843,7 +1843,7 @@ def test_web_api_entry_returns_entry_and_shadow(tmp_path, monkeypatch):
     d = c.get("/api/entry", params={"season": 2026, "week": 1}).json()
     assert d["entry"]["arm"] == "max-proj" and len(d["entry"]["lineup"]) == 9
     assert all(k in d["entry"]["lineup"][0] for k in ("name", "pos", "salary",
-                                                      "projection"))
+                                                      "projection", "inj"))
     assert d["shadow"]["arm"] == "model"
     # missing week -> clean 404, not a crash
     assert c.get("/api/entry", params={"season": 2026, "week": 9}).status_code == 404
