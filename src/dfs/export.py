@@ -82,8 +82,24 @@ def export_upload_csv(players: list, out_path: str | Path,
         with Path(template).open(newline="", encoding="utf-8-sig") as f:
             r = csv.reader(f)
             cols = next(r)
-            first_data = next(r, None)
+            data_rows = [row for row in r if any(v.strip() for v in row)]
         tmpl_name = str(template)
+        if len(data_rows) > 1 and not entry_id:
+            warnings.append(
+                f"template contains {len(data_rows)} entries — used the first. Pass "
+                "--entry-id to choose one, or the wrong entry gets edited.")
+        first_data = data_rows[0] if data_rows else None
+        if entry_id and data_rows:
+            idx = next((i for i, col in enumerate(cols)
+                        if col.strip().lower() in ("entry_id", "entry id")), None)
+            if idx is not None:
+                match = [row for row in data_rows
+                         if idx < len(row) and row[idx].strip() == entry_id]
+                if match:
+                    first_data = match[0]
+                else:
+                    warnings.append(f"--entry-id {entry_id} not found in template; "
+                                    "contest_id taken from the first row.")
         # A FanDuel entries template downloaded from an EXISTING entry carries the
         # entry_id/contest_id that tell the bulk-upload which entry to EDIT. Dropping
         # them made every upload look like a new-entry attempt (external review P0).

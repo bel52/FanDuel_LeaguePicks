@@ -148,6 +148,7 @@ def cmd_build(a) -> int:
     if not a.no_injuries:
         try:
             fp_inj = records_from_fantasypros(FantasyProsClient().injuries(a.season))
+            _print_injury_feed_age(fp_inj)
         except FantasyProsError as e:
             fp_inj = {}
             print(f"\n  injury feed unavailable: {e}")
@@ -437,7 +438,7 @@ def cmd_swap(a) -> int:
     print(irep.summary())
     _assert_slate_matches_profile(slate, a.csv, a.profile)
     if not getattr(a, "proposal_out", None):
-        a.proposal_out = f"data/lineups/swap-proposal-{a.season}-w{a.week:02d}.json"
+        a.proposal_out = _proposal_path(a.season, a.week, a.contest)
     fp_client = FantasyProsClient()
     fp = fp_client.weekly_projections(a.season, a.week)
     from .snapshots import write_snapshot
@@ -458,6 +459,7 @@ def cmd_swap(a) -> int:
     # fresh injuries BEFORE matching, so removed players leave the pool
     try:
         fp_inj = records_from_fantasypros(FantasyProsClient().injuries(a.season))
+        _print_injury_feed_age(fp_inj)
     except FantasyProsError:
         fp_inj = {}
     inj = merge(records_from_slate(slate), fp_inj)
@@ -504,6 +506,12 @@ def cmd_swap(a) -> int:
     byid = {p.fd_id: p for p in slate.players}
     print("\n" + "=" * 72)
     print(prop.summary(byid))
+    if not prop.improves:
+        # a later no-change run must not leave an earlier proposal lying around
+        stale = Path(a.proposal_out)
+        if stale.exists():
+            stale.unlink()
+            print(f"Superseded proposal removed ({stale.name}) — nothing to accept.")
     if prop.improves:
         # The proposal is persisted so that, AFTER Brett enters it on FanDuel,
         # `swap-accept` can update the logged entry to match. Without that step the
@@ -528,6 +536,10 @@ def cmd_swap(a) -> int:
             "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "criterion": prop.criterion, "old": prop.old_dollars,
             "new": prop.new_dollars, "lineup": new_lineup, "salary": charged,
+            # binds the proposal to the entry it was computed FROM: if the entry has
+            # since been rebuilt or a later swap was accepted, this no longer matches
+            # and swap-accept refuses rather than reverting to a stale roster
+            "source_lineup_hash": _lineup_hash(logged_lineup),
         }, indent=1))
         print(f"Proposal saved -> {pp}")
         print("After entering this swap on FanDuel, record it:  "
@@ -541,10 +553,46 @@ def cmd_swap(a) -> int:
     return 0
 
 
+def _print_injury_feed_age(recs: dict) -> None:
+    """Show how old the freshest injury record is. There is NO official inactives
+    source wired in (see injuries.py) — FantasyPros is the freshest layer we have, so
+    its age is the only honest measure of how protected the lineup is near kickoff."""
+    ts = [r.fetched_ts for r in recs.values() if getattr(r, "fetched_ts", None)]
+    if not ts:
+        print("  injury feed: no timestamps in payload — treat status as UNVERIFIED")
+        return
+    newest = max(ts)
+    try:
+        age_h = (datetime.now(timezone.utc)
+                 - datetime.fromisoformat(str(newest).replace("Z", "+00:00"))
+                 ).total_seconds() / 3600
+    except Exception:                                              # noqa: BLE001
+        print(f"  injury feed: newest record {newest} (age unparseable)")
+        return
+    note = "  ** STALE — verify against official inactives **" if age_h > 24 else ""
+    print(f"  injury feed: newest record {age_h:.1f}h old{note}")
+    print("  NOTE: no official inactives source is wired in — confirm every flagged "
+          "player by hand before lock.")
+
+
+def _proposal_path(season: int, week: int, contest: str) -> str:
+    """Contest belongs in the filename: main-slate and showdown proposals for the same
+    week otherwise overwrite each other."""
+    safe = "".join(ch if ch.isalnum() else "-" for ch in contest).strip("-").lower()
+    return f"data/lineups/swap-proposal-{season}-w{week:02d}-{safe}.json"
+
+
+def _lineup_hash(lineup: list[dict]) -> str:
+    import hashlib
+    ids = sorted(p["fd_id"] for p in lineup)
+    mvp = next((p["fd_id"] for p in lineup if p.get("mvp")), "")
+    return hashlib.sha256(("|".join(ids) + "#" + mvp).encode()).hexdigest()[:16]
+
+
 def cmd_swap_accept(a) -> int:
     import json as _json
     if not a.proposal:
-        a.proposal = f"data/lineups/swap-proposal-{a.season}-w{a.week:02d}.json"
+        a.proposal = _proposal_path(a.season, a.week, a.contest)
     pp = Path(a.proposal)
     if not pp.exists():
         print(f"No saved proposal at {pp} — run `swap` first (a proposal file is only "
@@ -554,6 +602,31 @@ def cmd_swap_accept(a) -> int:
     if (d["season"], d["week"], d["contest"]) != (a.season, a.week, a.contest):
         print(f"Proposal is for {d['contest']} {d['season']} w{d['week']}, "
               f"not {a.contest} {a.season} w{a.week}. Refusing.")
+        return 2
+    rl_check = ResultLog(a.log_db)
+    with rl_check._c() as c:
+        cur = c.execute("""SELECT lineup_json FROM entries
+                           WHERE season=? AND week=? AND contest=?""",
+                        (a.season, a.week, a.contest)).fetchone()
+    if cur is None:
+        print(f"No logged entry for {a.contest} {a.season} w{a.week}. Refusing.")
+        return 2
+    src = d.get("source_lineup_hash")
+    if src and src != _lineup_hash(_json.loads(cur["lineup_json"])):
+        print("REFUSING: the logged entry has changed since this proposal was made "
+              "(rebuilt, or a later swap was already accepted). Applying it would "
+              "revert to a stale roster.\n  Re-run the swap check and accept the "
+              "fresh proposal.")
+        return 2
+    age_h = 0.0
+    try:
+        age_h = (datetime.now(timezone.utc)
+                 - datetime.fromisoformat(d["created_utc"])).total_seconds() / 3600
+    except Exception:                                              # noqa: BLE001
+        pass
+    if age_h > 6:
+        print(f"REFUSING: proposal is {age_h:.1f}h old — projections and inactives "
+              "have moved. Re-run the swap check.")
         return 2
     changed = ResultLog(a.log_db).apply_revision(
         a.season, a.week, a.contest, d["lineup"], d["salary"],

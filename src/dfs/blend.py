@@ -59,6 +59,23 @@ def apply_projections(slate: PlayerSlate, fp_projections: list[FPProjection],
     # critical-salary gate (both only see UNMATCHED). External review reproduced a
     # $9,100 player vanishing at a reported 100% match rate. Nonpositive matched
     # projections are a data/schema failure and gate exactly like unmatched.
+    # Relevance is POSITION-RELATIVE. A flat dollar cutoff misjudges both ends: at
+    # $7,000 it ignores a newly-promoted $5,600 WR starter (the exact player who
+    # unlocks an optimal lineup — the entered lineup routinely rosters four players
+    # under $6,500), while treating a $6,000 third-string QB as critical. Anything in
+    # the top quartile of its own position's salary distribution is roster-relevant.
+    from collections import defaultdict
+    by_pos: dict[str, list[int]] = defaultdict(list)
+    for sp in slate.players:
+        by_pos[sp.position].append(sp.salary)
+    pos_cut: dict[str, int] = {}
+    for pos, sals in by_pos.items():
+        s = sorted(sals, reverse=True)
+        pos_cut[pos] = s[max(0, int(len(s) * 0.25) - 1)] if s else 0
+
+    def _relevant(pos: str, salary: int) -> bool:
+        return salary >= critical_salary or salary >= pos_cut.get(pos, critical_salary)
+
     nonpos = [(sp.name, sp.team, sp.position, sp.salary)
               for sp in slate.players
               if mapping.get(sp.fd_id) is not None
@@ -68,12 +85,17 @@ def apply_projections(slate: PlayerSlate, fp_projections: list[FPProjection],
               "score from FP stats (schema problem or true zero):")
         for n, t, pos, sal in sorted(nonpos, key=lambda z: -z[3])[:8]:
             print(f"    ${sal:5d} {pos:3s} {t:4s} {n}")
-    critical = ([u for u in report.unmatched if u[3] >= critical_salary]
-                + [z for z in nonpos if z[3] >= critical_salary])
+    # report.unmatched rows are (name, team, position, salary)
+    critical = ([u for u in report.unmatched if _relevant(u[2], u[3])]
+                + [z for z in nonpos if _relevant(z[2], z[3])])
     if report.rate < min_match_rate or critical:
+        cuts = ", ".join(f"{p} >= ${c}" for p, c in sorted(pos_cut.items()))
         raise SlateError(
             f"Projection match {report.rate:.0%} (min {min_match_rate:.0%}); "
-            f"{len(critical)} unmatched-or-zero at >= ${critical_salary}.\n"
+            f"{len(critical)} roster-relevant player(s) unmatched or zero-projected.\n"
+            f"  relevance gate (top quartile by position): {cuts}\n"
+            + "".join(f"    ${s:5d} {p:3s} {t:4s} {n}\n"
+                      for n, t, p, s in sorted(critical, key=lambda z: -z[3])[:10])
             + report.summary() +
             "\nBuild stopped — fix matching/schema, never fall back to FPPG."
         )

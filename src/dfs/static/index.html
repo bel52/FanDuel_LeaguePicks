@@ -184,6 +184,8 @@ tr.me td{color:var(--lamp);font-weight:600}
         <option value="h2h">Public head-to-head</option>
         <option value="public_gpp">Public tournament</option>
       </select></label>
+    <label>Contest name
+      <input name="contest" value="Leather League" required></label>
     <label class="full">Slate CSV (only if changed)
       <input type="file" name="csv" accept=".csv"></label>
     <label class="full" style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;
@@ -418,6 +420,8 @@ async function runJob(form,outSel,url,linksSel){
 $('#f-build').onsubmit=e=>{e.preventDefault();runJob(e.target,'#o-build','/api/build','#build-links')};
 $('#swap-accept-btn').onclick=async()=>{
   const f=document.querySelector('#f-swap'),out=$('#o-swap');
+  if(!f.season.value||!f.week.value||!f.contest.value){
+    out.textContent='Fill in season, week and contest name first.';return;}
   const det=out.closest('details');if(det)det.open=true;
   const fd=new FormData();
   for(const k of ['season','week','contest'])fd.append(k,f[k].value);

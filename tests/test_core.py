@@ -1915,7 +1915,7 @@ def test_blend_zero_projection_on_matched_star_is_critical():
     with pytest.raises(SlateError) as e:
         apply_projections(slate, fp, {}, DIST, min_match_rate=0.5,
                           critical_salary=7000)
-    assert "unmatched-or-zero" in str(e.value)
+    assert "roster-relevant" in str(e.value)
 
 
 def test_swap_accept_updates_entry_and_archives_prior(tmp_path):
@@ -2065,3 +2065,182 @@ def test_vegas_network_failure_becomes_vegas_error(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", boom)
     with pytest.raises(VegasError):
         oc.team_lines(slate_teams={"PHI"})
+
+
+# ============ external review round 5 fixes (2026-08-30) ============
+def test_swap_form_has_every_field_its_js_reads():
+    """REVIEW #1: the swap-accept button read f.contest while the swap form had no
+    contest field, so every click threw before reaching the API — the backend feature
+    was unreachable. Assert the form supplies every field the handler reads."""
+    import re
+    html = (Path(__file__).parent.parent / "src" / "dfs" / "static" /
+            "index.html").read_text()
+    swap_form = html[html.index('id="f-swap"'):html.index('id="o-swap"')]
+    names = set(re.findall(r'name="([a-z_]+)"', swap_form))
+    handler = html[html.index("#swap-accept-btn"):]
+    handler = handler[:handler.index("};")]
+    for field in re.findall(r"f\.([a-z_]+)\.value", handler):
+        assert field in names, f"handler reads f.{field} but the form has no such field"
+    for field in re.findall(r"of \[([^\]]+)\]", handler):
+        for k in re.findall(r"'([a-z_]+)'", field):
+            assert k in names, f"handler appends '{k}' but the form has no such field"
+    assert {"season", "week", "contest", "profile"} <= names
+
+
+def test_injury_sweep_writes_status_onto_player():
+    """REVIEW #3: sweep() flagged players but never wrote the merged record back, so
+    a player flagged ONLY by the fresher FantasyPros feed carried no badge on the
+    lineup card — the card showed the Wednesday-stale FanDuel CSV field."""
+    from dfs.injuries import InjuryRecord, Status, sweep
+    slate = _projected_slate()
+    target = slate.players[0]
+    target.injury_indicator = ""           # nothing from the FanDuel CSV
+    target.injury_details = ""
+    recs = {norm_name(target.name): InjuryRecord(
+        name=target.name, team=target.team, status=Status.QUESTIONABLE,
+        detail="hamstring · practice DNP/LP", source="fantasypros")}
+    res = sweep(slate, recs)
+    assert res.flagged and res.flagged[0][0].fd_id == target.fd_id
+    assert target.injury_indicator                    # now badge-able
+    assert "hamstring" in target.injury_details
+    assert target.injury_source == "fantasypros" and target.injury_ts
+
+
+def test_relevance_gate_is_position_relative():
+    """REVIEW #5: a flat $7,000 cutoff ignores a promoted $5,600 WR starter (the
+    entered lineup routinely rosters four players under $6,500) while treating a
+    $6,000 third-string QB as critical. Gate on the top quartile within position."""
+    import pytest
+    from dfs.blend import apply_projections
+    slate, _ = _real_w1_slate()
+    wr = next(p for p in slate.players
+              if p.position == "WR" and 5400 <= p.salary <= 6000)
+    qb = next(p for p in slate.players
+              if p.position == "QB" and p.salary <= 6000)
+    # a mid-priced WR starter missing must STOP the build even though < $7000
+    fp = [_fpp(p.name, p.team, p.position, max(1.0, p.fppg or 3.0))
+          for p in slate.players if p.fd_id != wr.fd_id]
+    with pytest.raises(SlateError) as e:
+        apply_projections(slate, fp, {}, DIST, min_match_rate=0.5, critical_salary=7000)
+    assert wr.name in str(e.value) and "top quartile" in str(e.value)
+    # a cheap backup QB missing must NOT stop it
+    slate2, _ = _real_w1_slate()
+    fp2 = [_fpp(p.name, p.team, p.position, max(1.0, p.fppg or 3.0))
+           for p in slate2.players if p.name != qb.name]
+    rep = apply_projections(slate2, fp2, {}, DIST, min_match_rate=0.5,
+                            critical_salary=7000)
+    assert rep.rate > 0.9
+
+
+def test_swap_proposal_rejected_when_entry_changed(tmp_path):
+    """REVIEW #4: swap-accept validated only season/week/contest, so a proposal made
+    before a rebuild (or before an earlier accept) would silently REVERT the entry to
+    a stale roster."""
+    import json as _json
+    from dfs import cli as cli_mod
+    from datetime import datetime, timezone
+    slate = _projected_slate()
+    mp = max_projection_lineup(slate, SPEC)
+    byid = {p.fd_id: p for p in slate.players}
+    players = [byid[i] for i in mp.player_ids]
+    db = tmp_path / "r.db"
+    ResultLog(db).log_entry(2026, 1, "Leather League", players, objective="arm=max-proj")
+
+    def _pl(ps):
+        return [{"fd_id": p.fd_id, "name": p.name, "pos": p.position, "team": p.team,
+                 "salary": p.salary, "projection": p.projection, "proj_source": "t",
+                 "implied_total": None, "mvp": False, "inj": "", "inj_detail": ""}
+                for p in ps]
+
+    repl = next(p for p in slate.players
+                if p.fd_id not in mp.player_ids and p.position == players[-1].position)
+    proposal = {"season": 2026, "week": 1, "contest": "Leather League",
+                "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "criterion": "projected pts", "old": 1.0, "new": 2.0,
+                "lineup": _pl(players[:-1] + [repl]),
+                "salary": sum(p.salary for p in players[:-1] + [repl]),
+                "source_lineup_hash": cli_mod._lineup_hash(_pl(players))}
+    pf = tmp_path / "p.json"
+    pf.write_text(_json.dumps(proposal))
+
+    # entry gets REBUILT to something else before the swap is accepted
+    other = next(p for p in slate.players
+                 if p.fd_id not in mp.player_ids and p.fd_id != repl.fd_id
+                 and p.position == players[-2].position)
+    ResultLog(db).log_entry(2026, 1, "Leather League",
+                            players[:-2] + [other, players[-1]], objective="arm=max-proj")
+    rc = cli_mod.main(["swap-accept", "--season", "2026", "--week", "1",
+                       "--contest", "Leather League", "--log-db", str(db),
+                       "--proposal", str(pf)])
+    assert rc == 2                                    # refused, entry untouched
+    with ResultLog(db)._c() as c:
+        n = c.execute("SELECT COUNT(*) FROM entry_revisions").fetchone()[0]
+    assert n == 0
+
+
+def test_swap_proposal_rejected_when_stale(tmp_path):
+    """A proposal older than the swap window is refused — projections and inactives
+    have moved since it was computed."""
+    import json as _json
+    from dfs import cli as cli_mod
+    slate = _projected_slate()
+    mp = max_projection_lineup(slate, SPEC)
+    byid = {p.fd_id: p for p in slate.players}
+    players = [byid[i] for i in mp.player_ids]
+    db = tmp_path / "r.db"
+    ResultLog(db).log_entry(2026, 1, "Leather League", players, objective="arm=max-proj")
+    lineup = [{"fd_id": p.fd_id, "name": p.name, "pos": p.position, "team": p.team,
+               "salary": p.salary, "projection": p.projection, "proj_source": "t",
+               "implied_total": None, "mvp": False, "inj": "", "inj_detail": ""}
+              for p in players]
+    pf = tmp_path / "p.json"
+    pf.write_text(_json.dumps({
+        "season": 2026, "week": 1, "contest": "Leather League",
+        "created_utc": "2026-08-29T02:00:00+00:00",      # a day+ before now
+        "criterion": "projected pts", "old": 1.0, "new": 2.0,
+        "lineup": lineup, "salary": sum(p.salary for p in players),
+        "source_lineup_hash": cli_mod._lineup_hash(lineup)}))
+    assert cli_mod.main(["swap-accept", "--season", "2026", "--week", "1",
+                         "--contest", "Leather League", "--log-db", str(db),
+                         "--proposal", str(pf)]) == 2
+
+
+def test_proposal_path_includes_contest():
+    """Main-slate and showdown proposals for the same week must not collide."""
+    from dfs.cli import _proposal_path
+    a = _proposal_path(2026, 1, "Leather League")
+    b = _proposal_path(2026, 1, "League Showdown")
+    assert a != b and "leather-league" in a and "league-showdown" in b
+
+
+def test_template_multiple_entries_selectable(tmp_path):
+    """A real entries template can hold several entries; picking the first silently
+    edits the wrong one. --entry-id selects, and the ambiguity is warned about."""
+    from dfs.export import export_upload_csv
+    import csv as _csv
+    tmpl = tmp_path / "t.csv"
+    tmpl.write_text("entry_id,contest_id,contest_name,QB,RB,RB,WR,WR,WR,TE,FLEX,DEF\n"
+                    "E1,C1,Contest One,x,x,x,x,x,x,x,x,x\n"
+                    "E2,C2,Contest Two,x,x,x,x,x,x,x,x,x\n")
+    slate, _ = _real_w1_slate()
+    mp = max_projection_lineup(slate, W1_SPEC)
+    byid = {p.fd_id: p for p in slate.players}
+    players = [byid[i] for i in mp.player_ids]
+    out = tmp_path / "u.csv"
+    ex = export_upload_csv(players, out, slate_type=SlateType.FULL, template=tmpl)
+    assert any("2 entries" in w for w in ex.warnings)
+    ex2 = export_upload_csv(players, out, slate_type=SlateType.FULL, template=tmpl,
+                            entry_id="E2")
+    d = dict(zip(*list(_csv.reader(out.open()))[:2]))
+    assert d["entry_id"] == "E2" and d["contest_id"] == "C2"
+
+
+def test_injuries_module_does_not_claim_an_official_inactives_layer():
+    """REVIEW #2: the module documented a layer-3 'Sunday inactives sweep — official
+    actives lists' that does not exist. Documentation that overstates protection is
+    worse than none: it invites assuming a zero-point risk is handled."""
+    import dfs.injuries as inj
+    doc = inj.__doc__ or ""
+    assert "NOT IMPLEMENTED" in doc
+    assert "by hand" in doc or "verify" in doc.lower()
+    assert hasattr(inj, "sweep")

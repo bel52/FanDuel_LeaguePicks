@@ -11,8 +11,12 @@ Three layers, increasing in freshness:
      ingest: O/IR/NA/SUSP rows are dropped and reported.
   2. FantasyPros injuries endpoint   — practice participation and game status, updated
      through the week. Q/D/O with practice trend.
-  3. Sunday inactives sweep          — ~90 min before kickoff, official actives lists.
-     This is where the real money is; the FD CSV is 4 days stale by then.
+  3. Official inactives (~90 min before kickoff) — NOT IMPLEMENTED. There is no
+     official actives/inactives source wired in. Layer 2 is the freshest data the
+     system has, and it is only as current as FantasyPros' own updates. The Sunday
+     swap check therefore CANNOT guarantee an inactive player is removed — verify
+     flagged players against the official inactives list by hand before lock. The
+     build prints the injury-feed age so staleness is visible rather than assumed.
 
 Statuses are mapped to an ACTION, never to a silent projection haircut. v5 quietly
 multiplied projections by fudge factors for injury status; that hid the decision. Here
@@ -250,6 +254,13 @@ def sweep(slate, injuries: dict[str, InjuryRecord],
                 res.lineup_affected = True
             continue
         res.flagged.append((p, rec))
+        # Write the MERGED record back onto the player. Without this the lineup card
+        # showed only the FanDuel CSV's (Wednesday-stale) indicator, so a player
+        # flagged solely by the fresher FantasyPros feed carried no badge at all.
+        p.injury_indicator = rec.status.value if hasattr(rec.status, "value") else str(rec.status)
+        p.injury_details = rec.detail or p.injury_details
+        p.injury_source = rec.source
+        p.injury_ts = rec.fetched_ts
         keep.append(p)                      # flagged players stay; human decides
         if lineup_ids and p.fd_id in lineup_ids:
             res.lineup_affected = True

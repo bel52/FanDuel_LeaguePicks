@@ -29,6 +29,8 @@ class SlatePlayer:
     game: str                  # e.g. "PHI@DAL"
     injury_indicator: str = ""
     injury_details: str = ""
+    injury_source: str = ""    # "fanduel_csv" until an injury sweep overwrites it
+    injury_ts: str = ""        # when that source last updated the record
     roster_position: str = ""  # FD "Roster Position" col (showdown: MVP/UTIL etc.)
     fppg: float = 0.0          # kept ONLY as a sanity-check reference, never a projection
     # Filled by projection engine (blend.py). None = not yet projected.
