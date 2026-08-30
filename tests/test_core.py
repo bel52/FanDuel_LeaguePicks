@@ -1850,3 +1850,218 @@ def test_web_api_entry_returns_entry_and_shadow(tmp_path, monkeypatch):
     # test switch points at the (absent) sandbox DB -> 404
     assert c.get("/api/entry", params={"season": 2026, "week": 1,
                                        "test": "true"}).status_code == 404
+
+
+# ================= external review round 4 fixes (2026-08-30) =================
+def test_same_team_short_key_collision_rejected():
+    """REVIEW P0-1: Bijan Robinson and Brian Robinson Jr. are BOTH ATL RBs on the
+    real Week 1 slate (short key b|robinson). When FP lacks the backup's row, the
+    team-agreement branch handed him the star's projection at a reported 100% match
+    rate. First-name compatibility is now unconditional."""
+    from dfs.matching import match_slate
+    fp = [_fpp("Bijan Robinson", "ATL", "RB", 18.4)]
+    slate = [_sp("Bijan Robinson", "ATL", "RB", 8800, fd_id="bijan"),
+             _sp("Brian Robinson Jr.", "ATL", "RB", 5200, fd_id="brian")]
+    mapping, rep = match_slate(slate, fp)
+    assert mapping["bijan"].name == "Bijan Robinson"
+    assert "brian" not in mapping
+    assert any(u[0] == "Brian Robinson Jr." for u in rep.unmatched)
+
+
+def test_max_projection_lineup_fanduel_team_legality():
+    """REVIEW P0-2: the entered lineup must satisfy FanDuel legality — at most 4
+    players from one team (which over 9 slots forces >= 3 teams). Verified with an
+    INDEPENDENT count, on the real slate, with projections adversarially stacked on
+    one team; the old solver returned nine same-team players under this setup."""
+    from collections import Counter
+    slate, _ = _real_w1_slate()
+    for p in slate.players:                       # make CIN irresistible
+        if p.team == "CIN":
+            p.projection *= 10
+    mp = max_projection_lineup(slate, W1_SPEC)
+    byid = {p.fd_id: p for p in slate.players}
+    counts = Counter(byid[i].team for i in mp.player_ids)
+    assert max(counts.values()) <= 4, counts
+    assert len(counts) >= 3
+    assert counts["CIN"] == 4                     # it should still max the cap out
+
+
+def test_maxproj_swap_respects_team_legality():
+    """The lock-constrained max-proj re-solve shares the same legality."""
+    from collections import Counter
+    from dfs.lateswap import propose_swap_maxproj
+    from dfs.kickoffs import KickoffSchedule
+    slate = _projected_slate()
+    for p in slate.players:
+        if p.team == "PHI":
+            p.projection *= 10
+    mp = max_projection_lineup(slate, SPEC)
+    prop = propose_swap_maxproj(slate, mp.player_ids, SPEC, KickoffSchedule({}))
+    byid = {p.fd_id: p for p in slate.players}
+    counts = Counter(byid[i].team for i in prop.proposed_ids)
+    assert max(counts.values()) <= 4
+
+
+def test_blend_zero_projection_on_matched_star_is_critical():
+    """REVIEW P0-3: a matched player whose FP payload scores to zero was silently
+    dropped at a 100%% reported match rate. Nonpositive matched projections at or
+    above the critical salary must stop the build like an unmatched star."""
+    import pytest
+    from dfs.blend import apply_projections
+    slate, _ = _real_w1_slate()
+    star = max(slate.players, key=lambda p: p.salary)
+    fp = [_fpp(p.name, p.team, p.position, 0.0 if p.fd_id == star.fd_id
+               else max(1.0, p.fppg or 3.0)) for p in slate.players]
+    with pytest.raises(SlateError) as e:
+        apply_projections(slate, fp, {}, DIST, min_match_rate=0.5,
+                          critical_salary=7000)
+    assert "unmatched-or-zero" in str(e.value)
+
+
+def test_swap_accept_updates_entry_and_archives_prior(tmp_path):
+    """REVIEW P0-4: an accepted swap must update the logged entry (and archive the
+    prior lineup) so later swap windows and Monday capture grade the REAL roster."""
+    import json as _json
+    from dfs import cli as cli_mod
+    slate = _projected_slate()
+    mp = max_projection_lineup(slate, SPEC)
+    byid = {p.fd_id: p for p in slate.players}
+    players = [byid[i] for i in mp.player_ids]
+    db = tmp_path / "r.db"
+    ResultLog(db).log_entry(2026, 1, "Leather League", players,
+                            objective="arm=max-proj; t")
+    # a proposal that swaps one player
+    out_p = players[-1]
+    repl = next(p for p in slate.players
+                if p.fd_id not in mp.player_ids and p.position == out_p.position)
+    new_players = players[:-1] + [repl]
+    proposal = {
+        "season": 2026, "week": 1, "contest": "Leather League",
+        "created_utc": "2026-09-13T15:30:00+00:00",
+        "criterion": "projected pts", "old": 120.0, "new": 121.0,
+        "lineup": [{"fd_id": p.fd_id, "name": p.name, "pos": p.position,
+                    "team": p.team, "salary": p.salary, "projection": p.projection,
+                    "proj_source": "t", "implied_total": None, "mvp": False,
+                    "inj": "", "inj_detail": ""} for p in new_players],
+        "salary": sum(p.salary for p in new_players),
+    }
+    pf = tmp_path / "prop.json"
+    pf.write_text(_json.dumps(proposal))
+    rc = cli_mod.main(["swap-accept", "--season", "2026", "--week", "1",
+                       "--contest", "Leather League", "--log-db", str(db),
+                       "--proposal", str(pf)])
+    assert rc == 0
+    rl = ResultLog(db)
+    with rl._c() as c:
+        row = c.execute("SELECT lineup_json, objective FROM entries").fetchone()
+        rev = c.execute("SELECT prior_lineup_json, note FROM entry_revisions").fetchone()
+    ids = {p["fd_id"] for p in _json.loads(row["lineup_json"])}
+    assert repl.fd_id in ids and out_p.fd_id not in ids
+    assert "swap accepted" in row["objective"]
+    prior = {p["fd_id"] for p in _json.loads(rev["prior_lineup_json"])}
+    assert out_p.fd_id in prior
+    # idempotent: re-accepting the same proposal is a no-op, not a second revision
+    assert cli_mod.main(["swap-accept", "--season", "2026", "--week", "1",
+                         "--contest", "Leather League", "--log-db", str(db),
+                         "--proposal", str(pf)]) == 0
+    with rl._c() as c:
+        assert c.execute("SELECT COUNT(*) FROM entry_revisions").fetchone()[0] == 1
+
+
+def test_showdown_cli_build_with_kicker_in_lineup(tmp_path, monkeypatch):
+    """REVIEW P0-5: the real showdown slate carries kickers; a K in a displayed
+    candidate crashed the print loop (position missing from the sort order). Full
+    CLI build on the REAL single-game fixture, with a kicker forced projectable."""
+    from dfs import cli as cli_mod
+    from dfs.fantasypros import FPProjection
+    sd_slate, _ = ingest_csv(REAL_SD, "sdcli", 2026, 1)
+
+    def fake_projections(self, season, week, positions=None):
+        import random as _r
+        _r.seed(3)
+        out = []
+        for i, p in enumerate(sd_slate.players):
+            pts = round(max(1.0, (p.fppg or 4.0) * _r.uniform(0.9, 1.1)), 2)
+            if p.position == "K":
+                pts = 40.0                        # force the kicker into the lineup
+            out.append(FPProjection(player_id=f"fp{i}", name=p.name, team=p.team,
+                                    position=p.position, points=pts,
+                                    stats={}, breakdown={}))
+        return out
+
+    monkeypatch.setattr("dfs.fantasypros.FantasyProsClient.weekly_projections",
+                        fake_projections)
+    monkeypatch.setenv("FANTASYPROS_API_KEY", "test")
+    rc = cli_mod.main([
+        "build", "--csv", str(REAL_SD), "--season", "2026", "--week", "1",
+        "--slate-id", "sdcli", "--profile", "showdown_friends",
+        "--contest", "SD", "--field", "100", "--entry-fee", "5",
+        "--no-vegas", "--no-injuries", "--no-snapshot",
+        "--pool", "6", "--sims", "300", "--fields", "2", "--show", "2",
+        "--log-db", str(tmp_path / "r.db"), "--out", str(tmp_path / "l.json"),
+    ])
+    assert rc == 0
+    import json as _json
+    entry = _json.loads((tmp_path / "l.json").read_text())
+    rl = ResultLog(tmp_path / "r.db")
+    with rl._c() as c:
+        row = c.execute("SELECT lineup_json FROM entries WHERE contest='SD'").fetchone()
+    lineup = _json.loads(row["lineup_json"])
+    assert len(lineup) == 6
+    assert any(p["pos"] == "K" for p in lineup)   # the kicker made the entry
+
+
+def test_template_preserves_entry_and_contest_ids(tmp_path):
+    """REVIEW P0-6: a real entries template carries entry_id/contest_id that tell
+    FanDuel which entry to EDIT; blanking them turns an edit into a rejected or
+    duplicate upload. Template values fill blanks; explicit args still win."""
+    from dfs.export import export_upload_csv
+    import csv as _csv
+    tmpl = tmp_path / "tmpl.csv"
+    tmpl.write_text("entry_id,contest_id,contest_name,QB,RB,RB,WR,WR,WR,TE,FLEX,DEF\n"
+                    "E9001,C7777,Leather League W1,x,x,x,x,x,x,x,x,x\n")
+    slate, _ = _real_w1_slate()
+    mp = max_projection_lineup(slate, W1_SPEC)
+    byid = {p.fd_id: p for p in slate.players}
+    players = [byid[i] for i in mp.player_ids]
+    out = tmp_path / "up.csv"
+    export_upload_csv(players, out, slate_type=SlateType.FULL, template=tmpl)
+    hdr, row = list(_csv.reader(out.open()))[:2]
+    d = dict(zip(hdr, row))
+    assert d["entry_id"] == "E9001" and d["contest_id"] == "C7777"
+    assert d["contest_name"] == "Leather League W1"
+    assert sum(1 for c, v in zip(hdr, row)
+               if c not in ("entry_id", "contest_id", "contest_name") and v) == 9
+    # explicit args beat template values
+    export_upload_csv(players, out, slate_type=SlateType.FULL, template=tmpl,
+                      entry_id="E-EXPLICIT")
+    d2 = dict(zip(*list(_csv.reader(out.open()))[:2]))
+    assert d2["entry_id"] == "E-EXPLICIT" and d2["contest_id"] == "C7777"
+
+
+def test_single_dnp_with_incomplete_report_stays_questionable():
+    """REVIEW hardening: one Wednesday DNP with Thu/Fri still blank is routine rest,
+    not a removal signal; two recorded DNPs still escalate to DOUBTFUL."""
+    from dfs.injuries import records_from_fantasypros, Status
+    one = records_from_fantasypros([{"name": "A Vet", "team_id": "PHI",
+                                     "status": "Questionable", "injury_type": "rest",
+                                     "practice_1": "DNP"}])
+    two = records_from_fantasypros([{"name": "B Hurt", "team_id": "PHI",
+                                     "status": "Questionable", "injury_type": "knee",
+                                     "practice_1": "DNP", "practice_2": "DNP"}])
+    assert one["a vet"].status is Status.QUESTIONABLE
+    assert two["b hurt"].status is Status.DOUBTFUL
+
+
+def test_vegas_network_failure_becomes_vegas_error(monkeypatch):
+    """REVIEW hardening: the build's soft-skip catches VegasError; a raw timeout or
+    JSON error crashed the build instead. All transport failures must arrive as
+    VegasError through the REAL _get path."""
+    import urllib.request, urllib.error, pytest
+    from dfs.vegas import OddsClient, VegasError
+    oc = OddsClient(api_key="test")
+    def boom(*a, **k):
+        raise urllib.error.URLError("timed out")
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    with pytest.raises(VegasError):
+        oc.team_lines(slate_teams={"PHI"})

@@ -278,6 +278,7 @@ async def api_build(csv: UploadFile | None = File(None), season: int = Form(0),
 async def api_swap(csv: UploadFile | None = File(None),
                    slate_csv: str = Form(""), season: int = Form(0),
                    week: int = Form(0), contest: str = Form("Leather League"),
+                   profile: str = Form("friends_league"),
                    test_mode: bool = Form(False)):
     if not season or not week:
         from .nflcal import current_week
@@ -304,8 +305,10 @@ async def api_swap(csv: UploadFile | None = File(None),
     log_db, lineups_dir = (DB_TEST, LINEUPS_TEST) if test_mode else (DB, LINEUPS)
     lineups_dir.mkdir(parents=True, exist_ok=True)
     argv = ["swap", "--csv", path, "--season", str(season), "--week", str(week),
-            "--contest", contest, "--critical-salary", "7000",
+            "--contest", contest, "--profile", profile,
+            "--critical-salary", "7000",
             "--log-db", str(log_db),
+            "--proposal-out", str(lineups_dir / f"swap-proposal-{season}-w{week:02d}.json"),
             "--export", str(lineups_dir / f"swap-{season}-w{week:02d}.csv")]
     return {"job": _start_job("swap", argv)}
 
@@ -378,6 +381,18 @@ def api_job_latest(kind: str):
     if not jobs:
         raise HTTPException(404, "no jobs of that kind yet")
     return max(jobs, key=lambda j: j["started"])
+
+
+@app.post("/api/swap-accept")
+def api_swap_accept(season: int = Form(...), week: int = Form(...),
+                    contest: str = Form("Leather League"),
+                    test_mode: bool = Form(False)):
+    """Record that the last proposed swap was actually entered on FanDuel."""
+    log_db, lineups_dir = (DB_TEST, LINEUPS_TEST) if test_mode else (DB, LINEUPS)
+    argv = ["swap-accept", "--season", str(season), "--week", str(week),
+            "--contest", contest, "--log-db", str(log_db),
+            "--proposal", str(lineups_dir / f"swap-proposal-{season}-w{week:02d}.json")]
+    return {"job": _start_job("swap-accept", argv)}
 
 
 @app.get("/api/job/{job_id}")

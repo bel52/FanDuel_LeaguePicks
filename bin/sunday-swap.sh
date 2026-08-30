@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Sunday late-swap check. Intended cron/n8n times (ET): 11:30, 15:45, 19:45.
 # Usage: bin/sunday-swap.sh <season> <week> <salary_csv>
-set -u
+# -e: a failed swap must exit nonzero; -o pipefail: tee must not mask it
+set -euo pipefail
 cd "$(dirname "$0")/.."
 [ -d .venv ] && . .venv/bin/activate
 [ -f .env ] && set -a && . ./.env && set +a

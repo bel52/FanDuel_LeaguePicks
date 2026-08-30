@@ -72,5 +72,9 @@ def expected_slate_type(profile: "Profile") -> "SlateType | None":
 
 ROSTER_FULL = {"QB": (1, 1), "RB": (2, 3), "WR": (3, 4), "TE": (1, 2), "D": (1, 1)}
 ROSTER_FULL_SIZE = 9
+# FanDuel classic legality (fanduel.com/rules): max 4 players from one NFL team, and
+# players from at least 3 different teams. With 9 slots, <=4 per team mathematically
+# forces >=3 teams (ceil(9/4)=3), so the single cap enforces both.
+FD_MAX_PER_TEAM = 4
 ROSTER_SHOWDOWN_SIZE = 6  # 1 MVP (1.5x pts AND salary) + 5 FLEX — FanDuel single-game, 2025 rules onward
 MVP_MULTIPLIER = 1.5

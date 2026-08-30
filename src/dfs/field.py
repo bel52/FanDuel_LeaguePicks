@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .contest_spec import ContestSpec
+from .contest_spec import ContestSpec, SlateType
 from .optimize import Candidate
 from .simulate import SlateSimulator
 from .slate import PlayerSlate
@@ -193,6 +193,24 @@ def baseline_lineups(slate: PlayerSlate, spec: ContestSpec, n: int = 200,
 
     randoms: list[tuple[str, ...]] = []
     tries = 0
+    if spec.slate_type == SlateType.SINGLE_GAME:
+        # Classic slot counts produce ZERO lineups on a 2-team slate, and cmd_build
+        # then divides by len(randoms) — every showdown CLI build crashed at the
+        # baseline step (found while testing the K display fix, 2026-08-30).
+        from .contest_spec import ROSTER_SHOWDOWN_SIZE
+        pool = slate.players
+        while len(randoms) < n and tries < n * 200:
+            tries += 1
+            idx = rng.choice(len(pool), size=ROSTER_SHOWDOWN_SIZE, replace=False)
+            picks = [pool[i] for i in idx]
+            mvp = picks[int(rng.integers(len(picks)))]
+            charged = (sum(p.salary for p in picks)
+                       + int(round((spec.mvp_salary_mult - 1.0) * mvp.salary)))
+            if len({p.team for p in picks}) >= 2 and charged <= spec.salary_cap:
+                # MVP first by the showdown tuple convention
+                randoms.append(tuple([mvp.fd_id] + [p.fd_id for p in picks
+                                                    if p.fd_id != mvp.fd_id]))
+        return {"random": randoms}
     while len(randoms) < n and tries < n * 200:
         tries += 1
         picks: list = []

@@ -146,14 +146,17 @@ class SweepResult:
 _PRACTICE_RANK = {"DNP": 0, "LP": 1, "FP": 2, "FULL": 2, "LIMITED": 1}
 
 
-def _practice_trend(r: dict) -> tuple[str, int | None]:
+def _practice_trend(r: dict) -> tuple[str, int | None, int]:
+    """Returns (display, last_rank, n_sessions). n_sessions matters: a lone Wednesday
+    DNP with Thu/Fri still blank is routine veteran rest, not a signal — escalation
+    on it falsely removed healthy players (external review, 2026-08-30)."""
     seq = [str(r.get(f"practice_{n}") or "").upper().strip() for n in (1, 2, 3)]
     seq = [s for s in seq if s]
     if not seq:
-        return "", None
+        return "", None, 0
     ranks = [_PRACTICE_RANK.get(s, None) for s in seq]
     ranks = [x for x in ranks if x is not None]
-    return "/".join(seq), (ranks[-1] if ranks else None)
+    return "/".join(seq), (ranks[-1] if ranks else None), len(ranks)
 
 
 def records_from_fantasypros(rows: list[dict]) -> dict[str, InjuryRecord]:
@@ -173,10 +176,10 @@ def records_from_fantasypros(rows: list[dict]) -> dict[str, InjuryRecord]:
             continue
         raw = r.get("status") or r.get("status_short") or ""
         status = parse_status(str(raw))
-        practice, last_rank = _practice_trend(r)
+        practice, last_rank, n_sessions = _practice_trend(r)
         prob = r.get("probability_of_playing")
-        if status is Status.QUESTIONABLE and last_rank == 0:
-            status = Status.DOUBTFUL          # Q but did not practice
+        if status is Status.QUESTIONABLE and last_rank == 0 and n_sessions >= 2:
+            status = Status.DOUBTFUL          # Q and repeatedly did not practice
         if isinstance(prob, (int, float)) and prob is not None:
             if prob <= 25 and status in (Status.QUESTIONABLE, Status.PROBABLE):
                 status = Status.DOUBTFUL

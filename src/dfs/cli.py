@@ -13,6 +13,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from datetime import datetime, timezone
 
 from .contest_spec import ContestSpec, Profile, SlateType, expected_slate_type
 from .ingest_fanduel import ingest_csv
@@ -63,6 +64,12 @@ def _dist():
               "data/calibration_2025.json --dist-out data/distributions.json")
         print("!" * 72)
     return d
+
+
+# display order for lineup printouts. K belongs to showdown slates; .get(...,99)
+# means an unexpected position can never crash the build at the PRINT step (external
+# review: the real showdown fixture selected a kicker and raised ValueError here).
+_POS_ORDER = {p: i for i, p in enumerate("QB RB WR TE K D".split())}
 
 
 def _assert_slate_matches_profile(slate, csv_path: str, profile: str) -> None:
@@ -242,7 +249,7 @@ def cmd_build(a) -> int:
     mp = _obj(max_proj.player_ids, max_proj.mvp_id)
     best = ranked[0]
 
-    ar_d = sum(r.dollars for r in rand) / len(rand)
+    ar_d = (sum(r.dollars for r in rand) / len(rand)) if rand else float("nan")
     ar_p = sum(r.p_win for r in rand) / len(rand)
     ar_e = sum(r.exp_points for r in rand) / len(rand)
     print("\n" + "=" * 72)
@@ -263,8 +270,9 @@ def cmd_build(a) -> int:
     for i, r in enumerate(ranked[:a.show], 1):
         c = r.candidate
         print(f"\n#{i}  {r.summary()}")
-        for pid in sorted(c.player_ids, key=lambda x: ("QB RB WR TE D".split().index(byid[x].position),
-                                                       -byid[x].salary)):
+        for pid in sorted(c.player_ids,
+                          key=lambda x: (_POS_ORDER.get(byid[x].position, 99),
+                                         -byid[x].salary)):
             p = byid[pid]
             mvp = " (MVP)" if pid == c.mvp_id else ""
             print(f"     {p.position:3s} {p.name:24s} {p.team:3s} ${p.salary:5d} "
@@ -428,7 +436,16 @@ def cmd_swap(a) -> int:
     slate, irep = ingest_csv(a.csv, a.slate_id, a.season, a.week, strict=False)
     print(irep.summary())
     _assert_slate_matches_profile(slate, a.csv, a.profile)
-    fp = FantasyProsClient().weekly_projections(a.season, a.week)
+    if not getattr(a, "proposal_out", None):
+        a.proposal_out = f"data/lineups/swap-proposal-{a.season}-w{a.week:02d}.json"
+    fp_client = FantasyProsClient()
+    fp = fp_client.weekly_projections(a.season, a.week)
+    from .snapshots import write_snapshot
+    snap = write_snapshot("data/snapshots", a.season, a.week,
+                          f"{a.contest.replace(' ', '_')}-swapcheck",
+                          getattr(fp_client, "last_raw", {}) or {})
+    if snap:
+        print(f"  swap-time snapshot -> {snap}")
 
     team_lines = {}
     try:
@@ -487,11 +504,67 @@ def cmd_swap(a) -> int:
     byid = {p.fd_id: p for p in slate.players}
     print("\n" + "=" * 72)
     print(prop.summary(byid))
+    if prop.improves:
+        # The proposal is persisted so that, AFTER Brett enters it on FanDuel,
+        # `swap-accept` can update the logged entry to match. Without that step the
+        # log keeps the original lineup, and every later swap window and Monday's
+        # capture grade the wrong roster (external review P0). Never auto-accepted.
+        new_lineup = [{"fd_id": p.fd_id, "name": p.name, "pos": p.position,
+                       "team": p.team, "salary": p.salary, "projection": p.projection,
+                       "proj_source": p.proj_source,
+                       "implied_total": p.implied_team_total,
+                       "mvp": p.fd_id == prop.proposed_mvp,
+                       "inj": getattr(p, "injury_indicator", "") or "",
+                       "inj_detail": getattr(p, "injury_details", "") or ""}
+                      for p in (byid[i] for i in prop.proposed_ids)]
+        charged = sum(p["salary"] for p in new_lineup)
+        if prop.proposed_mvp and prop.proposed_mvp in byid:
+            charged += int(round((spec.mvp_salary_mult - 1.0)
+                                 * byid[prop.proposed_mvp].salary))
+        pp = Path(a.proposal_out)
+        pp.parent.mkdir(parents=True, exist_ok=True)
+        pp.write_text(json.dumps({
+            "season": a.season, "week": a.week, "contest": a.contest,
+            "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "criterion": prop.criterion, "old": prop.old_dollars,
+            "new": prop.new_dollars, "lineup": new_lineup, "salary": charged,
+        }, indent=1))
+        print(f"Proposal saved -> {pp}")
+        print("After entering this swap on FanDuel, record it:  "
+              f"swap-accept --season {a.season} --week {a.week} "
+              f"--contest \"{a.contest}\"")
     if prop.improves and a.export:
         best_players = [byid[i] for i in prop.proposed_ids]
         ex = export_upload_csv(best_players, a.export, slate_type=slate.slate_type,
                                mvp_id=prop.proposed_mvp, contest_name=spec.name)
         print("\n" + ex.summary())
+    return 0
+
+
+def cmd_swap_accept(a) -> int:
+    import json as _json
+    if not a.proposal:
+        a.proposal = f"data/lineups/swap-proposal-{a.season}-w{a.week:02d}.json"
+    pp = Path(a.proposal)
+    if not pp.exists():
+        print(f"No saved proposal at {pp} — run `swap` first (a proposal file is only "
+              "written when a swap improves).")
+        return 2
+    d = _json.loads(pp.read_text())
+    if (d["season"], d["week"], d["contest"]) != (a.season, a.week, a.contest):
+        print(f"Proposal is for {d['contest']} {d['season']} w{d['week']}, "
+              f"not {a.contest} {a.season} w{a.week}. Refusing.")
+        return 2
+    changed = ResultLog(a.log_db).apply_revision(
+        a.season, a.week, a.contest, d["lineup"], d["salary"],
+        note=f"swap accepted (proposed {d['created_utc']}, "
+             f"{d['old']:.2f}->{d['new']:.2f} {d['criterion']})")
+    if changed:
+        print(f"Entry updated to the accepted swap; prior lineup archived "
+              f"(entry_revisions). Later swap checks and Monday capture now grade "
+              f"the lineup you actually entered.")
+    else:
+        print("Entry already matches this proposal — nothing to do (safe to re-run).")
     return 0
 
 
@@ -659,6 +732,9 @@ def main(argv=None) -> int:
     sw.add_argument("--slate-id", default=None)
     sw.add_argument("--contest", default="Leather League")
     sw.add_argument("--profile", default="friends_league", choices=[p.value for p in Profile])
+    sw.add_argument("--proposal-out", default=None,
+                    help="where the improving proposal is saved for swap-accept "
+                         "(default data/lineups/swap-proposal-<season>-w<week>.json)")
     sw.add_argument("--leaderboard", default="total_scores", choices=[l.value for l in Leaderboard])
     sw.add_argument("--field", type=int, default=12)
     sw.add_argument("--entry-fee", type=float, default=0.0)
@@ -673,6 +749,18 @@ def main(argv=None) -> int:
     sw.add_argument("--log-db", default="data/results.db")
     sw.add_argument("--export", default=None)
     sw.set_defaults(func=cmd_swap)
+
+    sa = sub.add_parser("swap-accept",
+                        help="record that a proposed swap was ENTERED on FanDuel — "
+                             "updates the logged entry so later swap checks and "
+                             "Monday capture grade the real roster")
+    sa.add_argument("--season", type=int, required=True)
+    sa.add_argument("--week", type=int, required=True)
+    sa.add_argument("--contest", default="Leather League")
+    sa.add_argument("--log-db", default="data/results.db")
+    sa.add_argument("--proposal", default=None,
+                    help="proposal file (default data/lineups/swap-proposal-<season>-w<week>.json)")
+    sa.set_defaults(func=cmd_swap_accept)
 
     a = ap.parse_args(argv)
     # Season/week default to the live NFL calendar; an explicit flag always wins so

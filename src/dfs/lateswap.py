@@ -69,7 +69,7 @@ def propose_swap_maxproj(slate: PlayerSlate, current_ids: tuple, spec: ContestSp
     lineup player was removed). The simulator has NO say here — an entry chosen for
     projection must not be churned Sunday morning by the model objective it was
     chosen over. old/new numbers are PROJECTED POINTS, not model dollars."""
-    from .optimize import _solve_full, _solve_showdown, StackRule
+    from .optimize import _solve_full, _solve_showdown, LEGALITY_ONLY
     now = now or datetime.now(timezone.utc)
     locked_teams = schedule.locked_teams(now)
     byid = {p.fd_id: p for p in slate.players}
@@ -91,7 +91,7 @@ def propose_swap_maxproj(slate: PlayerSlate, current_ids: tuple, spec: ContestSp
                  if p.team not in locked_teams or p.fd_id in locked_ids]
     solve = (_solve_showdown if spec.slate_type == SlateType.SINGLE_GAME
              else _solve_full)
-    best = solve(startable, spec, StackRule(require_qb_stack=0), locked_ids, [], 0)
+    best = solve(startable, spec, LEGALITY_ONLY, locked_ids, [], 0)
     if best is None:
         return SwapProposal(current_ids, current_ids, locked_ids, [],
                             cur_proj, cur_proj,

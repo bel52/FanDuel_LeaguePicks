@@ -54,12 +54,28 @@ def apply_projections(slate: PlayerSlate, fp_projections: list[FPProjection],
         sp.proj_ts = now
         sp.floor_p10, sp.ceiling_p90 = floor_ceiling(sp.projection, sp.position, distributions)
 
-    critical = [u for u in report.unmatched if u[3] >= critical_salary]
+    # A matched player whose FP payload scores to <= 0 was silently skipped above
+    # and then dropped from the slate — invisible to the match-rate gate AND the
+    # critical-salary gate (both only see UNMATCHED). External review reproduced a
+    # $9,100 player vanishing at a reported 100% match rate. Nonpositive matched
+    # projections are a data/schema failure and gate exactly like unmatched.
+    nonpos = [(sp.name, sp.team, sp.position, sp.salary)
+              for sp in slate.players
+              if mapping.get(sp.fd_id) is not None
+              and mapping[sp.fd_id].points <= 0]
+    if nonpos:
+        print(f"  WARNING: {len(nonpos)} matched player(s) with nonpositive FanDuel "
+              "score from FP stats (schema problem or true zero):")
+        for n, t, pos, sal in sorted(nonpos, key=lambda z: -z[3])[:8]:
+            print(f"    ${sal:5d} {pos:3s} {t:4s} {n}")
+    critical = ([u for u in report.unmatched if u[3] >= critical_salary]
+                + [z for z in nonpos if z[3] >= critical_salary])
     if report.rate < min_match_rate or critical:
         raise SlateError(
             f"Projection match {report.rate:.0%} (min {min_match_rate:.0%}); "
-            f"{len(critical)} unmatched at >= ${critical_salary}.\n" + report.summary() +
-            "\nBuild stopped — fix matching, never fall back to FPPG."
+            f"{len(critical)} unmatched-or-zero at >= ${critical_salary}.\n"
+            + report.summary() +
+            "\nBuild stopped — fix matching/schema, never fall back to FPPG."
         )
     slate.players = [p for p in slate.players if p.projection is not None]
     return report

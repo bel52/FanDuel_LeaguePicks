@@ -16,7 +16,7 @@ from typing import Optional
 import pulp
 
 from .contest_spec import (ContestSpec, SlateType, ROSTER_FULL, ROSTER_FULL_SIZE,
-                           ROSTER_SHOWDOWN_SIZE, MVP_MULTIPLIER)
+                           ROSTER_SHOWDOWN_SIZE, MVP_MULTIPLIER, FD_MAX_PER_TEAM)
 from .slate import PlayerSlate, SlatePlayer, SlateError
 
 
@@ -139,41 +139,29 @@ def generate_pool(slate: PlayerSlate, spec: ContestSpec, n: int = 150,
     return candidates
 
 
+# FanDuel legality with NO modeling shape: pool constraints (QB stack, per-game
+# caps, diversity) must never leak into the ENTERED lineup or its baseline. External
+# review found the previous hand-rolled baseline solver omitted the <=4-per-team rule
+# entirely (a forced repro returned nine same-team players) — one shared solver, one
+# set of legality constraints, everywhere.
+LEGALITY_ONLY = StackRule(require_qb_stack=0, require_bring_back=0,
+                          max_per_team=FD_MAX_PER_TEAM,
+                          max_per_game=ROSTER_FULL_SIZE)
+
+
 def max_projection_lineup(slate: PlayerSlate, spec: ContestSpec) -> Candidate:
-    """TRUE max-projection baseline: the highest-projection lineup under FanDuel
-    LEGALITY ONLY — cap, roster shape, and (showdown) both-teams + MVP pricing.
-    No stack, diversity, or pool-truncation constraints. Every claimed edge is
-    measured against this yardstick, so it must not inherit the candidate pool's
-    constraints (that gap measured 1.96 projected points on the test fixture)."""
+    """TRUE max-projection lineup under FanDuel LEGALITY ONLY: salary cap, roster
+    shape, <=4 per team (which over 9 slots forces >=3 teams), non-classic positions
+    excluded; showdown adds both-teams + MVP pricing. Delegates to the SAME solver
+    the candidate pool and late swap use, so legality cannot diverge between the
+    entered lineup and any other path."""
     slate.require_projections()
-    if spec.slate_type == SlateType.SINGLE_GAME:
-        cand = _solve_showdown(slate.players, spec, StackRule(require_qb_stack=0),
-                               set(), [], 0)
-        if cand is None:
-            raise SlateError("max-projection showdown solve infeasible")
-        return cand
-    players = slate.players
-    prob = pulp.LpProblem("maxproj", pulp.LpMaximize)
-    x = {i: pulp.LpVariable(f"x{i}", cat="Binary") for i in range(len(players))}
-    prob += pulp.lpSum(players[i].projection * x[i] for i in x)
-    prob += pulp.lpSum(players[i].salary * x[i] for i in x) <= spec.salary_cap
-    prob += pulp.lpSum(x.values()) == ROSTER_FULL_SIZE
-    for pos, (lo, hi) in ROSTER_FULL.items():
-        ix = [i for i, p in enumerate(players) if p.position == pos]
-        if not ix:
-            raise SlateError(f"no {pos} in pool")
-        prob += pulp.lpSum(x[i] for i in ix) >= lo
-        prob += pulp.lpSum(x[i] for i in ix) <= hi
-    for i, p in enumerate(players):
-        if p.position not in ROSTER_FULL:
-            prob += x[i] == 0
-    prob.solve(pulp.PULP_CBC_CMD(msg=0))
-    if pulp.LpStatus[prob.status] != "Optimal":
+    solve = (_solve_showdown if spec.slate_type == SlateType.SINGLE_GAME
+             else _solve_full)
+    cand = solve(slate.players, spec, LEGALITY_ONLY, set(), [], 0)
+    if cand is None:
         raise SlateError("max-projection solve infeasible")
-    ids = tuple(players[i].fd_id for i in x if x[i].value() == 1)
-    chosen = [p for p in players if p.fd_id in set(ids)]
-    return Candidate(player_ids=ids, salary=sum(p.salary for p in chosen),
-                     proj_sum=round(sum(p.projection for p in chosen), 2))
+    return cand
 
 
 def _diversity_constraints(prob, players, x, prior: list[Candidate], min_unique: int, size: int):
@@ -215,8 +203,12 @@ def _solve_full(players: list[SlatePlayer], spec: ContestSpec, stack: StackRule,
         teams.setdefault(p.team, []).append(i)
         games.setdefault("|".join(sorted((p.team, p.opponent))), []).append(i)
     for ix in teams.values():
-        prob += pulp.lpSum(x[i] for i in ix) <= stack.max_per_team
+        # <= 4 per team is FANDUEL LEGALITY (and, over 9 slots, forces >= 3 teams);
+        # stack.max_per_team is additional shaping and may only tighten it.
+        prob += pulp.lpSum(x[i] for i in ix) <= min(stack.max_per_team, FD_MAX_PER_TEAM)
     for ix in games.values():
+        # per-game cap is MODELING shaping only — FanDuel has no such rule. The
+        # legality-only paths pass LEGALITY_ONLY, which sets this to roster size.
         prob += pulp.lpSum(x[i] for i in ix) <= stack.max_per_game
 
     # QB stack: if QB from team T is used, >= require_qb_stack pass-catchers from T.

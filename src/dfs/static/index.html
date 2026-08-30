@@ -177,6 +177,13 @@ tr.me td{color:var(--lamp);font-weight:600}
   <form id="f-swap">
     <label>Season <input type="number" name="season" value="2026" required></label>
     <label>Week <input type="number" name="week" min="1" max="22" required></label>
+    <label>Contest type
+      <select name="profile">
+        <option value="friends_league">Leather League — Sunday Main</option>
+        <option value="showdown_friends">League friends — single game</option>
+        <option value="h2h">Public head-to-head</option>
+        <option value="public_gpp">Public tournament</option>
+      </select></label>
     <label class="full">Slate CSV (only if changed)
       <input type="file" name="csv" accept=".csv"></label>
     <label class="full" style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;
@@ -187,6 +194,10 @@ tr.me td{color:var(--lamp);font-weight:600}
         color:var(--dim,#aaa)"><b style="color:inherit">Test run (sandbox)</b> — reads the
       lineup from a test build, not season records.</span></label>
     <div class="actions"><button class="go" type="submit">Run swap check</button>
+      <button type="button" id="swap-accept-btn" class="dl"
+        title="Run this only AFTER you have actually entered the proposed swap on FanDuel.
+It updates the logged entry so later swap checks and Monday's capture grade the roster
+you really fielded.">I entered this swap on FanDuel — record it</button>
       <span id="swap-links"></span></div>
   </form>
   <pre class="out" id="o-swap">Ready.</pre>
@@ -405,6 +416,17 @@ async function runJob(form,outSel,url,linksSel){
   }
 }
 $('#f-build').onsubmit=e=>{e.preventDefault();runJob(e.target,'#o-build','/api/build','#build-links')};
+$('#swap-accept-btn').onclick=async()=>{
+  const f=document.querySelector('#f-swap'),out=$('#o-swap');
+  const det=out.closest('details');if(det)det.open=true;
+  const fd=new FormData();
+  for(const k of ['season','week','contest'])fd.append(k,f[k].value);
+  if(f.test_mode?.checked)fd.append('test_mode','true');
+  try{
+    const {job}=await (await fetch('/api/swap-accept',{method:'POST',body:fd})).json();
+    pollJob(job,f,'#o-swap','/api/swap-accept',null);
+  }catch(e){out.textContent='Error: '+e}
+};
 /* If a run is already in flight when the page loads (reload, reconnect, second
    device), attach to it rather than showing an idle box next to a busy server. */
 (async()=>{

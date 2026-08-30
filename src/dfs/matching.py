@@ -126,18 +126,17 @@ class ProjectionIndex:
             if pick is not None:
                 return pick, "name+pos", amb
         # Tier 3 exists for NICKNAME variants of the same person (Cam/Cameron Ward,
-        # Ken/Kenneth Walker). Unguarded, it also welds DIFFERENT players who share an
-        # initial and last name: on the real 2026 W1 slate it handed Jayden Daniels'
-        # (WAS) projection to Jalon Daniels (TB, $6000 backup) and Jayden Reed's (GB)
-        # to Ja'seem Reed (CAR, $4000) — corrupted values that then WON the optimizer.
-        # A short-key hit therefore requires the first names to be prefix-compatible
-        # OR the teams to agree. A cross-team, different-first-name collision is
-        # rejected: better an unmatched backup (dropped from the pool) than a wrong
-        # number that no downstream gate can see.
+        # Ken/Kenneth Walker). Unguarded, it welds DIFFERENT players who share an
+        # initial and last name. First fix required prefix-compatible first names OR
+        # team agreement; external review then proved team agreement is itself a
+        # collision channel on the REAL Week 1 slate: Bijan Robinson and Brian
+        # Robinson Jr. are both ATL RBs (key b|robinson), and when FP lacks the
+        # backup's row he received the star's projection at a 100% reported match
+        # rate. First-name compatibility is therefore REQUIRED, unconditionally.
+        # An unmatched backup drops from the pool; a wrong number is invisible.
         cands = [c for c in self.by_short.get(short_key(name), [])
                  if c.position == position
-                 and (_first_names_compatible(name, c.name)
-                      or norm_team(c.team) == norm_team(team))]
+                 and _first_names_compatible(name, c.name)]
         if cands:
             pick, amb = self._pick(cands, team, position)
             if pick is not None:

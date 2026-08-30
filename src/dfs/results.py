@@ -22,6 +22,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS entry_revisions (
+    season INTEGER NOT NULL,
+    week INTEGER NOT NULL,
+    contest TEXT NOT NULL,
+    revised_ts TEXT NOT NULL,
+    note TEXT,
+    prior_lineup_json TEXT NOT NULL,
+    prior_salary INTEGER,
+    PRIMARY KEY (season, week, contest, revised_ts)
+);
 CREATE TABLE IF NOT EXISTS entries (
     season INTEGER NOT NULL,
     week INTEGER NOT NULL,
@@ -154,6 +164,40 @@ class ResultLog:
             c.execute("""UPDATE entries SET actual_score=?, final_rank=?, field_size=?, winnings=?
                          WHERE season=? AND week=? AND contest=?""",
                       (score, rank, field_size, winnings, season, week, contest))
+
+    def apply_revision(self, season: int, week: int, contest: str,
+                       new_lineup: list[dict], new_salary: int,
+                       note: str = "swap accepted") -> bool:
+        """Replace the live entry's lineup after Brett has ENTERED a swap on FanDuel,
+        archiving the prior lineup. Without this, every later swap window and Monday's
+        capture graded the ORIGINAL lineup (external review P0, 2026-08-30). Returns
+        False (no-op) when the entry already matches — safe to re-run."""
+        ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._c() as c:
+            row = c.execute("""SELECT lineup_json, salary FROM entries
+                               WHERE season=? AND week=? AND contest=?""",
+                            (season, week, contest)).fetchone()
+            if row is None:
+                raise ValueError(f"no logged entry for {contest} {season} w{week}")
+            cur_ids = {p["fd_id"] for p in json.loads(row["lineup_json"])}
+            new_ids = {p["fd_id"] for p in new_lineup}
+            cur_mvp = next((p["fd_id"] for p in json.loads(row["lineup_json"])
+                            if p.get("mvp")), None)
+            new_mvp = next((p["fd_id"] for p in new_lineup if p.get("mvp")), None)
+            if cur_ids == new_ids and cur_mvp == new_mvp:
+                return False
+            c.execute("""INSERT INTO entry_revisions
+                         (season, week, contest, revised_ts, note,
+                          prior_lineup_json, prior_salary)
+                         VALUES (?,?,?,?,?,?,?)""",
+                      (season, week, contest, ts, note,
+                       row["lineup_json"], row["salary"]))
+            c.execute("""UPDATE entries SET lineup_json=?, salary=?,
+                         objective = objective || ' | ' || ?
+                         WHERE season=? AND week=? AND contest=?""",
+                      (json.dumps(new_lineup), new_salary,
+                       f"rev {ts}: {note}", season, week, contest))
+        return True
 
     def log_capture(self, capture) -> None:
         """Ingest a parsed contest page: opponents, scores, and measured ownership."""

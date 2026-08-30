@@ -75,6 +75,14 @@ class OddsClient:
             if e.code == 401:
                 raise VegasError("Odds API auth failed — rotate key (backlog P0 #5)") from e
             raise VegasError(f"Odds API HTTP {e.code}") from e
+        except VegasError:
+            raise
+        except Exception as e:
+            # Timeouts, DNS failures, connection resets, malformed JSON — the caller
+            # treats VegasError as "degrade to no-Vegas and keep building". A raw
+            # URLError/JSONDecodeError instead CRASHED the build, defeating the
+            # designed soft-skip (external review, 2026-08-30).
+            raise VegasError(f"Odds API unreachable/unparseable: {type(e).__name__}: {e}") from e
 
     def team_lines(self, slate_teams: set[str] | None = None) -> dict[str, TeamLine]:
         """Fetch spreads+totals; return implied totals keyed by FD team abbr.

@@ -80,8 +80,24 @@ def export_upload_csv(players: list, out_path: str | Path,
     warnings: list[str] = []
     if template:
         with Path(template).open(newline="", encoding="utf-8-sig") as f:
-            cols = next(csv.reader(f))
+            r = csv.reader(f)
+            cols = next(r)
+            first_data = next(r, None)
         tmpl_name = str(template)
+        # A FanDuel entries template downloaded from an EXISTING entry carries the
+        # entry_id/contest_id that tell the bulk-upload which entry to EDIT. Dropping
+        # them made every upload look like a new-entry attempt (external review P0).
+        # Explicit arguments still win; the template only fills blanks.
+        if first_data:
+            for i, col in enumerate(cols):
+                cl = col.strip().lower()
+                v = first_data[i].strip() if i < len(first_data) else ""
+                if cl in ("entry_id", "entry id") and not entry_id:
+                    entry_id = v
+                elif cl in ("contest_id", "contest id") and not contest_id:
+                    contest_id = v
+                elif cl in ("contest_name", "contest name") and not contest_name:
+                    contest_name = v
     else:
         cols = (DEFAULT_SHOWDOWN_COLS if slate_type == SlateType.SINGLE_GAME
                 else DEFAULT_CLASSIC_COLS)
