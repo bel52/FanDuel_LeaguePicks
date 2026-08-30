@@ -334,6 +334,20 @@ function lineupCard(title,e,muted){
     <div style="color:var(--dim);font:12px var(--mono);margin-top:6px">
       E[pts] ${(+e.exp_points).toFixed(1)} · P(win) ${(100*e.p_win).toFixed(0)}%
       · logged ${e.submitted_ts?.slice(0,16).replace('T',' ')} UTC</div>
+    ${muted?'':(e.status==='confirmed'
+      ? `<div style="color:var(--dim);font:12px var(--mono);margin-top:6px">
+           <b style="color:inherit">Confirmed entry</b> — you told the system you
+           fielded this lineup${e.confirmed_ts?' on '+e.confirmed_ts.slice(0,16).replace('T',' ')+' UTC':''}.
+           The Sunday swap check runs against it.</div>`
+      : `<div style="margin-top:10px;border:1px solid var(--line,#444);border-radius:8px;
+           padding:10px 12px">
+           <div style="color:#ffd68a;font:12px/1.5 var(--mono)">PENDING — this is a
+           recommendation. Nothing is entered on FanDuel yet, and the Sunday swap check
+           will refuse to run until you confirm.</div>
+           <button type="button" class="dl" style="margin-top:8px"
+             onclick="confirmEntry('${(e.contest||'').replace(/'/g,"\\'")}',${e.season},${e.week})">
+             I entered this lineup on FanDuel</button>
+         </div>`)}
     ${(n=>n?`<div style="color:#ffd68a;font:12px var(--mono);margin-top:4px">⚠ ${n}
       flagged player${n>1?'s':''} in this lineup — re-check status before lock; the
       Saturday rebuild and Sunday swap check pick up projection changes.</div>`:'')(
@@ -379,7 +393,13 @@ function pollJob(job,form,outSel,url,linksSel){
       const week=form.week?.value,season=form.season?.value;
       const f=(url.includes('build')?`upload-${season}-w${String(week).padStart(2,'0')}.csv`
                                     :`swap-${season}-w${String(week).padStart(2,'0')}.csv`);
-      $(linksSel).innerHTML=`<a class="dl" href="/api/download/${f}">Download FanDuel upload CSV</a>`;
+      /* The built-in column layout has never been validated against a real FanDuel
+         entries file, and the exported row carries no entry_id/contest_id — uploading
+         it would at best be rejected. Hand-enter from the card instead. The link
+         returns once --template is wired through the web build. */
+      $(linksSel).innerHTML='<span style="color:var(--dim);font:12px var(--mono)">'+
+        'Enter this lineup by hand from the card above. (Bulk-upload CSV is disabled '+
+        'until the export is validated against a real FanDuel entries template.)</span>';
       if(url.includes('build'))showEntryCard(form);
     }
     ticker();
@@ -418,6 +438,33 @@ async function runJob(form,outSel,url,linksSel){
   }
 }
 $('#f-build').onsubmit=e=>{e.preventDefault();runJob(e.target,'#o-build','/api/build','#build-links')};
+async function confirmEntry(contest,season,week){
+  const holder=document.querySelector('#entry-card');
+  const fd=new FormData();
+  fd.append('season',season);fd.append('week',week);fd.append('contest',contest);
+  const bf=document.querySelector('#f-build');
+  if(bf?.test_mode?.checked)fd.append('test_mode','true');
+  try{
+    await fetch('/api/confirm-entry',{method:'POST',body:fd});
+    setTimeout(()=>showEntryCard(bf),1200);
+  }catch(e){holder.insertAdjacentHTML('beforeend',
+    '<div style="color:var(--text-danger,#e24b4a)">Could not confirm: '+e+'</div>');}
+}
+
+const CONTEST_FOR_PROFILE={friends_league:'Leather League',
+  showdown_friends:'League Showdown',h2h:'H2H',public_gpp:'GPP'};
+for(const fid of ['#f-build','#f-swap']){
+  const f=document.querySelector(fid);
+  if(!f||!f.profile||!f.contest)continue;
+  f.profile.addEventListener('change',()=>{
+    /* keep the contest NAME in step with the contest TYPE: otherwise selecting
+       showdown silently targets the Leather League entry record */
+    const want=CONTEST_FOR_PROFILE[f.profile.value];
+    if(want&&Object.values(CONTEST_FOR_PROFILE).includes(f.contest.value))
+      f.contest.value=want;
+  });
+}
+
 $('#swap-accept-btn').onclick=async()=>{
   const f=document.querySelector('#f-swap'),out=$('#o-swap');
   if(!f.season.value||!f.week.value||!f.contest.value){

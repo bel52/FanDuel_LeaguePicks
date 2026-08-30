@@ -2032,11 +2032,18 @@ def test_template_preserves_entry_and_contest_ids(tmp_path):
     assert d["contest_name"] == "Leather League W1"
     assert sum(1 for c, v in zip(hdr, row)
                if c not in ("entry_id", "contest_id", "contest_name") and v) == 9
-    # explicit args beat template values
+    # An entry id that is NOT in the template must STOP the export: pairing a
+    # requested entry id with another row's contest id would edit the wrong entry.
+    import pytest as _pytest
+    with _pytest.raises(ValueError) as e:
+        export_upload_csv(players, out, slate_type=SlateType.FULL, template=tmpl,
+                          entry_id="E-NOT-THERE")
+    assert "not in" in str(e.value)
+    # and the matching id selects that row
     export_upload_csv(players, out, slate_type=SlateType.FULL, template=tmpl,
-                      entry_id="E-EXPLICIT")
+                      entry_id="E9001")
     d2 = dict(zip(*list(_csv.reader(out.open()))[:2]))
-    assert d2["entry_id"] == "E-EXPLICIT" and d2["contest_id"] == "C7777"
+    assert d2["entry_id"] == "E9001" and d2["contest_id"] == "C7777"
 
 
 def test_single_dnp_with_incomplete_report_stays_questionable():
@@ -2244,3 +2251,206 @@ def test_injuries_module_does_not_claim_an_official_inactives_layer():
     assert "NOT IMPLEMENTED" in doc
     assert "by hand" in doc or "verify" in doc.lower()
     assert hasattr(inj, "sweep")
+
+
+def test_injury_feed_timestamp_parses_fantasypros_format():
+    """LIVE FAILURE 2026-08-30: FantasyPros stamps records 'YYYY-MM-DD HH:MM:SS' with
+    no timezone. The naive-vs-aware subtraction raised, printed '(age unparseable)',
+    and silently disabled the staleness warning — the one signal telling Brett how
+    protected the lineup is near kickoff."""
+    from datetime import datetime, timezone
+    from dfs.cli import _parse_feed_ts
+    live = _parse_feed_ts("2026-08-30 21:50:01")            # the real observed format
+    assert live is not None and live.tzinfo is not None
+    assert live == datetime(2026, 8, 30, 21, 50, 1, tzinfo=timezone.utc)
+    for s in ("2026-08-30T21:50:01", "2026-08-30T21:50:01Z",
+              "2026-08-30T21:50:01+00:00", "2026-08-30"):
+        d = _parse_feed_ts(s)
+        assert d is not None and d.tzinfo is not None, s
+    assert _parse_feed_ts("garbage") is None
+    assert _parse_feed_ts("") is None
+
+
+def test_injury_feed_age_warns_when_stale(capsys):
+    """A stale feed must say so loudly, and an unparseable one must not pretend."""
+    from datetime import datetime, timezone, timedelta
+    from dfs.cli import _print_injury_feed_age
+    from dfs.injuries import InjuryRecord, Status
+
+    def rec(ts):
+        return {"x": InjuryRecord(name="X", team="PHI",
+                                  status=Status.QUESTIONABLE, fetched_ts=ts)}
+
+    old = (datetime.now(timezone.utc) - timedelta(hours=50)).strftime("%Y-%m-%d %H:%M:%S")
+    _print_injury_feed_age(rec(old))
+    out = capsys.readouterr().out
+    assert "STALE" in out and "age unparseable" not in out
+
+    fresh = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    _print_injury_feed_age(rec(fresh))
+    out = capsys.readouterr().out
+    assert "STALE" not in out and "0.0h old" in out
+
+    _print_injury_feed_age(rec("not-a-date"))
+    out = capsys.readouterr().out
+    assert "UNPARSEABLE" in out and "verify" in out
+
+
+# ============ external review round 6: entry lifecycle (2026-08-30) ============
+def _log_pending(db, contest="Leather League"):
+    slate = _projected_slate()
+    mp = max_projection_lineup(slate, SPEC)
+    byid = {p.fd_id: p for p in slate.players}
+    players = [byid[i] for i in mp.player_ids]
+    ResultLog(db).log_entry(2026, 1, contest, players, objective="arm=max-proj; t")
+    return players
+
+
+def test_build_logs_a_pending_recommendation_not_an_entry(tmp_path):
+    """REVIEW: the UI says 'Enter this lineup' — it is a RECOMMENDATION. Logging it
+    as a submitted entry made the system believe a lineup was fielded that may never
+    have been, so the swap check could optimize from a phantom roster and Monday's
+    capture could grade it."""
+    db = tmp_path / "r.db"
+    _log_pending(db)
+    rl = ResultLog(db)
+    assert rl.entry_status(2026, 1, "Leather League") == "pending"
+
+
+def test_confirm_entry_promotes_and_is_idempotent(tmp_path):
+    db = tmp_path / "r.db"
+    _log_pending(db)
+    from dfs import cli as cli_mod
+    rc = cli_mod.main(["confirm-entry", "--season", "2026", "--week", "1",
+                       "--contest", "Leather League", "--log-db", str(db)])
+    assert rc == 0
+    rl = ResultLog(db)
+    assert rl.entry_status(2026, 1, "Leather League") == "confirmed"
+    with rl._c() as c:
+        assert c.execute("SELECT confirmed_ts FROM entries").fetchone()[0]
+    assert cli_mod.main(["confirm-entry", "--season", "2026", "--week", "1",
+                         "--contest", "Leather League", "--log-db", str(db)]) == 0
+    assert rl.entry_status(2026, 1, "Leather League") == "confirmed"
+
+
+def test_rebuild_returns_a_confirmed_entry_to_pending(tmp_path):
+    """A rebuild produces a DIFFERENT lineup, so the earlier confirmation is void —
+    otherwise the system would treat the new lineup as fielded without being told."""
+    db = tmp_path / "r.db"
+    _log_pending(db)
+    ResultLog(db).confirm_entry(2026, 1, "Leather League")
+    assert ResultLog(db).entry_status(2026, 1, "Leather League") == "confirmed"
+    _log_pending(db)                                   # rebuild
+    assert ResultLog(db).entry_status(2026, 1, "Leather League") == "pending"
+
+
+def test_swap_refuses_on_a_pending_lineup(tmp_path, monkeypatch, capsys):
+    """The Sunday check must not compute swaps from a lineup that was never entered —
+    it would tell Brett to change players he does not have."""
+    from dfs import cli as cli_mod
+    db = tmp_path / "r.db"
+    _log_pending(db)
+    monkeypatch.setenv("FANTASYPROS_API_KEY", "test")
+    rc = cli_mod.main(["swap", "--csv", str(REAL_W1), "--season", "2026",
+                       "--week", "1", "--contest", "Leather League",
+                       "--log-db", str(db)])
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "PENDING" in out and "confirm-entry" in out
+
+
+def test_confirm_entry_migrates_a_preexisting_database(tmp_path):
+    """Brett's live results.db predates the status column — opening it must migrate
+    in place, and rows created before the lifecycle default to pending."""
+    import sqlite3
+    db = tmp_path / "old.db"
+    con = sqlite3.connect(db)
+    con.executescript("""CREATE TABLE entries (season INTEGER, week INTEGER,
+        contest TEXT, slate_id TEXT, submitted_ts TEXT, objective TEXT,
+        exp_points REAL, p_win REAL, salary INTEGER, lineup_json TEXT,
+        actual_score REAL, final_rank INTEGER, field_size INTEGER, winnings REAL,
+        PRIMARY KEY (season, week, contest));""")
+    con.execute("INSERT INTO entries VALUES (2026,1,'Leather League','s','ts','o',"
+                "1.0,0.1,60000,'[]',NULL,NULL,NULL,NULL)")
+    con.commit(); con.close()
+    rl = ResultLog(db)                                  # must not raise
+    assert rl.entry_status(2026, 1, "Leather League") == "pending"
+    assert rl.confirm_entry(2026, 1, "Leather League")["was"] == "pending"
+    assert rl.entry_status(2026, 1, "Leather League") == "confirmed"
+
+
+def test_web_swap_uses_the_contest_aware_proposal_path(tmp_path, monkeypatch):
+    """REVIEW: the helper included contest but the web API hardcoded the old name, so
+    showdown and main-slate proposals for one week could delete each other. Test the
+    WEB path, not just the helper."""
+    from fastapi.testclient import TestClient
+    import dfs.web as web
+    captured = {}
+    monkeypatch.setattr(web, "_start_job",
+                        lambda kind, argv: captured.setdefault(kind, argv) or "j")
+    monkeypatch.setattr(web, "UPLOADS", tmp_path / "up")
+    monkeypatch.setattr(web, "LINEUPS", tmp_path / "l")
+    monkeypatch.setattr(web, "DB", tmp_path / "p.db")
+    c = TestClient(web.app)
+    r = c.post("/api/swap",
+               files={"csv": ("w1.csv", REAL_W1.open("rb"), "text/csv")},
+               data={"season": 2026, "week": 1, "contest": "League Showdown",
+                     "profile": "showdown_friends"})
+    assert r.status_code == 200
+    argv = captured["swap"]
+    prop = argv[argv.index("--proposal-out") + 1]
+    assert "league-showdown" in prop
+    assert argv[argv.index("--profile") + 1] == "showdown_friends"
+
+    captured.clear()
+    r = c.post("/api/swap-accept", data={"season": 2026, "week": 1,
+                                         "contest": "League Showdown"})
+    assert r.status_code == 200
+    argv = captured["swap-accept"]
+    assert "league-showdown" in argv[argv.index("--proposal") + 1]
+
+
+def test_web_confirm_entry_endpoint(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    import dfs.web as web
+    captured = {}
+    monkeypatch.setattr(web, "_start_job",
+                        lambda kind, argv: captured.setdefault(kind, argv) or "j")
+    monkeypatch.setattr(web, "DB", tmp_path / "p.db")
+    monkeypatch.setattr(web, "DB_TEST", tmp_path / "t.db")
+    c = TestClient(web.app)
+    assert c.post("/api/confirm-entry",
+                  data={"season": 2026, "week": 1,
+                        "contest": "Leather League"}).status_code == 200
+    argv = captured["confirm-entry"]
+    assert argv[0] == "confirm-entry"
+    assert argv[argv.index("--log-db") + 1].endswith("p.db")
+    captured.clear()
+    c.post("/api/confirm-entry", data={"season": 2026, "week": 1,
+                                       "contest": "Leather League",
+                                       "test_mode": "true"})
+    assert captured["confirm-entry"][-1].endswith("t.db")
+
+
+def test_entry_api_exposes_status_and_identity(tmp_path, monkeypatch):
+    """The card renders the confirm button from these fields."""
+    from fastapi.testclient import TestClient
+    import dfs.web as web
+    db = tmp_path / "p.db"
+    _log_pending(db)
+    monkeypatch.setattr(web, "DB", db)
+    c = TestClient(web.app)
+    d = c.get("/api/entry", params={"season": 2026, "week": 1}).json()["entry"]
+    assert d["status"] == "pending"
+    assert (d["season"], d["week"], d["contest"]) == (2026, 1, "Leather League")
+    assert d["lineup"][0]["inj_source"]          # provenance persisted per player
+
+
+def test_upload_csv_link_is_disabled_until_template_validated():
+    """REVIEW: the page offered 'Download FanDuel upload CSV' for a file built from an
+    unverified column layout with blank entry/contest ids. Hand entry is the safe
+    path; the link must not be presented until a real template is wired through."""
+    html = (Path(__file__).parent.parent / "src" / "dfs" / "static" /
+            "index.html").read_text()
+    assert "Download FanDuel upload CSV</a>" not in html
+    assert "Enter this lineup by hand" in html

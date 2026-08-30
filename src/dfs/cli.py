@@ -373,7 +373,7 @@ def cmd_build(a) -> int:
     if a.export:
         ex = export_upload_csv(entry_players, a.export, slate_type=slate.slate_type,
                                mvp_id=entry_cand.mvp_id, template=a.template,
-                               contest_name=spec.name)
+                               entry_id=a.entry_id, contest_name=spec.name)
         print("\n" + ex.summary())
     if a.log_db:
         rl_out = ResultLog(a.log_db)
@@ -393,7 +393,14 @@ def cmd_build(a) -> int:
                          exp_points=shadow_eval.exp_points, p_win=shadow_eval.p_win,
                          mvp_id=shadow_eval.candidate.mvp_id,
                          mvp_salary_mult=spec.mvp_salary_mult)
-        print(f"Entry logged ({entry_arm}) + shadow ({shadow_arm}) -> {a.log_db}")
+        print(f"Recommendation saved ({entry_arm}) + shadow ({shadow_arm}) "
+              f"-> {a.log_db}")
+        print("  STATUS: PENDING — nothing is entered on FanDuel yet. After you enter "
+              "this lineup, confirm it:")
+        print(f"    confirm-entry --season {a.season} --week {a.week} "
+              f"--contest \"{spec.name}\"")
+        print("  Until confirmed, the Sunday swap check will refuse to run (it must "
+              "not optimize from a lineup that was never fielded).")
     if a.pushover_out:
         metrics = (f"{spec.name} w{a.week} [{entry_arm}]: proj {entry_cand.proj_sum:.1f}, "
                    f"E[pts] {entry_eval.exp_points:.1f}, P(win) {entry_eval.p_win:.0%}")
@@ -416,12 +423,22 @@ def cmd_swap(a) -> int:
     dist = _dist()
     rl = ResultLog(a.log_db)
     with rl._c() as conn:
-        row = conn.execute("""SELECT lineup_json, objective FROM entries
+        row = conn.execute("""SELECT lineup_json, objective, status FROM entries
                               WHERE season=? AND week=? AND contest=?""",
                            (a.season, a.week, a.contest)).fetchone()
     if not row:
         print(f"No logged entry for {a.contest} {a.season} w{a.week}. "
               "Run `build --log-db` first.")
+        return 2
+    status = (row["status"] if "status" in row.keys() else "confirmed") or "pending"
+    if status != "confirmed" and not a.allow_pending:
+        print(f"REFUSING: the logged lineup for {a.contest} {a.season} w{a.week} is "
+              "PENDING — it is a build recommendation, not a confirmed FanDuel entry.\n"
+              "  A swap computed from a lineup you never fielded would tell you to "
+              "change players you do not have.\n"
+              f"  If you entered it, run:  confirm-entry --season {a.season} "
+              f"--week {a.week} --contest \"{a.contest}\"\n"
+              "  (--allow-pending overrides, for dry runs only.)")
         return 2
     logged_lineup = _json.loads(row["lineup_json"])
     current_ids = tuple(p["fd_id"] for p in logged_lineup)
@@ -459,7 +476,8 @@ def cmd_swap(a) -> int:
     # fresh injuries BEFORE matching, so removed players leave the pool
     try:
         fp_inj = records_from_fantasypros(FantasyProsClient().injuries(a.season))
-        _print_injury_feed_age(fp_inj)
+        # Sunday: demand much fresher data than a midweek build does.
+        _print_injury_feed_age(fp_inj, hours_to_lock=6.0)
     except FantasyProsError:
         fp_inj = {}
     inj = merge(records_from_slate(slate), fp_inj)
@@ -553,26 +571,58 @@ def cmd_swap(a) -> int:
     return 0
 
 
-def _print_injury_feed_age(recs: dict) -> None:
+def _parse_feed_ts(raw) -> "datetime | None":
+    """FantasyPros stamps injury records as 'YYYY-MM-DD HH:MM:SS' (space, no zone) —
+    fromisoformat handles the space but returns a NAIVE datetime, and subtracting that
+    from an aware now() raises. Naive values are read as UTC. Observed live 2026-08-30:
+    the unhandled case printed '(age unparseable)', silently disabling the staleness
+    warning this function exists to provide."""
+    s = str(raw).strip().replace("Z", "+00:00")
+    for parse in (datetime.fromisoformat,
+                  lambda v: datetime.strptime(v, "%Y-%m-%d %H:%M:%S"),
+                  lambda v: datetime.strptime(v, "%Y-%m-%d")):
+        try:
+            dt = parse(s)
+        except Exception:                                          # noqa: BLE001
+            continue
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return None
+
+
+def _print_injury_feed_age(recs: dict, hours_to_lock: float | None = None) -> None:
     """Show how old the freshest injury record is. There is NO official inactives
     source wired in (see injuries.py) — FantasyPros is the freshest layer we have, so
     its age is the only honest measure of how protected the lineup is near kickoff."""
     ts = [r.fetched_ts for r in recs.values() if getattr(r, "fetched_ts", None)]
     if not ts:
         print("  injury feed: no timestamps in payload — treat status as UNVERIFIED")
+        _print_inactives_warning()
         return
     newest = max(ts)
-    try:
-        age_h = (datetime.now(timezone.utc)
-                 - datetime.fromisoformat(str(newest).replace("Z", "+00:00"))
-                 ).total_seconds() / 3600
-    except Exception:                                              # noqa: BLE001
-        print(f"  injury feed: newest record {newest} (age unparseable)")
+    dt = _parse_feed_ts(newest)
+    if dt is None:
+        print(f"  injury feed: newest record {newest} — UNPARSEABLE timestamp, treat "
+              "freshness as unknown")
+        _print_inactives_warning()
         return
-    note = "  ** STALE — verify against official inactives **" if age_h > 24 else ""
+    age_h = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+    # Threshold tightens as kickoff approaches: 24h is meaningless on Sunday morning,
+    # when statuses move hour to hour. `hours_to_lock` lets the swap path demand much
+    # fresher data than a Wednesday build does.
+    limit = 24.0 if hours_to_lock is None or hours_to_lock > 24 else 3.0
+    note = (f"  ** STALE (> {limit:.0f}h) — do not rely on it **"
+            if age_h > limit else "")
     print(f"  injury feed: newest record {age_h:.1f}h old{note}")
-    print("  NOTE: no official inactives source is wired in — confirm every flagged "
-          "player by hand before lock.")
+    _print_inactives_warning()
+
+
+def _print_inactives_warning() -> None:
+    """Printed on EVERY build and swap, regardless of feed health. Surprise inactives
+    frequently carry no prior Questionable tag, so 'check the badges' is not adequate
+    guidance — all nine entered players need eyes on them before lock."""
+    print("  NOTE: no official inactives source is wired in. Before lock, verify ALL "
+          "NINE entered players against the official inactives list — not just the "
+          "flagged ones; a surprise inactive often had no prior designation.")
 
 
 def _proposal_path(season: int, week: int, contest: str) -> str:
@@ -587,6 +637,25 @@ def _lineup_hash(lineup: list[dict]) -> str:
     ids = sorted(p["fd_id"] for p in lineup)
     mvp = next((p["fd_id"] for p in lineup if p.get("mvp")), "")
     return hashlib.sha256(("|".join(ids) + "#" + mvp).encode()).hexdigest()[:16]
+
+
+def cmd_confirm_entry(a) -> int:
+    """Promote a build recommendation to the confirmed active entry."""
+    res = ResultLog(a.log_db).confirm_entry(a.season, a.week, a.contest)
+    if res is None:
+        print(f"No logged lineup for {a.contest} {a.season} w{a.week} — run `build` "
+              "first.")
+        return 2
+    if res["was"] == "confirmed":
+        print("Already confirmed — nothing to do (safe to re-run).")
+        return 0
+    print(f"CONFIRMED: {a.contest} {a.season} w{a.week} is now the active entry "
+          f"({res['confirmed_ts']} UTC).")
+    for p in res["lineup"]:
+        print(f"    {p['pos']:3s} {p['name']:24s} {p['team']:4s} ${p['salary']}")
+    print("  The Sunday swap check will now run against this lineup. If you rebuild, "
+          "the new lineup returns to PENDING until you confirm it again.")
+    return 0
 
 
 def cmd_swap_accept(a) -> int:
@@ -761,6 +830,9 @@ def main(argv=None) -> int:
     b.add_argument("--strict-injuries", action="store_true",
                    help="refuse to build while questionable players remain in the pool")
     b.add_argument("--export", default=None, help="write a FanDuel upload CSV here")
+    b.add_argument("--entry-id", default="",
+                   help="with --template: which entry row to edit, when the template "
+                        "holds more than one")
     b.add_argument("--template", default=None,
                    help="a real FanDuel entries template to mirror column headers from")
     b.add_argument("--log-db", default=None, help="SQLite result log to record this entry in")
@@ -821,7 +893,19 @@ def main(argv=None) -> int:
     sw.add_argument("--critical-salary", type=int, default=6500)
     sw.add_argument("--log-db", default="data/results.db")
     sw.add_argument("--export", default=None)
+    sw.add_argument("--allow-pending", action="store_true",
+                    help="run the swap against an UNCONFIRMED recommendation "
+                         "(dry runs only — never for a real Sunday check)")
     sw.set_defaults(func=cmd_swap)
+
+    ce = sub.add_parser("confirm-entry",
+                        help="record that you entered the built lineup on FanDuel — "
+                             "promotes the recommendation to the active entry")
+    ce.add_argument("--season", type=int, required=True)
+    ce.add_argument("--week", type=int, required=True)
+    ce.add_argument("--contest", default="Leather League")
+    ce.add_argument("--log-db", default="data/results.db")
+    ce.set_defaults(func=cmd_confirm_entry)
 
     sa = sub.add_parser("swap-accept",
                         help="record that a proposed swap was ENTERED on FanDuel — "

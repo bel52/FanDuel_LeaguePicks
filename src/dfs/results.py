@@ -47,6 +47,11 @@ CREATE TABLE IF NOT EXISTS entries (
     final_rank INTEGER,
     field_size INTEGER,
     winnings REAL,
+    -- 'pending'   = a BUILD RECOMMENDATION. Nothing has been entered on FanDuel.
+    -- 'confirmed' = Brett said he entered this lineup. Only then may the swap check
+    --               optimize from it and may capture grade against it.
+    status TEXT NOT NULL DEFAULT 'pending',
+    confirmed_ts TEXT,
     PRIMARY KEY (season, week, contest)
 );
 CREATE TABLE IF NOT EXISTS player_results (
@@ -102,6 +107,7 @@ class ResultLog:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with self._c() as c:
             c.executescript(SCHEMA)
+        self._migrate()
 
     def _c(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path)
@@ -110,11 +116,48 @@ class ResultLog:
 
     # ---- writes ----
 
+    def _migrate(self) -> None:
+        """Add status/confirmed_ts to databases created before the entry lifecycle."""
+        with self._c() as c:
+            cols = {r[1] for r in c.execute("PRAGMA table_info(entries)")}
+            if "status" not in cols:
+                c.execute("ALTER TABLE entries ADD COLUMN status TEXT NOT NULL "
+                          "DEFAULT 'pending'")
+            if "confirmed_ts" not in cols:
+                c.execute("ALTER TABLE entries ADD COLUMN confirmed_ts TEXT")
+
+    def confirm_entry(self, season: int, week: int, contest: str) -> dict | None:
+        """Promote a build RECOMMENDATION to the confirmed active entry, after Brett
+        has actually entered it on FanDuel. Until this happens the system must not
+        pretend it knows what is fielded: the swap check would optimize from a lineup
+        that was never entered and Monday's capture would grade the wrong roster."""
+        ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._c() as c:
+            row = c.execute("""SELECT status, lineup_json FROM entries
+                               WHERE season=? AND week=? AND contest=?""",
+                            (season, week, contest)).fetchone()
+            if row is None:
+                return None
+            c.execute("""UPDATE entries SET status='confirmed', confirmed_ts=?
+                         WHERE season=? AND week=? AND contest=?""",
+                      (ts, season, week, contest))
+        return {"was": row["status"], "confirmed_ts": ts,
+                "lineup": json.loads(row["lineup_json"])}
+
+    def entry_status(self, season: int, week: int, contest: str) -> str | None:
+        with self._c() as c:
+            row = c.execute("""SELECT status FROM entries
+                               WHERE season=? AND week=? AND contest=?""",
+                            (season, week, contest)).fetchone()
+        return row["status"] if row else None
+
     def log_entry(self, season: int, week: int, contest: str, players: list,
                   slate_id: str = "", objective: str = "", exp_points: float = 0.0,
                   p_win: float = 0.0, mvp_id: str | None = None,
                   mvp_salary_mult: float = 1.5) -> None:
-        """Record a submitted lineup WITH the projections believed at lock time.
+        """Record a build RECOMMENDATION (status='pending'). It is NOT an entry until
+        confirm_entry() is called — the UI says "Enter this lineup", so the row is a
+        proposal until Brett says he entered it.
 
         Showdown: the MVP is part of the lineup's identity (scores 1.5x, costs 1.5x),
         so it is stored per-player in lineup_json and the salary column records the
@@ -129,7 +172,11 @@ class ResultLog:
                    # a Q player's consensus projection by 0.1 pts — consensus is slow,
                    # the human needs to see the flag)
                    "inj": (getattr(p, "injury_indicator", "") or ""),
-                   "inj_detail": (getattr(p, "injury_details", "") or "")}
+                   "inj_detail": (getattr(p, "injury_details", "") or ""),
+                   # provenance per player: which feed said this, and when. A slate-wide
+                   # "newest record" age hides a player whose own status is days stale.
+                   "inj_source": (getattr(p, "injury_source", "") or "fanduel_csv"),
+                   "inj_ts": (getattr(p, "injury_ts", "") or "")}
                   for p in players]
         charged = sum(p.salary for p in players)
         if mvp_id:
@@ -145,6 +192,9 @@ class ResultLog:
                     (SELECT final_rank   FROM entries WHERE season=? AND week=? AND contest=?),
                     (SELECT field_size   FROM entries WHERE season=? AND week=? AND contest=?),
                     (SELECT winnings     FROM entries WHERE season=? AND week=? AND contest=?))""",
+                # INSERT OR REPLACE resets status to 'pending' by design: a rebuild
+                # produces a DIFFERENT lineup, so any prior confirmation is void until
+                # Brett confirms the new one on FanDuel.
                 (season, week, contest, slate_id,
                  datetime.now(timezone.utc).isoformat(timespec="seconds"), objective,
                  exp_points, p_win, charged, json.dumps(lineup),

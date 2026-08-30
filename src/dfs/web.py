@@ -26,6 +26,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 
 from . import cli as dfs_cli
+from .cli import _proposal_path
 from .contest_spec import Profile, SlateType, expected_slate_type
 from .results import ResultLog
 from .objectives import weights_for
@@ -308,7 +309,8 @@ async def api_swap(csv: UploadFile | None = File(None),
             "--contest", contest, "--profile", profile,
             "--critical-salary", "7000",
             "--log-db", str(log_db),
-            "--proposal-out", str(lineups_dir / f"swap-proposal-{season}-w{week:02d}.json"),
+            "--proposal-out", str(lineups_dir / Path(
+                _proposal_path(season, week, contest)).name),
             "--export", str(lineups_dir / f"swap-{season}-w{week:02d}.csv")]
     return {"job": _start_job("swap", argv)}
 
@@ -357,6 +359,12 @@ def api_entry(season: int, week: int, contest: str = "Leather League",
         if (d.get("objective") or "").startswith("arm=max-proj"):
             arm = "max-proj"
         d["arm"] = arm
+        d["status"] = d.get("status") or "pending"
+        return d
+
+    def _augment(d):
+        if d is not None:
+            d["season"], d["week"], d["contest"] = season, week, contest
         return d
     with rl._c() as c:
         row = c.execute("""SELECT * FROM entries WHERE season=? AND week=? AND
@@ -366,7 +374,8 @@ def api_entry(season: int, week: int, contest: str = "Leather League",
                            (season, week, f"{contest} [shadow:%")).fetchone()
     if row is None:
         raise HTTPException(404, f"no logged entry for {contest} {season} w{week}")
-    return {"entry": _row_to_dict(row), "shadow": _row_to_dict(shadow)}
+    return {"entry": _augment(_row_to_dict(row)),
+            "shadow": _row_to_dict(shadow)}
 
 
 @app.get("/api/job-latest/{kind}")
@@ -383,6 +392,18 @@ def api_job_latest(kind: str):
     return max(jobs, key=lambda j: j["started"])
 
 
+@app.post("/api/confirm-entry")
+def api_confirm_entry(season: int = Form(...), week: int = Form(...),
+                      contest: str = Form("Leather League"),
+                      test_mode: bool = Form(False)):
+    """Promote the build recommendation to the confirmed active entry."""
+    log_db = DB_TEST if test_mode else DB
+    return {"job": _start_job("confirm-entry",
+                              ["confirm-entry", "--season", str(season),
+                               "--week", str(week), "--contest", contest,
+                               "--log-db", str(log_db)])}
+
+
 @app.post("/api/swap-accept")
 def api_swap_accept(season: int = Form(...), week: int = Form(...),
                     contest: str = Form("Leather League"),
@@ -391,7 +412,8 @@ def api_swap_accept(season: int = Form(...), week: int = Form(...),
     log_db, lineups_dir = (DB_TEST, LINEUPS_TEST) if test_mode else (DB, LINEUPS)
     argv = ["swap-accept", "--season", str(season), "--week", str(week),
             "--contest", contest, "--log-db", str(log_db),
-            "--proposal", str(lineups_dir / f"swap-proposal-{season}-w{week:02d}.json")]
+            "--proposal", str(lineups_dir / Path(
+                _proposal_path(season, week, contest)).name)]
     return {"job": _start_job("swap-accept", argv)}
 
 

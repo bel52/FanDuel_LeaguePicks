@@ -98,8 +98,10 @@ def export_upload_csv(players: list, out_path: str | Path,
                 if match:
                     first_data = match[0]
                 else:
-                    warnings.append(f"--entry-id {entry_id} not found in template; "
-                                    "contest_id taken from the first row.")
+                    raise ValueError(
+                        f"--entry-id {entry_id} is not in {Path(template).name}. "
+                        "Refusing to export: combining a requested entry id with "
+                        "another row's contest id would edit the wrong entry.")
         # A FanDuel entries template downloaded from an EXISTING entry carries the
         # entry_id/contest_id that tell the bulk-upload which entry to EDIT. Dropping
         # them made every upload look like a new-entry attempt (external review P0).
