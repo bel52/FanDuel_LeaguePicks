@@ -736,18 +736,46 @@ def cmd_capture(a) -> int:
               "to grade.")
         return 0
 
-    if status != "confirmed":
-        logged_ids = None
-        with rl._c() as conn:
-            row = conn.execute("""SELECT lineup_json FROM entries
-                                  WHERE season=? AND week=? AND contest=?""",
-                               (a.season, a.week, a.contest)).fetchone()
-        if row:
-            logged = _json.loads(row["lineup_json"])
-            logged_ids = {norm_name(p["name"]) for p in logged}
-        actual_ids = ({norm_name(p.name) for p in lu.players}
-                      if lu and lu.players else None)
+    # Compare LOGGED vs FIELDED whenever the results page carries lineup detail —
+    # regardless of status. A confirmed entry can still diverge: Brett may edit the
+    # roster on FanDuel outside the swap flow, and grading a real score against a
+    # stale roster corrupts projection_accuracy() just as badly as grading a lineup
+    # that was never entered.
+    logged_ids = None
+    with rl._c() as conn:
+        row = conn.execute("""SELECT lineup_json FROM entries
+                              WHERE season=? AND week=? AND contest=?""",
+                           (a.season, a.week, a.contest)).fetchone()
+    if row:
+        logged = _json.loads(row["lineup_json"])
+        logged_ids = {norm_name(p["name"]) for p in logged}
+    actual_ids = ({norm_name(p.name) for p in lu.players}
+                  if lu and lu.players else None)
+    mismatch = bool(actual_ids and logged_ids and actual_ids != logged_ids)
 
+    def _print_diff() -> None:
+        print("  The lineup you actually fielded DIFFERS from the logged one:")
+        out_only = sorted(logged_ids - actual_ids)
+        in_only = sorted(actual_ids - logged_ids)
+        if out_only:
+            print(f"    logged but not fielded: {', '.join(out_only)}")
+        if in_only:
+            print(f"    fielded but not logged: {', '.join(in_only)}")
+
+    if status == "confirmed" and mismatch:
+        print(f"\nREFUSING TO GRADE: {a.contest} {a.season} w{a.week} is confirmed, "
+              "but the roster on the results page is not the roster on file.")
+        _print_diff()
+        print("  This happens when a lineup is edited on FanDuel outside the swap "
+              "flow. Grading now would attribute your real score to the wrong "
+              "players.\n"
+              "  Fix the record first — re-run the swap check and accept the "
+              "proposal, or rebuild and confirm — then re-run capture.")
+        print("  Opponents and ownership WERE recorded — only your own grading "
+              "was skipped.")
+        return 2
+
+    if status != "confirmed":
         if actual_ids and logged_ids == actual_ids and not a.no_reconcile:
             # The results page proves the fielded lineup matches the recommendation:
             # Brett clearly entered it and simply never clicked confirm. Reconcile.
@@ -759,14 +787,8 @@ def cmd_capture(a) -> int:
         else:
             print(f"\nREFUSING TO GRADE: {a.contest} {a.season} w{a.week} is PENDING "
                   "— it was never confirmed as entered.")
-            if actual_ids and logged_ids and actual_ids != logged_ids:
-                diff_in = sorted(actual_ids - logged_ids)
-                diff_out = sorted(logged_ids - actual_ids)
-                print("  The lineup you actually fielded DIFFERS from the logged one:")
-                if diff_out:
-                    print(f"    logged but not fielded: {', '.join(diff_out)}")
-                if diff_in:
-                    print(f"    fielded but not logged: {', '.join(diff_in)}")
+            if mismatch:
+                _print_diff()
                 print("  Grading this would attribute your real score to the wrong "
                       "roster. Rebuild/edit the entry to match what you fielded, "
                       "confirm it, then re-run capture.")

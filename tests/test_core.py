@@ -2572,3 +2572,49 @@ def test_confirm_button_polls_the_job():
     assert "setTimeout(()=>showEntryCard" not in fn   # no blind fixed delay
     assert "FAILED" in fn                          # surfaces failure
     assert "confirm-btn" in html and "confirm-msg" in html
+
+
+def test_capture_refuses_when_a_CONFIRMED_lineup_was_edited_on_fanduel(tmp_path,
+                                                                       capsys):
+    """REVIEW round 8: confirmation is not permanent truth. If the roster is edited on
+    FanDuel outside the swap flow, a confirmed entry goes stale, and grading a real
+    score against it corrupts projection_accuracy() exactly as badly as grading a
+    lineup that was never entered. The comparison must run for EVERY status."""
+    from dfs import cli as cli_mod
+    cap = parse_contest(CONTEST_FIX, 2025, 18)
+    fielded = next(e for e in cap.entries_with_lineups if e.players)
+    names = [p.name for p in fielded.players][:-1] + ["Someone Else Entirely"]
+    db = tmp_path / "r.db"
+    _log_pending_for(db, "LL4", names)
+    ResultLog(db).confirm_entry(2025, 18, "LL4")          # confirmed, then diverged
+    assert ResultLog(db).entry_status(2025, 18, "LL4") == "confirmed"
+
+    rc = cli_mod.main(["capture", str(CONTEST_FIX), "--season", "2025", "--week", "18",
+                       "--contest", "LL4", "--me", fielded.entrant,
+                       "--log-db", str(db)])
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "REFUSING TO GRADE" in out and "confirmed" in out
+    assert "DIFFERS" in out and "someone else entirely" in out.lower()
+    with ResultLog(db)._c() as c:
+        row = c.execute("SELECT actual_score FROM entries "
+                        "WHERE contest='LL4'").fetchone()
+    assert row["actual_score"] is None                    # nothing graded
+
+
+def test_capture_grades_a_confirmed_lineup_that_still_matches(tmp_path):
+    """The guard must not block the normal path: confirmed AND unchanged grades."""
+    from dfs import cli as cli_mod
+    cap = parse_contest(CONTEST_FIX, 2025, 18)
+    fielded = next(e for e in cap.entries_with_lineups if e.players)
+    db = tmp_path / "r.db"
+    _log_pending_for(db, "LL5", [p.name for p in fielded.players])
+    ResultLog(db).confirm_entry(2025, 18, "LL5")
+    rc = cli_mod.main(["capture", str(CONTEST_FIX), "--season", "2025", "--week", "18",
+                       "--contest", "LL5", "--me", fielded.entrant,
+                       "--log-db", str(db)])
+    assert rc == 0
+    with ResultLog(db)._c() as c:
+        row = c.execute("SELECT actual_score FROM entries "
+                        "WHERE contest='LL5'").fetchone()
+    assert row["actual_score"] is not None
