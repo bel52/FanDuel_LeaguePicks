@@ -5,6 +5,11 @@ __pycache__/
 .env
 data/lineups/
 data/contests/
+# Cached Odds API prop boards. Runtime cache, never source: a tracked cache gets
+# rewritten by every clone and pull, and 19 boards were committed by accident on
+# 2026-09-07. `git rm -r --cached data/props` removes them without deleting the
+# local copies (which are still worth 72 credits).
+data/props/
 data/calibration_*.json
 *.tar
 *.db

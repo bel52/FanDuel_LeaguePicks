@@ -43,7 +43,20 @@ models affect only the weekly-prize sliver (~11%). The sophisticated machinery e
 its keep in **showdown and H2H**, where P(win) is the entire objective. Projection
 *quality*, not optimization cleverness, is the lever for league play.
 
-Code: ~6,100 lines, **197 tests**, all passing.
+Code: ~6,200 lines, **207 tests**, all passing.
+
+**Vegas was reading the wrong week (found and fixed 2026-09-07, first props build).**
+`team_lines` requests the whole `/odds` board — 272 events on 2026-09-07, i.e. the rest
+of the season — and keyed its output by team with no date filter, so the LAST event
+involving a team overwrote the earlier ones. Week 1 was tilted on future weeks' lines:
+BUF came back 26.75 (real Week 1 BUF@HOU is 44.5 / -1.5 = 23.0) and the Chargers, the
+slate's highest implied total at 28.5, were missing from the table entirely. Kickoff
+times had the same fault, which matters because `KickoffSchedule.from_team_lines` is
+the nflverse fallback that decides which slots are still unlocked in a late swap.
+Callers now pass the FanDuel `AWAY@HOME` game strings; an ordered pair is unique within
+a season. Earliest kickoff wins as a second guard. Regression-tested both ways — the
+pre-existing Vegas tests only exercised the team-name path, which is why this survived
+four review rounds.
 
 **League projection layer (2026-09-07).** Acting on the structural finding below: for
 Total Points the lever is projection accuracy, not optimization cleverness. Three

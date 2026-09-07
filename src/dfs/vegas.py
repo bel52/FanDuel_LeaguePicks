@@ -69,6 +69,8 @@ class OddsClient:
         self.missing_teams: list[str] = []
         self.books_used: dict[str, int] = {}
         self.newest_update: str = ""
+        self.events_seen: int = 0
+        self.games_matched: int = 0
 
     def _get(self, path: str, params: dict) -> list | dict:
         qs = "&".join(f"{k}={v}" for k, v in {**params, "apiKey": self.api_key}.items())
@@ -95,19 +97,47 @@ class OddsClient:
             # designed soft-skip (external review, 2026-08-30).
             raise VegasError(f"Odds API unreachable/unparseable: {type(e).__name__}: {e}") from e
 
-    def team_lines(self, slate_teams: set[str] | None = None) -> dict[str, TeamLine]:
+    def team_lines(self, slate_teams: set[str] | None = None,
+                   slate_games: set[str] | None = None) -> dict[str, TeamLine]:
         """Fetch spreads+totals; return implied totals keyed by FD team abbr.
-        If slate_teams given, restrict to those teams (slate-scoped, not whole week)."""
+
+        Pass `slate_games` -- the FanDuel "AWAY@HOME" strings straight off the CSV --
+        whenever they are available. `slate_teams` alone is NOT safe:
+
+        The /odds endpoint returns every scheduled event the book has priced, which in
+        September is the whole season (272 events on 2026-09-07, 17 of them involving
+        Buffalo). `out` is keyed by team, so without a game filter the LAST event
+        involving a team overwrote the earlier ones, and the implied total attached to
+        the slate came from some future week. On the 2026 Week 1 board that produced
+        BUF 26.75 (real Week 1 BUF@HOU: 44.5 / -1.5 = 23.0) and dropped the Chargers
+        -- the slate's highest implied total at 28.5 -- out of the table entirely.
+        Kickoff times inherited the same fault, which mattered because
+        KickoffSchedule.from_team_lines is the nflverse fallback that decides which
+        slots are still unlocked during a late swap.
+
+        An ordered AWAY@HOME pair occurs exactly once per season (a division pair meets
+        twice, but once at each venue), so the pair is a unique key. Earliest kickoff
+        wins anyway, as a belt-and-braces guard.
+        """
         games = self._get(f"sports/{SPORT}/odds",
                           {"regions": "us", "markets": "spreads,totals", "oddsFormat": "american"})
         if not isinstance(games, list):
             raise VegasError(f"unexpected response type: {type(games)}")
+        want_games = {g.strip().upper() for g in (slate_games or set()) if "@" in g}
+        self.events_seen = len(games)
+        self.games_matched = 0
         out: dict[str, TeamLine] = {}
+        seen_kick: dict[str, str] = {}          # team -> kickoff of the line we kept
         for g in games:
             home_full, away_full = g.get("home_team", ""), g.get("away_team", "")
             home, away = TEAM_ABBR.get(home_full), TEAM_ABBR.get(away_full)
             if not home or not away:
                 continue
+            if want_games:
+                pair = f"{norm_team(away)}@{norm_team(home)}"
+                if pair not in want_games:
+                    continue
+                self.games_matched += 1
             # Parse each book INDEPENDENTLY, then choose. The previous version took
             # the first available total and the first available spreads separately,
             # which could pair a total from one book with a spread from another --
@@ -148,10 +178,18 @@ class OddsClient:
             self.books_used[book] = self.books_used.get(book, 0) + 1
             if upd:
                 self.newest_update = max(self.newest_update, upd)
+            kick = g.get("commence_time", "") or ""
             for team, opp in ((home, away), (away, home)):
                 # Canonicalize through norm_team so a FanDuel "JAC" slate matches an
                 # Odds-board "JAX" (and any future alias) — never key on raw abbrs.
                 tn, on = norm_team(team), norm_team(opp)
+                # Keep the EARLIEST kickoff for a team. Without a game filter the board
+                # carries a team's whole remaining schedule, and last-write-wins handed
+                # the slate a future week's line.
+                prev = seen_kick.get(tn)
+                if prev and kick and kick >= prev:
+                    continue
+                seen_kick[tn] = kick
                 out[tn] = TeamLine(
                     team=tn, opponent=on, game_total=float(total),
                     spread=spreads[team],

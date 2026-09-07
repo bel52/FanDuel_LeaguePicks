@@ -67,6 +67,7 @@ def _props_layer(slate, a, dist, label: str = "build"):
         board = pc.slate_props({p.game for p in slate.players if p.game})
         pts, prep = props_points(slate.players, board, slate.fp_by_id)
         prep.credits_spent, prep.cache_hits = pc.credits_spent, pc.cache_hits
+        prep.stale_cache = pc.stale_cache
         prep.errors = list(pc.errors)
         print(prep.summary())
         if pc.last_quota:
@@ -222,9 +223,17 @@ def cmd_build(a) -> int:
     if not a.no_vegas:
         try:
             oc = OddsClient()
-            team_lines = oc.team_lines(slate_teams={p.team for p in slate.players})
-            print(f"  Vegas: {len(team_lines)} team totals "
+            team_lines = oc.team_lines(
+                slate_teams={p.team for p in slate.players},
+                slate_games={p.game for p in slate.players if p.game})
+            n_games = len({p.game for p in slate.players if p.game})
+            print(f"  Vegas: {len(team_lines)} team totals from "
+                  f"{oc.games_matched}/{n_games} slate games "
+                  f"({oc.events_seen} events on the board) "
                   f"(quota remaining {oc.last_quota.get('remaining','?')})")
+            if oc.games_matched < n_games:
+                print(f"  Vegas: {n_games - oc.games_matched} slate game(s) not on the "
+                      "board — those teams build without a tilt")
             if oc.missing_teams:
                 print(f"  Vegas missing for {oc.missing_teams} (kicked off or off-board) — "
                       "those teams build without a Vegas tilt")
@@ -609,8 +618,11 @@ def cmd_swap(a) -> int:
     team_lines = {}
     try:
         oc = OddsClient()
-        team_lines = oc.team_lines(slate_teams={p.team for p in slate.players})
-        print(f"Vegas refreshed: {len(team_lines)} team totals")
+        team_lines = oc.team_lines(
+            slate_teams={p.team for p in slate.players},
+            slate_games={p.game for p in slate.players if p.game})
+        print(f"Vegas refreshed: {len(team_lines)} team totals from "
+              f"{oc.games_matched} slate games ({oc.events_seen} on the board)")
     except VegasError as e:
         print(f"Vegas skipped: {e}")
 

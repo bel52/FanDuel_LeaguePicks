@@ -56,7 +56,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -326,6 +325,7 @@ class PropsClient:
         self.max_age_hours = max_age_hours
         self.credits_spent = 0
         self.cache_hits = 0
+        self.stale_cache = 0
         self.last_quota: dict[str, str] = {}
         self.errors: list[str] = []
 
@@ -370,16 +370,30 @@ class PropsClient:
         return self.cache_dir / f"props-{event_id}.json"
 
     def event_board(self, event_id: str) -> dict:
+        """Cached prop board for one event.
+
+        Freshness is judged on a `_fetched_at` stamp written INSIDE the file, not on
+        the file's mtime. mtime is not a property of the data: `git clone` and
+        `git pull` stamp every file they write with the current time, so a board
+        cached last week would have looked brand new to an mtime check and been
+        served as live market data. (The cache directory is gitignored as of
+        2026-09-07, but a cache whose validity depends on the file never being
+        copied is fragile regardless of who copies it.)
+        """
         cp = self._cache_path(event_id)
         if cp and cp.exists():
-            age_h = (time.time() - cp.stat().st_mtime) / 3600.0
-            if age_h <= self.max_age_hours:
-                try:
-                    board = json.loads(cp.read_text())
-                    self.cache_hits += 1
-                    return board
-                except Exception:
-                    pass                      # corrupt cache: refetch
+            try:
+                board = json.loads(cp.read_text())
+                stamped = board.get("_fetched_at")
+                if stamped:
+                    fetched = datetime.fromisoformat(str(stamped).replace("Z", "+00:00"))
+                    age_h = (datetime.now(timezone.utc) - fetched).total_seconds() / 3600.0
+                    if 0 <= age_h <= self.max_age_hours:
+                        self.cache_hits += 1
+                        return board
+                    self.stale_cache += 1
+            except Exception:
+                pass                      # corrupt / unstamped cache: refetch
         board = self._get(f"sports/{SPORT}/events/{event_id}/odds", {
             "regions": "us",
             "markets": ",".join(MARKETS),
@@ -388,6 +402,7 @@ class PropsClient:
         })
         if not isinstance(board, dict):
             raise PropsError(f"unexpected board payload: {type(board)}")
+        board["_fetched_at"] = datetime.now(timezone.utc).isoformat()
         if cp:
             cp.write_text(json.dumps(board))
         return board
@@ -465,11 +480,14 @@ class PropsReport:
     errors: list = field(default_factory=list)
     credits_spent: int = 0
     cache_hits: int = 0
+    stale_cache: int = 0
     board_age_h: Optional[float] = None
 
     def summary(self) -> str:
         lines = [f"Props: {self.covered}/{self.total_considered} skill players priced "
-                 f"({self.credits_spent} credits, {self.cache_hits} cached boards)"]
+                 f"({self.credits_spent} credits, {self.cache_hits} cached boards"
+                 + (f", {self.stale_cache} refetched as stale" if self.stale_cache else "")
+                 + ")"]
         if self.board_age_h is not None:
             lines.append(f"  board age: {self.board_age_h:.1f}h")
         if self.scale:

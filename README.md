@@ -9,7 +9,7 @@ single-game showdown, and public contests.
 ## Status — honest
 
 The data layer, modeling core, and Sunday operating loop are complete and tested
-(197 offline tests, including an end-to-end build test that asserts the upload CSV,
+(207 offline tests, including an end-to-end build test that asserts the upload CSV,
 entry log, and pushover card actually exist). **Edge is not yet demonstrated.** The system reports a positive
 objective delta over a max-projection baseline, but that number is produced by the
 same simulator that selects the lineup. Until it is validated against out-of-sample
@@ -131,7 +131,9 @@ default 6h) so a rebuild after the inactives sweep is free, and props are **off 
 default on `swap`** — three Sunday windows at full price would exceed the tier.
 
 **Safety.** Every failure degrades to FantasyPros-only, which is the pre-props
-behaviour, so this layer cannot cost a build. Per-position scale factors are printed
+behaviour, so this layer cannot cost a build. Cache freshness is judged on a
+`_fetched_at` stamp written inside each board file, never on the file's mtime — a
+clone or pull rewrites mtimes and would otherwise serve week-old lines as live. Per-position scale factors are printed
 with their sample size and gated: a factor outside ±25% warns, outside 0.55–1.80 is
 treated as a board or parser failure and props are discarded for that position. A
 position with too few priced players is skipped rather than scaled on noise.

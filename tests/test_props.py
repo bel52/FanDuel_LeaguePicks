@@ -435,3 +435,172 @@ def test_alias_resolves_an_otherwise_unmatched_player():
     assert m["x-0"].points == 12.0
     assert rep.by_method.get("alias") == 1
     assert rep.alias_hits == [("Marquise Brown", "Hollywood Brown")]
+
+
+# --------------------------------------------------------------------------
+# vegas: the board carries the whole season, not the slate
+# --------------------------------------------------------------------------
+
+def _odds_payload():
+    """Two events involving BUF, in board order: the real Week 1 game first, then a
+    later week. Lines are the real 2026 Week 1 numbers (BUF@HOU 44.5, BUF -1.5 =>
+    23.0 implied). The Week 2 game is given a fat total so a wrong-week pick is
+    unmistakable in the assertion.
+    """
+    def book(total, spreads, upd="2026-09-07T20:00:00Z"):
+        return {"key": "fanduel", "title": "FanDuel", "last_update": upd, "markets": [
+            {"key": "totals", "last_update": upd,
+             "outcomes": [{"name": "Over", "point": total},
+                          {"name": "Under", "point": total}]},
+            {"key": "spreads", "last_update": upd,
+             "outcomes": [{"name": n, "point": p} for n, p in spreads.items()]},
+        ]}
+    return [
+        {"id": "w1", "commence_time": "2026-09-13T17:00:00Z",
+         "home_team": "Houston Texans", "away_team": "Buffalo Bills",
+         "bookmakers": [book(44.5, {"Buffalo Bills": -1.5, "Houston Texans": 1.5})]},
+        {"id": "w2", "commence_time": "2026-09-18T00:15:00Z",
+         "home_team": "Buffalo Bills", "away_team": "Detroit Lions",
+         "bookmakers": [book(53.5, {"Buffalo Bills": -9.0, "Detroit Lions": 9.0})]},
+    ]
+
+
+def _client(payload):
+    from dfs.vegas import OddsClient
+    oc = OddsClient(api_key="test")
+    oc._get = lambda path, params: payload          # no network
+    return oc
+
+
+def test_slate_games_pins_vegas_to_the_right_week():
+    """The regression. The /odds endpoint returns every event the book has priced --
+    272 of them on 2026-09-07, 17 involving Buffalo -- and team-keyed output meant the
+    LAST event won. Week 1 builds were tilted on future weeks' lines.
+    """
+    oc = _client(_odds_payload())
+    out = oc.team_lines(slate_teams={"BUF", "HOU"}, slate_games={"BUF@HOU"})
+    assert oc.games_matched == 1
+    assert oc.events_seen == 2
+    assert out["BUF"].game_total == 44.5
+    assert out["BUF"].implied_total == pytest.approx(23.0)
+    assert out["BUF"].kickoff_iso.startswith("2026-09-13")
+    assert "DET" not in out                       # the later game is not on this slate
+
+
+def test_earliest_kickoff_wins_without_a_game_filter():
+    """Belt and braces: callers that can only supply team names still must not pick up
+    a future week's line."""
+    oc = _client(_odds_payload())
+    out = oc.team_lines(slate_teams={"BUF", "HOU", "DET"})
+    assert out["BUF"].implied_total == pytest.approx(23.0)
+    assert out["BUF"].kickoff_iso.startswith("2026-09-13")
+
+
+def test_kickoff_times_follow_the_selected_game():
+    """KickoffSchedule.from_team_lines is the nflverse fallback that decides which
+    slots are still unlocked in a late swap, so a wrong-week kickoff is a wrong lock
+    state, not just a cosmetic error."""
+    from dfs.kickoffs import KickoffSchedule
+    oc = _client(_odds_payload())
+    out = oc.team_lines(slate_teams={"BUF", "HOU"}, slate_games={"BUF@HOU"})
+    sched = KickoffSchedule.from_team_lines(out)
+    assert all(k.startswith("2026-09-13") for k in
+               [out["BUF"].kickoff_iso, out["HOU"].kickoff_iso])
+    assert sched is not None
+
+
+def test_book_preference_and_provenance_recorded():
+    oc = _client(_odds_payload())
+    out = oc.team_lines(slate_games={"BUF@HOU"})
+    assert out["BUF"].book == "fanduel"
+    assert oc.books_used == {"fanduel": 1}
+    assert oc.newest_update == "2026-09-07T20:00:00Z"
+
+
+def test_total_and_spread_never_cross_books():
+    """A book offering a total but no spread must not lend its total to another book's
+    spread -- that pairing exists on no real board."""
+    payload = _odds_payload()[:1]
+    payload[0]["bookmakers"] = [
+        {"key": "fanduel", "last_update": "z", "markets": [
+            {"key": "totals", "last_update": "z",
+             "outcomes": [{"name": "Over", "point": 60.0}]}]},
+        {"key": "draftkings", "last_update": "z", "markets": [
+            {"key": "totals", "last_update": "z",
+             "outcomes": [{"name": "Over", "point": 44.5}]},
+            {"key": "spreads", "last_update": "z",
+             "outcomes": [{"name": "Buffalo Bills", "point": -1.5},
+                          {"name": "Houston Texans", "point": 1.5}]}]},
+    ]
+    oc = _client(payload)
+    out = oc.team_lines(slate_games={"BUF@HOU"})
+    # FanDuel is preferred but incomplete here, so DraftKings' own pair is used whole.
+    assert out["BUF"].book == "draftkings"
+    assert out["BUF"].game_total == 44.5
+
+
+# --------------------------------------------------------------------------
+# props cache
+# --------------------------------------------------------------------------
+
+def _stub_client(tmp_path, payload, max_age_hours=6.0):
+    from dfs.props import PropsClient
+    pc = PropsClient(api_key="test", cache_dir=tmp_path, max_age_hours=max_age_hours)
+    calls = []
+
+    def _get(path, params):
+        calls.append(path)
+        return dict(payload)
+
+    pc._get = _get
+    pc.calls = calls
+    return pc
+
+
+def test_cache_hit_avoids_a_second_fetch(tmp_path):
+    pc = _stub_client(tmp_path, board())
+    pc.event_board("ed6d24ff")
+    pc.event_board("ed6d24ff")
+    assert len(pc.calls) == 1
+    assert pc.cache_hits == 1
+
+
+def test_cache_freshness_uses_the_stamp_not_the_mtime(tmp_path):
+    """A cached board copied by git (clone, pull, checkout) gets a current mtime while
+    its contents are days old. Freshness must come from the stamp written inside the
+    file, or a stale board is served as live market data."""
+    import os
+    import time as _t
+    pc = _stub_client(tmp_path, board(), max_age_hours=6.0)
+    pc.event_board("ed6d24ff")
+    f = tmp_path / "props-ed6d24ff.json"
+    stale = json.loads(f.read_text())
+    stale["_fetched_at"] = "2026-09-01T12:00:00+00:00"          # six days old
+    f.write_text(json.dumps(stale))
+    os.utime(f, (_t.time(), _t.time()))                          # fresh mtime, as git leaves it
+    pc2 = _stub_client(tmp_path, board(), max_age_hours=6.0)
+    pc2.event_board("ed6d24ff")
+    assert pc2.calls == [f"sports/americanfootball_nfl/events/ed6d24ff/odds"]
+    assert pc2.cache_hits == 0
+    assert pc2.stale_cache == 1
+
+
+def test_unstamped_cache_file_is_refetched(tmp_path):
+    f = tmp_path / "props-ed6d24ff.json"
+    f.write_text(json.dumps(board()))            # no _fetched_at
+    pc = _stub_client(tmp_path, board())
+    pc.event_board("ed6d24ff")
+    assert len(pc.calls) == 1
+
+
+def test_corrupt_cache_file_is_refetched(tmp_path):
+    (tmp_path / "props-ed6d24ff.json").write_text("{not json")
+    pc = _stub_client(tmp_path, board())
+    pc.event_board("ed6d24ff")
+    assert len(pc.calls) == 1
+
+
+def test_props_cache_directory_is_gitignored():
+    """A tracked cache is rewritten by every checkout. Guard the ignore rule itself."""
+    ig = (Path(__file__).parents[1] / ".gitignore").read_text()
+    assert "data/props/" in ig
