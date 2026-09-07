@@ -125,7 +125,7 @@ tr.me td{color:var(--lamp);font-weight:600}
 <section id="t-build">
   <h2>Build lineups</h2>
   <p class="hint">Drop the FanDuel salary CSV (contest lobby → Download players list). The build pulls FantasyPros projections and Vegas team totals, sweeps injuries, simulates the slate, and ranks lineups by real prize dollars. Takes about a minute.</p>
-  <form id="f-build">
+  <form id="f-build" autocomplete="off">
     <label class="full">FanDuel salary CSV
       <input type="file" name="csv" accept=".csv">
       <span class="k" id="b-stored" style="color:var(--dim);font:12px var(--mono)"></span>
@@ -174,7 +174,7 @@ tr.me td{color:var(--lamp);font-weight:600}
 <section id="t-swap">
   <h2>Sunday swap check</h2>
   <p class="hint">Run at 11:30, before the 4:00 window, and before Sunday night. Re-checks inactives and Vegas, reads real kickoff times, and re-optimizes only the slots that haven't locked. Uses this week's logged lineup and the CSV you built with — nothing to upload unless the slate changed.</p>
-  <form id="f-swap">
+  <form id="f-swap" autocomplete="off">
     <label>Season <input type="number" name="season" value="2026" required></label>
     <label>Week <input type="number" name="week" min="1" max="22" required></label>
     <label>Contest type
@@ -208,7 +208,7 @@ you really fielded.">I entered this swap on FanDuel — record it</button>
 <section id="t-capture">
   <h2>Capture contest results</h2>
   <p class="hint">Monday: open the contest results page, ⌘A ⌘C, paste below. This logs every opponent's score and lineup plus measured ownership, updates the season standings, and re-derives next week's objective weights.</p>
-  <form id="f-capture">
+  <form id="f-capture" autocomplete="off">
     <label>Season <input type="number" name="season" value="2026" required></label>
     <label>Week <input type="number" name="week" min="1" max="22" required></label>
     <label class="full">Pasted page text
@@ -264,18 +264,33 @@ async function ticker(){
   }catch(e){$('#ticker').innerHTML='<span class="bad">backend unreachable</span>'}
 }
 ticker();
-/* settings prefill */
-(async()=>{try{
-  const s=await (await fetch('/api/settings')).json();
-  const c=await (await fetch('/api/calendar')).json();
-  const f=document.querySelector('#f-build');
-  f.season.value=c.season; f.week.value=c.week; f.field.value=s.field;
-  const sw=document.querySelector('#f-swap');  sw.season.value=c.season; sw.week.value=c.week;
-  const cp=document.querySelector('#f-capture');cp.season.value=c.season;
-  // capture is for the week just played, which on Tue+ is the previous one
-  cp.week.value=Math.max(1,c.week-(c.reason.includes('next slate')?1:0));
-  $('#s-season').value=c.season; $('#s-me').value=s.me;
-}catch(e){}})();
+/* settings prefill.
+   Runs on `pageshow`, not at parse time. Safari restores form state on a reload
+   AFTER inline scripts run, so a parse-time fill was silently overwritten with the
+   empty box it started as -- which is why the week had to be retyped after every
+   refresh while /api/calendar was returning week 1 correctly the whole time.
+   `pageshow` fires after restoration on both fresh loads and back/forward cache hits.
+   Failures are now shown in the ticker instead of being swallowed by a bare catch:
+   an empty required field with no explanation is worse than an error message. */
+async function prefill(){
+  try{
+    const s=await (await fetch('/api/settings')).json();
+    const c=await (await fetch('/api/calendar')).json();
+    const f=document.querySelector('#f-build');
+    f.season.value=c.season; f.week.value=c.week; f.field.value=s.field;
+    const sw=document.querySelector('#f-swap');  sw.season.value=c.season; sw.week.value=c.week;
+    const cp=document.querySelector('#f-capture');cp.season.value=c.season;
+    // capture is for the week just played, which on Tue+ is the previous one
+    cp.week.value=Math.max(1,c.week-(c.reason.includes('next slate')?1:0));
+    $('#s-season').value=c.season; $('#s-me').value=s.me;
+    checkStored();
+  }catch(e){
+    const t=$('#ticker');
+    if(t)t.innerHTML='<span class="bad">could not read season/week — '+
+      'fill them in by hand ('+e+')</span>';
+  }
+}
+window.addEventListener('pageshow',prefill);
 $('#s-save').onclick=async()=>{
   await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({me:$('#s-me').value,season:+$('#s-season').value,
@@ -394,13 +409,17 @@ function pollJob(job,form,outSel,url,linksSel){
       const week=form.week?.value,season=form.season?.value;
       const f=(url.includes('build')?`upload-${season}-w${String(week).padStart(2,'0')}.csv`
                                     :`swap-${season}-w${String(week).padStart(2,'0')}.csv`);
-      /* The built-in column layout has never been validated against a real FanDuel
-         entries file, and the exported row carries no entry_id/contest_id — uploading
-         it would at best be rejected. Hand-enter from the card instead. The link
-         returns once --template is wired through the web build. */
+      /* Verified on fanduel.com 2026-09-07: FanDuel's "Export this Lineup" copies a
+         lineup between your OWN entries inside the site — it is not a CSV download,
+         and the site offers no blank entries template. So there is nothing to
+         validate the built-in column layout against, and the exported row would
+         carry no entry_id/contest_id even if the headers were right. Hand-entry from
+         the card is the real workflow, not a temporary state, and the UI now says so
+         rather than implying a download is one config change away. */
       $(linksSel).innerHTML='<span style="color:var(--dim);font:12px var(--mono)">'+
-        'Enter this lineup by hand from the card above. (Bulk-upload CSV is disabled '+
-        'until the export is validated against a real FanDuel entries template.)</span>';
+        'Enter these nine players by hand from the card below, then press '+
+        '&ldquo;I entered this lineup on FanDuel&rdquo;. (FanDuel offers no blank '+
+        'entries template to download, so bulk upload stays off.)</span>';
       if(url.includes('build'))showEntryCard(form);
     }
     ticker();

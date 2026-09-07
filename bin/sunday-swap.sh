@@ -10,7 +10,12 @@ cd "$(dirname "$0")/.."
 [ -d .venv ] && . .venv/bin/activate
 [ -f .env ] && set -a && . ./.env && set +a
 SEASON=${1:?season} WEEK=${2:?week} CSV=${3:?salary csv}
+# --require-fresh-csv 3: FanDuel marks scratched players `O` on its own player list
+# when inactives post, so a re-downloaded CSV is the inactives source. A CSV older
+# than three hours cannot contain today's scratches, and swapping on one is worse than
+# not swapping — it looks like a verified lineup and is not.
 PYTHONPATH=src python3 -m dfs.cli swap \
+  --require-fresh-csv 3 \
   --csv "$CSV" --season "$SEASON" --week "$WEEK" \
   --log-db data/results.db --export "data/lineups/swap-w${WEEK}.csv" \
   2>&1 | tee "data/lineups/swap-w${WEEK}-$(date +%H%M).log"

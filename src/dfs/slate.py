@@ -47,6 +47,7 @@ class SlatePlayer:
     proj_blend: Optional[float] = None     # blended, BEFORE any availability adjustment
     props_weight: Optional[float] = None   # weight given to props in the blend
     p_active: Optional[float] = None       # P(plays), from the injury pipeline
+    opp_implied_total: Optional[float] = None   # D only: the offense it faces
 
 
 @dataclass

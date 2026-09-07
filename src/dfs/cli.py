@@ -13,6 +13,7 @@ import json
 import os
 import sys
 from pathlib import Path
+import time
 from datetime import datetime, timezone
 
 from .contest_spec import ContestSpec, Profile, SlateType, expected_slate_type
@@ -116,6 +117,60 @@ def _print_projection_provenance(slate, top_n: int = 12) -> None:
         d = (p.proj_props or 0) - (p.proj_fp or 0)
         print(f"    {d:+6.1f}  {p.position:3s} {p.team:4s} {p.name} "
               f"(FP {p.proj_fp:.1f} -> props {p.proj_props:.1f})")
+
+
+def _csv_freshness_gate(csv_path: str, sched, require_hours: float | None) -> bool:
+    """Warn (or refuse) when the salary CSV is too old to contain today's scratches.
+
+    There is no official inactives feed wired in, but there is a free one hiding in
+    plain sight: FanDuel flips a player's `Injury Indicator` to `O` on its own player
+    list when inactives post, and `ingest_fanduel` already drops those players before
+    they can reach a lineup. So a CSV re-downloaded after 11:30 ET IS an inactives
+    source -- and a CSV from Wednesday is not, no matter how fresh the injury feed or
+    the Vegas lines are.
+
+    That makes CSV age the highest-severity input in the Sunday loop and, until now,
+    the only one nothing checked. Under Total Points a scratch is a zero and a zero is
+    unrecoverable, so the age is stated on every swap and can be made a hard gate.
+
+    Returns True when it is safe to continue.
+    """
+    try:
+        mtime = Path(csv_path).stat().st_mtime
+    except OSError:
+        print("  CSV age: unknown (file not stat-able) — treat inactives as unverified")
+        return True
+    age_h = (time.time() - mtime) / 3600.0
+    # KickoffSchedule keys by team -> GameTime(kickoff_utc). The next UNLOCKED
+    # kickoff is the deadline that matters: games already started are irrelevant to
+    # whether this CSV can still see a scratch.
+    hours_to_kick = None
+    now = datetime.now(timezone.utc)
+    try:
+        upcoming = [g.kickoff_utc for g in sched.by_team.values()
+                    if g.kickoff_utc > now]
+        if upcoming:
+            hours_to_kick = (min(upcoming) - now).total_seconds() / 3600.0
+    except Exception:
+        pass
+
+    print(f"\n  salary CSV age: {age_h:.1f}h"
+          + (f", first kickoff in {hours_to_kick:.1f}h" if hours_to_kick is not None
+             else ""))
+    # Inside the inactives window, a stale CSV is the failure mode this check exists
+    # for. Outside it, age is informational.
+    in_window = hours_to_kick is not None and hours_to_kick <= 6.0
+    stale = require_hours is not None and age_h > require_hours
+    if in_window and age_h > 3.0:
+        print("  ** The inactives list posts ~90 minutes before the first kickoff and "
+              "FanDuel marks scratched players `O` on its player list.")
+        print(f"  ** This CSV is {age_h:.1f}h old, so it CANNOT contain today's "
+              "scratches. Re-download the contest player list and re-run.")
+    if stale:
+        print(f"  REFUSING: --require-fresh-csv {require_hours}h and this CSV is "
+              f"{age_h:.1f}h old. Re-download it rather than swapping blind.")
+        return False
+    return True
 
 
 def _dist():
@@ -527,6 +582,14 @@ def cmd_build(a) -> int:
         print("\n" + ex.summary())
     if a.log_db:
         rl_out = ResultLog(a.log_db)
+        # Components for the WHOLE priced pool, written BEFORE log_entry so that
+        # log_entry's in_lineup=1 wins for the nine entered players. ~370 rows a week
+        # instead of nine; this is the sample that later decides the blend weight.
+        n_comp = rl_out.log_projection_components(a.season, a.week, slate.players)
+        n_mkt = sum(1 for pl in slate.players if pl.proj_props is not None)
+        print(f"\nProjection components logged: {n_comp} players "
+              f"({n_mkt} with a market component) — feeds `standings` "
+              f"component accuracy once actuals land")
         rl_out.log_entry(a.season, a.week, spec.name, entry_players,
                          slate_id=a.slate_id or "",
                          objective=f"arm={entry_arm}; {weights.rationale}",
@@ -672,6 +735,8 @@ def cmd_swap(a) -> int:
         else:
             raise
     print("\n" + sched.summary())
+    if not _csv_freshness_gate(a.csv, sched, getattr(a, "require_fresh_csv", None)):
+        return 2
 
     spec = ContestSpec(name=a.contest, profile=Profile(a.profile),
                        slate_type=slate.slate_type, field_size=a.field,
@@ -1005,6 +1070,33 @@ def cmd_capture(a) -> int:
             print(f"Player actuals recorded: {n} (feeds projection_accuracy)")
         else:
             print("NOTE: no logged entry to attach player actuals to.")
+
+    # Every player on the page, from every entrant's roster -- not just my nine.
+    # The results page is the only free source of FanDuel-scored actuals, and it
+    # carries 60-100 distinct players a week. Matching is by name because the page
+    # has no FanDuel ids; only players already in player_results (i.e. ones this
+    # season's builds projected) are updated, so a name collision cannot invent a row.
+    page_actuals: dict[str, float] = {}
+    for e in capture.entries_with_lineups:
+        for pl in e.players:
+            if pl.actual_points is not None:
+                page_actuals.setdefault(norm_name(pl.name), pl.actual_points)
+    if page_actuals:
+        n_all = rl.log_actuals_by_name(a.season, a.week, page_actuals)
+        print(f"Component actuals recorded: {n_all} of {len(page_actuals)} distinct "
+              "players seen on the page (feeds component accuracy / blend weight)")
+        ca = rl.component_accuracy(a.season)
+        if ca.get("verdict"):
+            print(f"  component accuracy: {ca['verdict']}")
+            for k in ("proj_fp", "proj_props", "proj_blend"):
+                if k in ca:
+                    v = ca[k]
+                    print(f"    {k:11s} n={v['n']:4d} MAE {v['mae']:5.2f} "
+                          f"bias {v['bias']:+5.2f} corr {v['corr']:.3f}")
+            if "suggested_props_weight" in ca:
+                print(f"    least-squares props weight: "
+                      f"{ca['suggested_props_weight']:.2f} "
+                      "(reported only — PROPS_WEIGHT stays a human decision)")
     return 0
 
 
@@ -1185,6 +1277,11 @@ def main(argv=None) -> int:
     sw.add_argument("--no-avail-adjust", dest="avail_adjust", action="store_false")
     sw.add_argument("--aliases", default=None)
     sw.add_argument("--report-salary", type=int, default=5000)
+    sw.add_argument("--require-fresh-csv", type=float, default=None,
+                    metavar="HOURS",
+                    help="refuse to swap if the salary CSV is older than this. Set it "
+                         "for the 11:40 ET window: FanDuel marks scratched players `O` "
+                         "on its player list, so a stale CSV cannot see inactives")
     sw.add_argument("--log-db", default="data/results.db")
     sw.add_argument("--export", default=None)
     sw.add_argument("--allow-pending", action="store_true",

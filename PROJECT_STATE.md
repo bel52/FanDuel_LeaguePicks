@@ -43,7 +43,36 @@ models affect only the weekly-prize sliver (~11%). The sophisticated machinery e
 its keep in **showdown and H2H**, where P(win) is the entire objective. Projection
 *quality*, not optimization cleverness, is the lever for league play.
 
-Code: ~6,200 lines, **207 tests**, all passing.
+Code: ~6,500 lines, **221 tests**, all passing.
+
+**Lineup-quality round (2026-09-07, after the first live props build).** Four items,
+league-scoped:
+
+1. **DEF got the market.** `blend.py` excluded position D from the Vegas tilt and
+   nothing replaced it, so the slate's most market-determined projection was the only
+   one with no market input. `score_dst` now takes the opponent's implied team total in
+   place of FP's projected points-allowed. Measured spread across the real Week 1
+   board: ~3 points on a ~7-point slot.
+2. **Component logging.** Every build writes proj_fp / proj_props / proj_blend /
+   p_active for the whole priced pool; capture attaches actuals for every player on the
+   results page. `component_accuracy` grades the components against each other and
+   reports a least-squares props weight (reported only). This is the only available
+   route to a demonstrated edge and it starts Week 1.
+3. **CSV freshness gate.** FanDuel's `O` indicator is a free inactives feed;
+   `--require-fresh-csv 3` (wired into `bin/sunday-swap.sh`) refuses to swap on a CSV
+   too old to contain today's scratches.
+4. **Web UI.** Week prefill moved to `pageshow` -- Safari restores form state after
+   inline scripts run, which silently blanked the field while `/api/calendar` had been
+   returning week 1 correctly all along. Forms carry `autocomplete="off"` and prefill
+   failures now surface in the ticker instead of a bare `catch`.
+
+**Bulk upload is closed, not pending.** Verified on fanduel.com 2026-09-07: "Export
+this Lineup" copies a lineup between your own entries inside the site. There is no CSV
+download and no blank entries template, so the built-in column layout can never be
+validated and the exported row would carry no entry_id/contest_id regardless. Hand
+entry from the card is the workflow; the UI says so rather than implying a download is
+one flag away. Item 6 on the pre-Week-1 list is therefore closed as not-possible, not
+outstanding.
 
 **Vegas was reading the wrong week (found and fixed 2026-09-07, first props build).**
 `team_lines` requests the whole `/odds` board — 272 events on 2026-09-07, i.e. the rest

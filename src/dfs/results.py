@@ -125,6 +125,17 @@ class ResultLog:
                           "DEFAULT 'pending'")
             if "confirmed_ts" not in cols:
                 c.execute("ALTER TABLE entries ADD COLUMN confirmed_ts TEXT")
+            # Projection components, added 2026-09-07. Without them there is no way to
+            # answer the only question that matters for blend weights: did the market
+            # component or the consensus component predict better? Historical FanDuel
+            # salary archives are too patchy for a walk-forward backtest, so in-season
+            # logging is the ONLY route to a measured edge -- and it has to start in
+            # Week 1 or the data does not exist to fit anything.
+            pcols = {r[1] for r in c.execute("PRAGMA table_info(player_results)")}
+            for col in ("proj_fp", "proj_props", "proj_blend", "p_active",
+                        "opp_implied_total"):
+                if col not in pcols:
+                    c.execute(f"ALTER TABLE player_results ADD COLUMN {col} REAL")
 
     def confirm_entry(self, season: int, week: int, contest: str) -> dict | None:
         """Promote a build RECOMMENDATION to the confirmed active entry, after Brett
@@ -207,6 +218,115 @@ class ResultLog:
                         (SELECT actual FROM player_results WHERE season=? AND week=? AND fd_id=?),1)""",
                     (season, week, p.fd_id, p.name, p.position, p.team, p.salary,
                      p.projection, season, week, p.fd_id))
+
+    def log_projection_components(self, season: int, week: int, players: list) -> int:
+        """Record every projected player's components, not just the nine entered.
+
+        Nine rows a week is ~45 observations by Week 5 -- far too few to fit anything.
+        The whole priced pool is ~370 rows a week, of which ~140 carry a market
+        component, and that is a sample worth regressing. `in_lineup` and any actual
+        already recorded are preserved, so this is safe to re-run on a rebuild.
+        """
+        n = 0
+        with self._c() as c:
+            for p in players:
+                if p.projection is None:
+                    continue
+                c.execute("""INSERT INTO player_results
+                    (season,week,fd_id,name,position,team,salary,projection,
+                     proj_fp,proj_props,proj_blend,p_active,opp_implied_total,in_lineup)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+                    ON CONFLICT(season,week,fd_id) DO UPDATE SET
+                      name=excluded.name, position=excluded.position,
+                      team=excluded.team, salary=excluded.salary,
+                      projection=excluded.projection, proj_fp=excluded.proj_fp,
+                      proj_props=excluded.proj_props, proj_blend=excluded.proj_blend,
+                      p_active=excluded.p_active,
+                      opp_implied_total=excluded.opp_implied_total""",
+                    (season, week, p.fd_id, p.name, p.position, p.team, p.salary,
+                     p.projection, getattr(p, "proj_fp", None),
+                     getattr(p, "proj_props", None), getattr(p, "proj_blend", None),
+                     getattr(p, "p_active", None),
+                     getattr(p, "opp_implied_total", None)))
+                n += 1
+        return n
+
+    def log_actuals_by_name(self, season: int, week: int,
+                            by_name: dict[str, float]) -> int:
+        """Attach actuals matched on normalized name rather than fd_id.
+
+        The contest results page names players but carries no FanDuel ids, and it shows
+        every entrant's roster -- roughly 60-100 distinct players a week against the
+        nine in my own lineup. Matching on name multiplies the calibration sample by
+        about ten, which is the difference between fitting blend weights by Week 6 and
+        never fitting them.
+        """
+        from .matching import norm_name
+        n = 0
+        with self._c() as c:
+            rows = c.execute("""SELECT fd_id, name FROM player_results
+                                WHERE season=? AND week=?""", (season, week)).fetchall()
+            for r in rows:
+                v = by_name.get(norm_name(r["name"]))
+                if v is None:
+                    continue
+                c.execute("""UPDATE player_results SET actual=?
+                             WHERE season=? AND week=? AND fd_id=?""",
+                          (v, season, week, r["fd_id"]))
+                n += 1
+        return n
+
+    def component_accuracy(self, season: int, min_week: int = 1,
+                           min_n: int = 20) -> dict:
+        """Which projection component actually predicted better?
+
+        This is the read that decides the props blend weight. It is deliberately not
+        the same question as `projection_accuracy`, which grades the number that was
+        USED; this grades the inputs against each other on the same players, so the
+        comparison is apples to apples.
+
+        Reported per component: n, MAE, bias (actual - projected), correlation, and
+        -- the one that matters for a Total Points season -- whether the market
+        component beat consensus on MAE.
+        """
+        with self._c() as c:
+            rows = c.execute("""SELECT position, actual, proj_fp, proj_props, proj_blend
+                                FROM player_results
+                                WHERE season=? AND week>=? AND actual IS NOT NULL
+                                  AND proj_fp IS NOT NULL AND proj_props IS NOT NULL""",
+                             (season, min_week)).fetchall()
+        if len(rows) < min_n:
+            return {"n": len(rows), "verdict": f"need {min_n}+ paired observations, "
+                                               f"have {len(rows)}"}
+        import numpy as np
+        a = np.array([r["actual"] for r in rows], dtype=float)
+        out: dict = {"n": len(rows)}
+        for key in ("proj_fp", "proj_props", "proj_blend"):
+            v = np.array([r[key] if r[key] is not None else np.nan for r in rows],
+                         dtype=float)
+            m = ~np.isnan(v)
+            if m.sum() < min_n:
+                continue
+            out[key] = {"n": int(m.sum()),
+                        "mae": round(float(np.abs(a[m] - v[m]).mean()), 3),
+                        "bias": round(float((a[m] - v[m]).mean()), 3),
+                        "corr": round(float(np.corrcoef(v[m], a[m])[0, 1]), 3)}
+        if "proj_fp" in out and "proj_props" in out:
+            d = out["proj_fp"]["mae"] - out["proj_props"]["mae"]
+            out["verdict"] = (
+                f"market beat consensus by {d:.3f} MAE" if d > 0.05 else
+                f"consensus beat market by {-d:.3f} MAE" if d < -0.05 else
+                "market and consensus indistinguishable on MAE")
+            # A least-squares optimal weight on the market component, for reference.
+            # Reported, never applied automatically: a weight fitted on four weeks of
+            # one season is not evidence, and PROPS_WEIGHT stays a human decision.
+            fp = np.array([r["proj_fp"] for r in rows], dtype=float)
+            pr = np.array([r["proj_props"] for r in rows], dtype=float)
+            den = float(((pr - fp) ** 2).sum())
+            if den > 0:
+                w = float(((a - fp) * (pr - fp)).sum() / den)
+                out["suggested_props_weight"] = round(max(0.0, min(1.0, w)), 3)
+        return out
 
     def log_outcome(self, season: int, week: int, contest: str, score: float,
                     rank: int, field_size: int, winnings: float = 0.0) -> None:

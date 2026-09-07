@@ -9,7 +9,7 @@ single-game showdown, and public contests.
 ## Status — honest
 
 The data layer, modeling core, and Sunday operating loop are complete and tested
-(207 offline tests, including an end-to-end build test that asserts the upload CSV,
+(221 offline tests, including an end-to-end build test that asserts the upload CSV,
 entry log, and pushover card actually exist). **Edge is not yet demonstrated.** The system reports a positive
 objective delta over a max-projection baseline, but that number is produced by the
 same simulator that selects the lineup. Until it is validated against out-of-sample
@@ -137,6 +137,33 @@ clone or pull rewrites mtimes and would otherwise serve week-old lines as live. 
 with their sample size and gated: a factor outside ±25% warns, outside 0.55–1.80 is
 treated as a board or parser failure and props are discarded for that position. A
 position with too few priced players is skipped rather than scaled on noise.
+
+**DEF.** A defense is not scaled by its own offense's total — it is scored against the
+opposing one. `score_dst` accepts the opponent's implied team total in place of
+FantasyPros' projected points-allowed, which is the dominant term in the FanDuel ladder
+(10 for a shutout down to −4 for 35+). Before 2026-09-07 the D slot received no market
+signal at all: `blend.py` excluded position D from the Vegas tilt, rightly, and nothing
+replaced it — so the one position whose projection is essentially a single market-priced
+quantity was the only one modelled without the market. Vegas still enters exactly once:
+the D never gets a tilt, skill players never see an opponent total.
+
+**Measuring it.** `log_projection_components` writes `proj_fp`, `proj_props`,
+`proj_blend` and `p_active` for the whole priced pool every build (~370 rows a week, not
+the nine entered), and `capture` attaches actuals for every player on the contest results
+page (~60–100 distinct, matched by name; players never projected are skipped rather than
+invented). `component_accuracy` then grades the components against each other on the same
+players and reports a least-squares props weight. That number is **reported, never
+applied** — `PROPS_WEIGHT` stays a human decision, because a weight fitted on four weeks
+of one season is not evidence. No walk-forward backtest is possible (the salary archives
+are patchy), so this in-season log is the only route to a demonstrated edge, and it has
+to start in Week 1 or the data does not exist.
+
+**Inactives.** There is still no official inactives feed, but there is a free one: FanDuel
+marks scratched players `O` on its own player list, and `ingest_fanduel` already drops them
+before they can reach a lineup. So a CSV re-downloaded after the inactives post *is* an
+inactives source, and a Wednesday CSV is not. `swap` therefore prints the CSV's age
+against the next unlocked kickoff and, with `--require-fresh-csv HOURS` (set to 3 in
+`bin/sunday-swap.sh`), refuses rather than swapping on a lineup it cannot verify.
 
 **Scope.** `friends_league` only. Showdown and head-to-head paths are untouched: they
 are scored on P(win), where a discounted mean is the wrong treatment, and a single game

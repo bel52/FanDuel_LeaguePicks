@@ -604,3 +604,214 @@ def test_props_cache_directory_is_gitignored():
     """A tracked cache is rewritten by every checkout. Guard the ignore rule itself."""
     ig = (Path(__file__).parents[1] / ".gitignore").read_text()
     assert "data/props/" in ig
+
+
+# --------------------------------------------------------------------------
+# DEF: the one position whose projection IS a market-priced quantity
+# --------------------------------------------------------------------------
+
+DST_LINE = {"def_sack": 2.3, "def_int": 0.8, "def_fr": 0.6, "def_td": 0.12,
+            "def_safety": 0.03, "def_retd": 0.02, "def_pa": 22.0}
+
+
+def test_dst_points_fall_as_the_opposing_offense_gets_better():
+    from dfs.scoring import score_dst
+    pts = [score_dst(DST_LINE, opp_implied_total=t)[0] for t in (16.0, 19.0, 23.0, 28.0)]
+    assert pts == sorted(pts, reverse=True)
+    assert pts[0] - pts[-1] > 2.0, "market signal must actually move the DEF slot"
+
+
+def test_dst_opponent_total_overrides_fp_points_allowed():
+    from dfs.scoring import score_dst
+    base, _ = score_dst(DST_LINE)
+    market, bd = score_dst(DST_LINE, opp_implied_total=19.0)
+    assert market != base
+    assert bd["points_allowed"] > 0
+    # the non-PA terms are untouched: the market has no line on sacks or takeaways
+    _, bd0 = score_dst(DST_LINE)
+    for k in ("sacks", "ints", "fum_rec", "def_td"):
+        assert bd[k] == bd0[k]
+
+
+def test_dst_without_an_opponent_line_is_unchanged():
+    from dfs.scoring import score_dst
+    assert score_dst(DST_LINE, opp_implied_total=None) == score_dst(DST_LINE)
+
+
+def test_blend_gives_defense_the_opponent_total_and_no_tilt():
+    """Design rule 2 (Vegas enters exactly once) has to survive this: the D must get
+    the opponent's total instead of a tilt, never as well as one."""
+    from dfs.blend import apply_projections
+    from dfs.vegas import TeamLine
+
+    class FPX:
+        def __init__(self, name, team, pos, pts, stats):
+            self.name, self.team, self.position = name, team, pos
+            self.points, self.stats, self.breakdown = pts, stats, {}
+
+    slate = _slate([("D", "TEN", "Tennessee Titans", 3200),
+                    ("WR", "CIN", "Ja'Marr Chase", 8900)])
+    slate.players[0].opponent = "NYJ"
+    lines = {
+        "TEN": TeamLine("TEN", "NYJ", 39.5, -1.5, 20.5, "2026-09-13T17:00:00Z"),
+        "NYJ": TeamLine("NYJ", "TEN", 39.5, 1.5, 19.0, "2026-09-13T17:00:00Z"),
+        "CIN": TeamLine("CIN", "TB", 50.5, -3.5, 27.0, "2026-09-13T17:00:00Z"),
+    }
+    fps = [FPX("Tennessee Titans", "TEN", "D", 7.0, DST_LINE),
+           FPX("Ja'Marr Chase", "CIN", "WR", 17.0, {"rec_yds": 85.0, "rec_rec": 6.0})]
+    apply_projections(slate, fps, lines, _dist(), min_match_rate=0.0)
+    d, wr = slate.players
+    assert d.opp_implied_total == 19.0
+    assert "vegas_opp_total" in d.proj_source
+    assert d.implied_team_total == 20.5          # own total still recorded for display
+    # the WR keeps the ordinary bounded tilt off its OWN team total
+    assert wr.opp_implied_total is None
+    assert wr.projection > 17.0                  # CIN 27.0 is above league average
+
+
+# --------------------------------------------------------------------------
+# calibration logging: the only route to a demonstrated edge
+# --------------------------------------------------------------------------
+
+def _logged_players():
+    slate = _slate([("QB", "CIN", "Joe Burrow", 8200),
+                    ("WR", "CIN", "Ja'Marr Chase", 8900),
+                    ("WR", "CIN", "Tee Higgins", 6400)])
+    vals = [(21.0, 22.0, 21.5, 1.0), (17.0, 15.0, 16.0, 0.72), (11.0, 12.0, 11.5, 0.72)]
+    for p, (fp, pr, bl, pa) in zip(slate.players, vals):
+        p.proj_fp, p.proj_props, p.proj_blend, p.p_active = fp, pr, bl, pa
+        p.projection = round(bl * pa, 2)
+    return slate
+
+
+def test_components_logged_for_the_whole_pool(tmp_path):
+    from dfs.results import ResultLog
+    rl = ResultLog(tmp_path / "r.db")
+    slate = _logged_players()
+    assert rl.log_projection_components(2026, 1, slate.players) == 3
+    with rl._c() as c:
+        rows = c.execute("SELECT * FROM player_results ORDER BY name").fetchall()
+    assert len(rows) == 3
+    r = [x for x in rows if x["name"] == "Ja'Marr Chase"][0]
+    assert r["proj_fp"] == 17.0 and r["proj_props"] == 15.0
+    assert r["p_active"] == 0.72
+    assert r["in_lineup"] == 0
+
+
+def test_relogging_components_preserves_actuals_and_lineup_flag(tmp_path):
+    """A rebuild must not wipe an actual already recorded, or reset in_lineup."""
+    from dfs.results import ResultLog
+    rl = ResultLog(tmp_path / "r.db")
+    slate = _logged_players()
+    rl.log_projection_components(2026, 1, slate.players)
+    with rl._c() as c:
+        c.execute("""UPDATE player_results SET actual=25.0, in_lineup=1
+                     WHERE name='Joe Burrow'""")
+    slate.players[0].proj_blend = 23.0
+    slate.players[0].projection = 23.0
+    rl.log_projection_components(2026, 1, slate.players)
+    with rl._c() as c:
+        r = c.execute("SELECT * FROM player_results WHERE name='Joe Burrow'").fetchone()
+    assert r["actual"] == 25.0
+    assert r["in_lineup"] == 1
+    assert r["proj_blend"] == 23.0
+
+
+def test_actuals_by_name_only_touches_players_already_projected(tmp_path):
+    """The results page has no FanDuel ids, so matching is by name. A name that was
+    never projected must not create a row -- that would be inventing data."""
+    from dfs.results import ResultLog
+    rl = ResultLog(tmp_path / "r.db")
+    rl.log_projection_components(2026, 1, _logged_players().players)
+    n = rl.log_actuals_by_name(2026, 1, {"jamarr chase": 24.5,
+                                         "somebody nobodyprojected": 9.9})
+    assert n == 1
+    with rl._c() as c:
+        assert c.execute("SELECT COUNT(*) FROM player_results").fetchone()[0] == 3
+        assert c.execute("""SELECT actual FROM player_results
+                            WHERE name="Ja'Marr Chase" """).fetchone()[0] == 24.5
+
+
+def test_component_accuracy_withholds_a_verdict_on_a_thin_sample(tmp_path):
+    from dfs.results import ResultLog
+    rl = ResultLog(tmp_path / "r.db")
+    rl.log_projection_components(2026, 1, _logged_players().players)
+    rl.log_actuals_by_name(2026, 1, {"joe burrow": 20.0})
+    out = rl.component_accuracy(2026)
+    assert "need 20+" in out["verdict"]
+    assert "proj_props" not in out
+
+
+def test_component_accuracy_names_the_better_component(tmp_path):
+    """Construct actuals that track the market component exactly. The read has to say
+    so, because this number is what decides the blend weight."""
+    from dfs.results import ResultLog
+    rl = ResultLog(tmp_path / "r.db")
+    players = []
+    for i in range(30):
+        pl = SlatePlayer(fd_id=f"p{i}", name=f"Player {i}", position="WR", team="CIN",
+                         opponent="TB", salary=6000, game="TB@CIN")
+        pl.proj_fp = 10.0 + (i % 5)
+        pl.proj_props = 12.0 + (i % 7)
+        pl.proj_blend = 0.6 * pl.proj_props + 0.4 * pl.proj_fp
+        pl.projection = pl.proj_blend
+        players.append(pl)
+    rl.log_projection_components(2026, 1, players)
+    rl.log_actuals_by_name(2026, 1,
+                           {f"player {i}": 12.0 + (i % 7) for i in range(30)})
+    out = rl.component_accuracy(2026)
+    assert out["proj_props"]["mae"] == pytest.approx(0.0, abs=1e-6)
+    assert out["proj_fp"]["mae"] > 0.5
+    assert "market beat consensus" in out["verdict"]
+    assert out["suggested_props_weight"] == pytest.approx(1.0, abs=0.01)
+
+
+# --------------------------------------------------------------------------
+# CSV freshness: the free inactives source
+# --------------------------------------------------------------------------
+
+def _sched(hours_to_kick):
+    from datetime import datetime as dt, timedelta, timezone as tz
+    from dfs.kickoffs import GameTime, KickoffSchedule
+    ko = dt.now(tz.utc) + timedelta(hours=hours_to_kick)
+    return KickoffSchedule({"TEN": GameTime("TEN", "NYJ", ko)})
+
+
+def _csv(tmp_path, age_hours):
+    import os
+    import time as _t
+    f = tmp_path / "slate.csv"
+    f.write_text("Id,Position\n")
+    stamp = _t.time() - age_hours * 3600
+    os.utime(f, (stamp, stamp))
+    return str(f)
+
+
+def test_stale_csv_inside_the_inactives_window_is_called_out(tmp_path, capsys):
+    from dfs.cli import _csv_freshness_gate
+    assert _csv_freshness_gate(_csv(tmp_path, 5.0), _sched(1.5), None) is True
+    assert "CANNOT contain today's scratches" in capsys.readouterr().out
+
+
+def test_fresh_csv_inside_the_window_is_quiet(tmp_path, capsys):
+    from dfs.cli import _csv_freshness_gate
+    assert _csv_freshness_gate(_csv(tmp_path, 0.2), _sched(1.5), None) is True
+    assert "CANNOT contain" not in capsys.readouterr().out
+
+
+def test_stale_csv_days_from_kickoff_is_informational(tmp_path, capsys):
+    """A Wednesday build on a Wednesday CSV is normal and must not nag."""
+    from dfs.cli import _csv_freshness_gate
+    assert _csv_freshness_gate(_csv(tmp_path, 5.0), _sched(96.0), None) is True
+    assert "CANNOT contain" not in capsys.readouterr().out
+
+
+def test_require_fresh_csv_refuses(tmp_path, capsys):
+    from dfs.cli import _csv_freshness_gate
+    assert _csv_freshness_gate(_csv(tmp_path, 5.0), _sched(1.5), 3.0) is False
+    assert "REFUSING" in capsys.readouterr().out
+
+
+def test_missing_csv_does_not_crash_the_swap(tmp_path):
+    from dfs.cli import _csv_freshness_gate
+    assert _csv_freshness_gate(str(tmp_path / "nope.csv"), _sched(1.5), 3.0) is True

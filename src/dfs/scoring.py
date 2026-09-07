@@ -107,8 +107,26 @@ def _expected_pa_points(mean_pa: float) -> float:
     return total
 
 
-def score_dst(stats: dict) -> tuple[float, dict]:
-    """FanDuel points for a DST from an FP projected stat line."""
+def score_dst(stats: dict, opp_implied_total: float | None = None) -> tuple[float, dict]:
+    """FanDuel points for a DST from an FP projected stat line.
+
+    `opp_implied_total`, when supplied, replaces FantasyPros' projected points-allowed
+    with the betting market's implied total for the opposing offense. Points allowed is
+    the dominant term in the FanDuel DST ladder (10 points for a shutout down to -4 for
+    35+), and the opponent's implied team total is the sharpest available estimate of
+    it -- it is literally the market's forecast of the number this ladder scores.
+
+    Until 2026-09-07 the DST slot got no market signal at all: blend.py excluded
+    position D from the Vegas tilt (rightly, since a multiplicative tilt on a defense's
+    total points is meaningless) and nothing replaced it. So the one position whose
+    projection is mostly a single, market-priced quantity was the only position
+    modelled without the market.
+
+    The other terms (sacks, takeaways, TDs) stay on FP consensus: the market has no
+    direct line on them.
+    """
+    if opp_implied_total is not None:
+        stats = {**stats, "def_pa": float(opp_implied_total)}
     b = {
         "sacks": round(_f(stats, "def_sack") * DST_SACK, 3),
         "ints": round(_f(stats, "def_int") * DST_INT, 3),
@@ -138,9 +156,10 @@ def score_kicker(stats: dict) -> tuple[float, dict]:
     return round(sum(b.values()), 2), b
 
 
-def score(stats: dict, position: str) -> tuple[float, dict]:
+def score(stats: dict, position: str,
+          opp_implied_total: float | None = None) -> tuple[float, dict]:
     if position in ("D", "DST", "DEF"):
-        return score_dst(stats)
+        return score_dst(stats, opp_implied_total=opp_implied_total)
     if position == "K":
         return score_kicker(stats)
     return score_skill(stats)

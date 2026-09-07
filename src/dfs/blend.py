@@ -12,6 +12,7 @@ from .fantasypros import FPProjection
 from .vegas import TeamLine
 from .matching import norm_team
 from .distributions import floor_ceiling
+from .scoring import score
 from .matching import match_slate, MatchReport
 
 LEAGUE_AVG_TEAM_TOTAL = 22.0
@@ -46,11 +47,32 @@ def apply_projections(slate: PlayerSlate, fp_projections: list[FPProjection],
         base = fp.points                      # already true FanDuel points (scoring.py)
         line = team_lines.get(norm_team(sp.team))
         tilt = 0.0
+        if line:
+            sp.implied_team_total = line.implied_total
         if line and sp.position != "D":
             tilt = max(-VEGAS_TILT_CAP,
                        min(VEGAS_TILT_CAP,
                            (line.implied_total - LEAGUE_AVG_TEAM_TOTAL) * VEGAS_TILT_PER_POINT))
-            sp.implied_team_total = line.implied_total
+        elif sp.position == "D":
+            # A defense is not scaled by its OWN offense's total -- it is scored
+            # against the opposing offense. Re-score the DST with the opponent's
+            # implied team total standing in for FantasyPros' projected
+            # points-allowed, which is the dominant term in the FanDuel ladder.
+            # This is still Vegas entering exactly once (design rule 2): the D never
+            # receives a tilt, and the skill players never see an opponent total.
+            opp_line = team_lines.get(norm_team(sp.opponent))
+            if opp_line is not None:
+                base, bd = score(fp.stats or {}, sp.position,
+                                 opp_implied_total=opp_line.implied_total)
+                sp.opp_implied_total = opp_line.implied_total
+                sp.proj_source = "fp_stats->fd_scoring+vegas_opp_total"
+                sp.projection = round(base, 2)
+                sp.proj_fp = sp.projection
+                sp.proj_blend = sp.projection
+                sp.proj_ts = now
+                sp.floor_p10, sp.ceiling_p90 = floor_ceiling(
+                    sp.projection, sp.position, distributions)
+                continue
         sp.projection = round(base * (1 + tilt), 2)
         sp.proj_fp = sp.projection
         sp.proj_blend = sp.projection

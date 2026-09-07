@@ -2446,14 +2446,20 @@ def test_entry_api_exposes_status_and_identity(tmp_path, monkeypatch):
     assert d["lineup"][0]["inj_source"]          # provenance persisted per player
 
 
-def test_upload_csv_link_is_disabled_until_template_validated():
+def test_upload_csv_link_is_not_offered():
     """REVIEW: the page offered 'Download FanDuel upload CSV' for a file built from an
-    unverified column layout with blank entry/contest ids. Hand entry is the safe
-    path; the link must not be presented until a real template is wired through."""
+    unverified column layout with blank entry/contest ids.
+
+    Updated 2026-09-07: this is permanent, not pending. FanDuel's "Export this Lineup"
+    copies a lineup between your own entries inside the site; there is no CSV download
+    and no blank entries template to validate the layout against. The copy must tell
+    the user hand entry IS the workflow, not imply a download is one flag away.
+    """
     html = (Path(__file__).parent.parent / "src" / "dfs" / "static" /
             "index.html").read_text()
     assert "Download FanDuel upload CSV</a>" not in html
-    assert "Enter this lineup by hand" in html
+    assert "by hand from the card" in html
+    assert "no blank" in html and "entries template" in html
 
 
 # ============ review round 7: capture grading gate (2026-08-30) ============
