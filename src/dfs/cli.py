@@ -28,7 +28,10 @@ from .field import (build_prior_field, build_field_ensemble, rank_candidates,
 from .objectives import Leaderboard, SeasonContext, weights_for
 from .slate import SlateStore, SlateError
 from .injuries import (records_from_fantasypros, records_from_slate, merge,
-                       sweep as injury_sweep)
+                       sweep as injury_sweep, annotate_availability)
+from .props import PropsClient, PropsError, props_points, CREDITS_PER_EVENT
+from .blend import apply_props, apply_availability
+from .matching import load_aliases
 from .export import export_upload_csv, lineup_card, pushover_body
 from .results import ResultLog
 from .kickoffs import KickoffSchedule
@@ -36,6 +39,82 @@ from .nflcal import current_week
 from .lateswap import propose_swap, propose_swap_maxproj
 
 DATA = Path(__file__).resolve().parents[2] / "data"
+
+
+def _aliases(path: str | None) -> dict:
+    p = Path(path) if path else (DATA / "aliases.json")
+    al = load_aliases(p)
+    if al:
+        print(f"  name aliases loaded: {len(al)} from {p}")
+    return al
+
+
+def _props_layer(slate, a, dist, label: str = "build"):
+    """Fetch, score and blend market-implied projections. Never fatal.
+
+    Returns the PropsReport, or None when props are off/unavailable. Any failure
+    degrades to FantasyPros-only, which is exactly the pre-props behaviour, so the
+    props layer can never cost a build.
+    """
+    n_games = len({p.game for p in slate.players if p.game})
+    print("\n" + "=" * 72)
+    print(f"Player props (market-implied projections) — {n_games} games, "
+          f"up to {n_games * CREDITS_PER_EVENT} credits...")
+    try:
+        pc = PropsClient(cache_dir=(Path(a.props_cache_dir) if a.props_cache_dir
+                                    else DATA / "props"),
+                         max_age_hours=a.props_max_age)
+        board = pc.slate_props({p.game for p in slate.players if p.game})
+        pts, prep = props_points(slate.players, board, slate.fp_by_id)
+        prep.credits_spent, prep.cache_hits = pc.credits_spent, pc.cache_hits
+        prep.errors = list(pc.errors)
+        print(prep.summary())
+        if pc.last_quota:
+            print(f"  quota remaining: {pc.last_quota.get('remaining', '?')}")
+        if not pts:
+            print("  no players priced — projections stay FantasyPros-only")
+            return prep
+        changed = apply_props(slate, pts, dist,
+                             weights=_props_weights(a.props_weight))
+        print(f"  blended into {len(changed)} projections")
+        return prep
+    except PropsError as e:
+        print(f"  props SKIPPED: {e}")
+        print("  projections stay FantasyPros-only (no build impact)")
+        return None
+
+
+def _props_weights(override: float | None):
+    if override is None:
+        return None
+    from .props import PROPS_WEIGHT
+    return {k: override for k in PROPS_WEIGHT}
+
+
+def _print_projection_provenance(slate, top_n: int = 12) -> None:
+    """Show FP vs props vs blended for the players that actually matter.
+
+    This is the review surface for the props layer: a divergence column makes a
+    market/consensus disagreement (interesting) look different from a parser fault
+    (a whole position skewed one way).
+    """
+    rows = [p for p in slate.players if p.proj_props is not None]
+    if not rows:
+        return
+    rows.sort(key=lambda p: -(p.proj_blend or 0))
+    print("\n  FP vs market (top blended projections):")
+    print(f"    {'pos':3s} {'team':4s} {'salary':>7s} {'FP':>6s} {'props':>6s} "
+          f"{'blend':>6s} {'diff':>6s}  player")
+    for p in rows[:top_n]:
+        d = (p.proj_props or 0) - (p.proj_fp or 0)
+        print(f"    {p.position:3s} {p.team:4s} ${p.salary:6d} {p.proj_fp:6.1f} "
+              f"{p.proj_props:6.1f} {p.proj_blend:6.1f} {d:+6.1f}  {p.name}")
+    big = sorted(rows, key=lambda p: -abs((p.proj_props or 0) - (p.proj_fp or 0)))[:6]
+    print("  largest market/consensus disagreements:")
+    for p in big:
+        d = (p.proj_props or 0) - (p.proj_fp or 0)
+        print(f"    {d:+6.1f}  {p.position:3s} {p.team:4s} {p.name} "
+              f"(FP {p.proj_fp:.1f} -> props {p.proj_props:.1f})")
 
 
 def _dist():
@@ -91,7 +170,33 @@ def _assert_slate_matches_profile(slate, csv_path: str, profile: str) -> None:
             "Upload the correct FanDuel player list, or change the contest type.")
 
 
+# Profiles for which the league-play projection layers apply by default: the Total
+# Points friends league, and nothing else.
+#
+# Both layers are correct for a season standing that sums points and wrong for a
+# contest scored on P(win), where a Questionable player is a leverage decision rather
+# than a discounted mean. Showdown is excluded for a second reason too: a single game
+# yields two or three priced players per position, too few to fit a scale factor on.
+# Non-league profiles therefore behave exactly as they did before this layer existed.
+_LEAGUE_PROFILES = {"friends_league"}
+
+
+def _resolve_league_layers(a) -> None:
+    """Turn the tri-state --props / --avail-adjust flags into booleans.
+
+    None means 'decide from the profile'. An explicit flag on the command line always
+    wins, so a non-league profile can still opt in for a one-off comparison.
+    """
+    league = getattr(a, "profile", "") in _LEAGUE_PROFILES
+    total_points = getattr(a, "leaderboard", "total_scores") == "total_scores"
+    if getattr(a, "props", None) is None:
+        a.props = league
+    if getattr(a, "avail_adjust", None) is None:
+        a.avail_adjust = league and total_points
+
+
 def cmd_build(a) -> int:
+    _resolve_league_layers(a)
     dist = _dist()
 
     print("=" * 72)
@@ -123,17 +228,23 @@ def cmd_build(a) -> int:
             if oc.missing_teams:
                 print(f"  Vegas missing for {oc.missing_teams} (kicked off or off-board) — "
                       "those teams build without a Vegas tilt")
-            hot = sorted(team_lines.values(), key=lambda t: -t.implied_total)[:3]
+            print(f"  books used: {oc.books_used or '-'}"
+                  + (f", newest line {oc.newest_update}" if oc.newest_update else ""))
+            hot = sorted(team_lines.values(), key=lambda t: -t.implied_total)[:5]
             print("  highest implied totals: " +
                   ", ".join(f"{t.team} {t.implied_total}" for t in hot))
+            cold = sorted(team_lines.values(), key=lambda t: t.implied_total)[:3]
+            print("  lowest implied totals:  " +
+                  ", ".join(f"{t.team} {t.implied_total}" for t in cold))
         except VegasError as e:
             print(f"  Vegas SKIPPED: {e}")
     else:
         print("  Vegas skipped (--no-vegas)")
 
     mrep = apply_projections(slate, fp, team_lines, dist,
-                             min_match_rate=a.min_match, critical_salary=a.critical_salary)
-    print("\n" + mrep.summary(top_n=8))
+                             min_match_rate=a.min_match, critical_salary=a.critical_salary,
+                             aliases=_aliases(a.aliases))
+    print("\n" + mrep.summary(top_n=8, report_salary=a.report_salary))
     print(f"\nOptimizable pool: {len(slate.players)} players")
 
     top = sorted(slate.players, key=lambda p: -p.projection)[:8]
@@ -158,6 +269,36 @@ def cmd_build(a) -> int:
         if sw.flagged and a.strict_injuries:
             raise SlateError("questionable players in pool and --strict-injuries set; "
                              "resolve before building")
+        annotate_availability(slate, inj)
+    else:
+        inj = {}
+
+    # ---- market-implied projections ----
+    # Props run AFTER the sweep so credits are never spent on players who are out,
+    # and BEFORE the availability discount so the discount applies to the blend.
+    prep = _props_layer(slate, a, dist) if a.props else None
+    if a.props:
+        _print_projection_provenance(slate)
+
+    # ---- availability discount (league / Total Points only) ----
+    # Under Total Points a Questionable player's honest expected contribution is
+    # P(plays) x projection. Reported in full, never silent -- see the note above
+    # injuries.play_probability.
+    if a.avail_adjust:
+        disc = apply_availability(slate, dist)
+        if disc:
+            print(f"\n  availability discount applied to {len(disc)} players "
+                  "(Total Points: an inactive scores zero, permanently):")
+            for pl in sorted(disc, key=lambda z: z.proj_blend - z.projection,
+                             reverse=True)[:12]:
+                print(f"    {pl.position:3s} {pl.team:4s} {pl.name:24s} "
+                      f"{pl.proj_blend:6.1f} x {pl.p_active:.2f} -> {pl.projection:6.1f}"
+                      f"   {(pl.injury_details or '')[:40]}")
+        else:
+            print("\n  availability discount: no discounted players in the pool")
+    else:
+        print("\n  availability discount OFF (--no-avail-adjust): questionable "
+              "players are projected as if certain to play")
 
     spec = ContestSpec(name=a.contest, profile=Profile(a.profile),
                        slate_type=slate.slate_type, field_size=a.field,
@@ -484,11 +625,31 @@ def cmd_swap(a) -> int:
     lineup_set = set(current_ids)
     sw = injury_sweep(slate, inj, lineup_ids=lineup_set)
     print("\n" + sw.summary())
+    annotate_availability(slate, inj)
 
     mrep = apply_projections(slate, fp, team_lines, dist,
                              min_match_rate=a.min_match,
-                             critical_salary=a.critical_salary)
+                             critical_salary=a.critical_salary,
+                             aliases=_aliases(getattr(a, "aliases", None)))
     print(f"Projections refreshed: {mrep.matched}/{mrep.total}")
+    if mrep.unmatched:
+        print(mrep.summary(report_salary=getattr(a, "report_salary", 5000)))
+
+    # The swap must re-optimize against the SAME projection definition the entry was
+    # built from, or it will propose churn that is really just a change of method.
+    # Props default off here (credits); the cached Saturday board is reused when
+    # --props is passed and the board is still inside --props-max-age.
+    _resolve_league_layers(a)
+    if getattr(a, "props", False):
+        _props_layer(slate, a, dist, label="swap")
+    if getattr(a, "avail_adjust", False):
+        disc = apply_availability(slate, dist)
+        if disc:
+            print(f"  availability discount applied to {len(disc)} players")
+            for pl in sorted(disc, key=lambda z: z.proj_blend - z.projection,
+                             reverse=True)[:8]:
+                print(f"    {pl.position:3s} {pl.team:4s} {pl.name:24s} "
+                      f"{pl.proj_blend:6.1f} x {pl.p_active:.2f} -> {pl.projection:6.1f}")
 
     try:
         sched = KickoffSchedule.from_nflverse(a.season, a.week)
@@ -893,6 +1054,28 @@ def main(argv=None) -> int:
     b.add_argument("--min-match", type=float, default=0.60)
     b.add_argument("--critical-salary", type=int, default=6500)
     b.add_argument("--no-vegas", action="store_true")
+    b.add_argument("--props", dest="props", action="store_true", default=None,
+                   help="blend market-implied player-prop projections "
+                        "(default: on for league profiles). ~6 credits per game")
+    b.add_argument("--no-props", dest="props", action="store_false",
+                   help="FantasyPros-only projections, spends no Odds API credits")
+    b.add_argument("--props-weight", type=float, default=None,
+                   help="override the per-position props blend weight (0-1)")
+    b.add_argument("--props-cache-dir", default=None,
+                   help="where prop boards are cached (default data/props)")
+    b.add_argument("--props-max-age", type=float, default=6.0,
+                   help="reuse a cached prop board younger than this many hours; "
+                        "keeps a rebuild after the inactives sweep free")
+    b.add_argument("--avail-adjust", dest="avail_adjust", action="store_true",
+                   default=None,
+                   help="multiply projections by P(plays) for questionable players "
+                        "(default: on for a Total Points league)")
+    b.add_argument("--no-avail-adjust", dest="avail_adjust", action="store_false",
+                   help="project questionable players as certain to play")
+    b.add_argument("--aliases", default=None,
+                   help="name-alias JSON (default data/aliases.json)")
+    b.add_argument("--report-salary", type=int, default=5000,
+                   help="list every unmatched player at or above this salary")
     b.add_argument("--no-late-swap", action="store_true")
     b.add_argument("--leaderboard", default="total_scores",
                    choices=[l.value for l in Leaderboard],
@@ -976,6 +1159,20 @@ def main(argv=None) -> int:
     sw.add_argument("--seed", type=int, default=1729)
     sw.add_argument("--min-match", type=float, default=0.60)
     sw.add_argument("--critical-salary", type=int, default=6500)
+    # Props are OFF by default on swap. A full slate is ~72 credits and the free tier
+    # is 500/month, so three Sunday windows plus a build would exceed it. The cached
+    # board from the Saturday build is reused when it is still fresh enough.
+    sw.add_argument("--props", dest="props", action="store_true", default=False,
+                    help="re-pull player props during the swap check (costs credits)")
+    sw.add_argument("--no-props", dest="props", action="store_false")
+    sw.add_argument("--props-weight", type=float, default=None)
+    sw.add_argument("--props-cache-dir", default=None)
+    sw.add_argument("--props-max-age", type=float, default=6.0)
+    sw.add_argument("--avail-adjust", dest="avail_adjust", action="store_true",
+                    default=None)
+    sw.add_argument("--no-avail-adjust", dest="avail_adjust", action="store_false")
+    sw.add_argument("--aliases", default=None)
+    sw.add_argument("--report-salary", type=int, default=5000)
     sw.add_argument("--log-db", default="data/results.db")
     sw.add_argument("--export", default=None)
     sw.add_argument("--allow-pending", action="store_true",

@@ -266,3 +266,84 @@ def sweep(slate, injuries: dict[str, InjuryRecord],
             res.lineup_affected = True
     slate.players = keep
     return res
+
+
+# ---------------------------------------------------------------------------
+# Availability (P(active))
+# ---------------------------------------------------------------------------
+#
+# Design rule 5 says injuries produce an ACTION, never a silent projection haircut.
+# That rule was written for tournaments, where a Questionable player is a leverage
+# decision. Under Total Points there is no bench and no leverage: a player who does
+# not suit up scores zero, permanently, against the season standing. The honest
+# expected contribution of a Questionable player is P(plays) x projection, and
+# pretending a Q tag is a lock systematically over-projects every lineup that
+# contains one.
+#
+# The rule is therefore refined, not broken: the haircut is allowed ONLY when it is
+# REPORTED. `p_active` is stored on the player, every adjustment is printed, the
+# unadjusted blend stays in `proj_blend`, and REMOVE/FLAG actions still happen
+# exactly as before. Nothing is silent.
+#
+# Probabilities below are priors used when the feed gives no explicit number. FP's
+# own `probability_of_playing` overrides them whenever present.
+P_ACTIVE_PRIOR = {
+    Status.ACTIVE: 1.00,
+    Status.UNKNOWN: 1.00,
+    Status.PROBABLE: 0.95,
+    Status.QUESTIONABLE: 0.72,   # league-wide Q play rate is ~70-75%
+    Status.DOUBTFUL: 0.25,       # never reached in practice: DOUBTFUL is REMOVE
+    Status.OUT: 0.0,
+    Status.IR: 0.0,
+}
+# A Q whose last practice was full is close to a lock; a Q who did not practice is
+# closer to a coin flip. The practice trend is already parsed for escalation, so it
+# costs nothing to use it here too.
+P_ACTIVE_PRACTICE = {2: 0.90, 1: 0.75, 0: 0.45}
+
+_PROB_RE = re.compile(r"(\d{1,3})%\s*to play")
+
+
+def play_probability(rec: "InjuryRecord | None") -> float:
+    """P(player is active), in [0, 1]. No record means no known issue -> 1.0.
+
+    Order of preference:
+      1. an explicit percentage carried in the record detail (FantasyPros'
+         `probability_of_playing`, formatted by records_from_fantasypros)
+      2. last practice participation, for Questionable players
+      3. the status prior
+    """
+    if rec is None:
+        return 1.0
+    m = _PROB_RE.search(rec.detail or "")
+    if m:
+        try:
+            return max(0.0, min(1.0, int(m.group(1)) / 100.0))
+        except ValueError:
+            pass
+    if rec.status is Status.QUESTIONABLE:
+        pm = re.search(r"practice ([A-Z/]+)", rec.detail or "")
+        if pm:
+            seq = [s for s in pm.group(1).split("/") if s]
+            ranks = [_PRACTICE_RANK.get(s) for s in seq]
+            ranks = [r for r in ranks if r is not None]
+            if ranks:
+                return P_ACTIVE_PRACTICE.get(ranks[-1], P_ACTIVE_PRIOR[Status.QUESTIONABLE])
+    return P_ACTIVE_PRIOR.get(rec.status, 1.0)
+
+
+def annotate_availability(slate, injuries: dict[str, "InjuryRecord"]) -> list:
+    """Write p_active onto every slate player. Returns the players it discounted.
+
+    Called after `sweep`, so REMOVE players are already gone from the pool. Applying
+    the discount to `projection` is blend.apply_availability's job — this function
+    only measures.
+    """
+    discounted = []
+    for p in slate.players:
+        rec = injuries.get(norm_name(p.name))
+        pa = play_probability(rec)
+        p.p_active = round(pa, 3)
+        if pa < 0.999:
+            discounted.append(p)
+    return discounted

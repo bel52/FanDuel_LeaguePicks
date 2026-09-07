@@ -40,6 +40,13 @@ class SlatePlayer:
     floor_p10: Optional[float] = None
     ceiling_p90: Optional[float] = None
     implied_team_total: Optional[float] = None
+    # Projection components, kept separately so `projection` (the number the optimizer
+    # and simulator consume) is always traceable back to its inputs.
+    proj_fp: Optional[float] = None        # FantasyPros stat line -> FD points (+vegas tilt)
+    proj_props: Optional[float] = None     # market-implied, anchored to the FP level
+    proj_blend: Optional[float] = None     # blended, BEFORE any availability adjustment
+    props_weight: Optional[float] = None   # weight given to props in the blend
+    p_active: Optional[float] = None       # P(plays), from the injury pipeline
 
 
 @dataclass
@@ -51,6 +58,10 @@ class PlayerSlate:
     created_ts: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     source_csv: str = ""
     players: list[SlatePlayer] = field(default_factory=list)
+    # fd_id -> FPProjection, populated by blend.apply_projections. The props layer
+    # needs the FantasyPros stat line for the categories the props board never
+    # prices (interceptions, fumbles, return TDs, two-point conversions).
+    fp_by_id: dict = field(default_factory=dict, repr=False, compare=False)
 
     def validate(self) -> list[str]:
         """Return list of problems. Empty list = valid."""
@@ -129,7 +140,12 @@ class SlateStore:
         return conn
 
     def save(self, slate: PlayerSlate) -> None:
-        payload = json.dumps({**asdict(slate), "slate_type": slate.slate_type.value})
+        # fp_by_id holds live FPProjection objects (a working cache for the props
+        # layer), not slate state. It is dropped from the stored payload so the
+        # slate library stays a pure record of the FanDuel CSV.
+        blob = {**asdict(slate), "slate_type": slate.slate_type.value}
+        blob.pop("fp_by_id", None)
+        payload = json.dumps(blob)
         with self._conn() as c:
             c.execute(
                 "INSERT OR REPLACE INTO slates VALUES (?,?,?,?,?,?,?)",

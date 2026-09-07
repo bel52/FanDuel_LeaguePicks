@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Sunday late-swap check. Intended cron/n8n times (ET): 11:30, 15:45, 19:45.
+# Sunday late-swap check. Intended cron/n8n times (ET): 11:40, 15:45, 19:45.
+# 11:40, not 11:30: the league-wide inactives list is released AT 11:30 for the 1pm
+# window, so a check that fires at 11:30 races the feed and can miss the very
+# scratch it exists to catch. Ten minutes costs nothing against a 1:00 lock.
 # Usage: bin/sunday-swap.sh <season> <week> <salary_csv>
 # -e: a failed swap must exit nonzero; -o pipefail: tee must not mask it
 set -euo pipefail

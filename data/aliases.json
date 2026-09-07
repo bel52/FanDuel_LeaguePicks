@@ -1,0 +1,12 @@
+{
+  "_comment": [
+    "Hand-maintained FanDuel-name -> FantasyPros-name overrides for players the",
+    "automatic match tiers cannot reach. Confirm a pair ONCE by eye, add it here,",
+    "and it is permanent. Keys and values are matched after normalization, so",
+    "punctuation, case and generational suffixes do not matter.",
+    "Do NOT add a pair to silence a warning you have not verified: a wrong alias",
+    "hands one player another player's projection, which is invisible, whereas an",
+    "unmatched player simply drops out of the pool."
+  ],
+  "players": {}
+}

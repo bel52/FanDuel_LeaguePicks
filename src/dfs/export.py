@@ -172,9 +172,19 @@ def lineup_card(players: list, slate_type: SlateType = SlateType.FULL,
     total_proj = sum((p.projection or 0) for _, p in slotted)
     for slot, p in slotted:
         tot = f"{p.implied_team_total:.1f}" if p.implied_team_total else "  - "
+        # Provenance on the card itself: `m` = a market (props) component is in this
+        # projection, and an explicit P(plays) is shown whenever the projection was
+        # discounted, so a shaved number can never look like a full one.
+        src = "m" if getattr(p, "proj_props", None) is not None else " "
+        pa = getattr(p, "p_active", None)
+        pa_s = f" p{pa:.2f}" if (pa is not None and pa < 0.999) else ""
         lines.append(f"  {slot:4s} {p.name:24s} {p.team:3s} ${p.salary:5d} "
-                     f"proj {p.projection or 0:5.1f}  ITT {tot}")
+                     f"proj {p.projection or 0:5.1f}{src}  ITT {tot}{pa_s}")
     lines.append(f"  {'':4s} {'TOTAL':24s} {'':3s} ${total_sal:5d} proj {total_proj:5.1f}")
+    if any(getattr(p, "proj_props", None) is not None for _, p in slotted):
+        lines.append("  m = market-blended projection")
+    if any((getattr(p, "p_active", None) or 1.0) < 0.999 for _, p in slotted):
+        lines.append("  p = P(plays); that player's projection is discounted by it")
     for n in (notes or []):
         lines.append(f"  ! {n}")
     return "\n".join(lines)

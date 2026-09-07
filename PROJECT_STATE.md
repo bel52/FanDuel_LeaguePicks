@@ -1,7 +1,7 @@
 # DFS Optimizer v6 — Project State
 
 **Living document. Replace this file in the project library whenever it changes.**
-Last updated: 2026-08-16 · Target: NFL Week 1, Sunday 2026-09-13 (~4 weeks out)
+Last updated: 2026-09-07 · Target: NFL Week 1, Sunday 2026-09-13 (6 days out)
 
 A new session should be able to read this file and pick up without re-deriving anything.
 
@@ -43,7 +43,35 @@ models affect only the weekly-prize sliver (~11%). The sophisticated machinery e
 its keep in **showdown and H2H**, where P(win) is the entire objective. Projection
 *quality*, not optimization cleverness, is the lever for league play.
 
-Code: ~4,400 lines, **90 tests**, all passing.
+Code: ~6,100 lines, **197 tests**, all passing.
+
+**League projection layer (2026-09-07).** Acting on the structural finding below: for
+Total Points the lever is projection accuracy, not optimization cleverness. Three
+additions, all scoped to the `friends_league` profile, all degrading to the previous
+behaviour on any failure:
+
+1. **`props`** — The Odds API player props (yards, receptions, pass TDs, anytime TD)
+   become a market-implied stat line per player, scored through the existing
+   `scoring.score()`. Markets set the distribution of points across players; each
+   position is then scaled to the FantasyPros level, which cancels the
+   median-vs-mean skew in prop lines without inventing a constant and keeps
+   `distributions.json` valid. ~72 credits per slate against a 500/mo tier, cached
+   on disk, off by default on `swap`.
+2. **Availability discount** — `projection = proj_blend x P(plays)` for Questionable
+   players, from the practice-trend and play-probability signals already parsed.
+   Design rule 5 is refined, not broken: the haircut is permitted only because it is
+   reported everywhere (`p_active` on the player, `proj_blend` retained, every row
+   printed, marked on the lineup card).
+3. **Matching** — optional `data/aliases.json` overrides, and every unmatched player
+   at or above `--report-salary` (default $5,000) is listed instead of a top-8 slice
+   that hid unmatched starters behind $6,000 third-string QBs.
+
+Also fixed: `vegas.py` paired a total from one book with a spread from another,
+which no book ever offered (2026-09-07 build reported BUF 26.75 when every board had
+BUF@HOU 44.5 / -1.5, i.e. 23.0). Books are now parsed independently, FanDuel first,
+median consensus as fallback, with the book and line age printed. The Sunday swap
+moves 11:30 -> 11:40 ET: inactives are released AT 11:30, so the old time raced the
+feed it exists to read.
 
 ## 3. Where things live
 

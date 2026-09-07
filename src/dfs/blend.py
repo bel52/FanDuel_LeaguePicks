@@ -27,14 +27,16 @@ VEGAS_TILT_CAP = 0.09
 def apply_projections(slate: PlayerSlate, fp_projections: list[FPProjection],
                       team_lines: dict[str, TeamLine], distributions: dict,
                       min_match_rate: float = 0.80,
-                      critical_salary: int = 5500) -> MatchReport:
+                      critical_salary: int = 5500,
+                      aliases: dict | None = None) -> MatchReport:
     """Attach FanDuel-scored projections to slate players.
 
     Fail-loud below min_match_rate, or if any high-salary player is unmatched.
     Low-salary unmatched players (deep backups FP does not project) are dropped from
     the optimizable pool rather than being given a fabricated number.
     """
-    mapping, report = match_slate(slate.players, fp_projections)
+    mapping, report = match_slate(slate.players, fp_projections, aliases=aliases)
+    slate.fp_by_id = dict(mapping)      # props needs the FP stat line for uncovered cats
     now = datetime.now(timezone.utc).isoformat()
 
     for sp in slate.players:
@@ -50,6 +52,8 @@ def apply_projections(slate: PlayerSlate, fp_projections: list[FPProjection],
                            (line.implied_total - LEAGUE_AVG_TEAM_TOTAL) * VEGAS_TILT_PER_POINT))
             sp.implied_team_total = line.implied_total
         sp.projection = round(base * (1 + tilt), 2)
+        sp.proj_fp = sp.projection
+        sp.proj_blend = sp.projection
         sp.proj_source = f"fp_stats->fd_scoring{'+vegas' if tilt else ''}"
         sp.proj_ts = now
         sp.floor_p10, sp.ceiling_p90 = floor_ceiling(sp.projection, sp.position, distributions)
@@ -101,3 +105,70 @@ def apply_projections(slate: PlayerSlate, fp_projections: list[FPProjection],
         )
     slate.players = [p for p in slate.players if p.projection is not None]
     return report
+
+
+# ---------------------------------------------------------------------------
+# Props blending and availability adjustment
+# ---------------------------------------------------------------------------
+
+def apply_props(slate: PlayerSlate, props_pts: dict[str, float],
+                distributions: dict, weights: dict | None = None) -> list:
+    """Blend market-implied points into the projection. Returns the changed players.
+
+    `props_pts` is already anchored to the FantasyPros level by props.props_points,
+    so this is a straight weighted average and the result stays on the FP scale --
+    which is what keeps `distributions.json` (fit against FP-scaled projections)
+    valid and keeps the Vegas rule intact.
+
+    Vegas is NOT re-applied here. Design rule 2 says Vegas enters exactly once; the
+    tilt already sits inside `proj_fp`, and the props component prices the game
+    environment natively (a prop line already contains the spread and the total).
+    So the blended number contains exactly one Vegas contribution, weighted down in
+    proportion to how much of the projection came from FP.
+    """
+    from .props import PROPS_WEIGHT
+    w_by_pos = dict(PROPS_WEIGHT if weights is None else weights)
+    changed = []
+    for sp in slate.players:
+        pts = props_pts.get(sp.fd_id)
+        w = w_by_pos.get(sp.position)
+        if pts is None or not w or sp.proj_fp is None:
+            continue
+        blended = round(w * pts + (1 - w) * sp.proj_fp, 2)
+        sp.proj_props = pts
+        sp.props_weight = w
+        sp.proj_blend = blended
+        sp.projection = blended
+        sp.proj_source = f"blend(props {w:.0%} / fp {1 - w:.0%})"
+        sp.floor_p10, sp.ceiling_p90 = floor_ceiling(sp.projection, sp.position,
+                                                     distributions)
+        changed.append(sp)
+    return changed
+
+
+def apply_availability(slate: PlayerSlate, distributions: dict,
+                       min_p: float = 0.999) -> list:
+    """Multiply `projection` by `p_active`. Returns the discounted players.
+
+    NOT silent by contract: `proj_blend` retains the undiscounted number, `p_active`
+    is stored on the player, `proj_source` records the factor, and the caller prints
+    every row. See the note above injuries.play_probability for why Total Points
+    needs this where a tournament would not.
+
+    Only meaningful for the league (Total Points) profile. For contests scored on
+    P(win) the right treatment is a bimodal outcome distribution, not a shaved mean,
+    so callers gate this on profile rather than applying it everywhere.
+    """
+    out = []
+    for sp in slate.players:
+        pa = sp.p_active
+        if pa is None or pa >= min_p:
+            continue
+        if sp.proj_blend is None:
+            sp.proj_blend = sp.projection
+        sp.projection = round(sp.proj_blend * pa, 2)
+        sp.proj_source = f"{sp.proj_source or 'fp'} x p_active={pa:.2f}"
+        sp.floor_p10, sp.ceiling_p90 = floor_ceiling(sp.projection, sp.position,
+                                                     distributions)
+        out.append(sp)
+    return out

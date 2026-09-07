@@ -15,6 +15,8 @@ import urllib.error
 from dataclasses import dataclass
 from typing import Optional
 
+from statistics import median
+
 from .matching import norm_team
 
 BASE = "https://api.the-odds-api.com/v4"
@@ -36,6 +38,11 @@ TEAM_ABBR = {
 }
 
 
+# The contest is on FanDuel, so FanDuel's own board is the relevant market; other
+# books are fallbacks in order, and a median consensus is the last resort.
+BOOK_PREFERENCE = ["fanduel", "draftkings", "betmgm", "caesars"]
+
+
 class VegasError(Exception):
     pass
 
@@ -48,6 +55,8 @@ class TeamLine:
     spread: float              # negative = favored
     implied_total: float
     kickoff_iso: str
+    book: str = ""              # which book the total+spread pair came from
+    last_update: str = ""       # that book's last_update, for staleness reporting
 
 
 class OddsClient:
@@ -58,6 +67,8 @@ class OddsClient:
         self.timeout = timeout
         self.last_quota: dict[str, str] = {}
         self.missing_teams: list[str] = []
+        self.books_used: dict[str, int] = {}
+        self.newest_update: str = ""
 
     def _get(self, path: str, params: dict) -> list | dict:
         qs = "&".join(f"{k}={v}" for k, v in {**params, "apiKey": self.api_key}.items())
@@ -97,21 +108,46 @@ class OddsClient:
             home, away = TEAM_ABBR.get(home_full), TEAM_ABBR.get(away_full)
             if not home or not away:
                 continue
-            total, spreads = None, {}
+            # Parse each book INDEPENDENTLY, then choose. The previous version took
+            # the first available total and the first available spreads separately,
+            # which could pair a total from one book with a spread from another --
+            # a combination no book ever offered, and the likely source of implied
+            # totals that matched no real board (2026-09-07 build: BUF 26.75 when
+            # every book had BUF@HOU at 44.5 / -1.5, i.e. 23.0).
+            per_book: dict[str, tuple[float, dict[str, float], str]] = {}
             for bk in g.get("bookmakers", []):
+                bkey = bk.get("key", "")
+                b_total, b_spreads, b_upd = None, {}, bk.get("last_update", "")
                 for mkt in bk.get("markets", []):
-                    if mkt["key"] == "totals" and total is None:
-                        pts = [o.get("point") for o in mkt["outcomes"] if o.get("point")]
-                        total = pts[0] if pts else None
-                    if mkt["key"] == "spreads" and not spreads:
-                        for o in mkt["outcomes"]:
+                    if mkt.get("key") == "totals":
+                        pts = [o.get("point") for o in mkt.get("outcomes", [])
+                               if o.get("point") is not None]
+                        if pts:
+                            b_total = float(pts[0])
+                    elif mkt.get("key") == "spreads":
+                        for o in mkt.get("outcomes", []):
                             abbr = TEAM_ABBR.get(o.get("name", ""))
                             if abbr and o.get("point") is not None:
-                                spreads[abbr] = float(o["point"])
-                if total is not None and spreads:
-                    break
-            if total is None or home not in spreads or away not in spreads:
+                                b_spreads[abbr] = float(o["point"])
+                    b_upd = max(b_upd or "", mkt.get("last_update", "") or "")
+                if b_total is not None and home in b_spreads and away in b_spreads:
+                    per_book[bkey] = (b_total, b_spreads, b_upd)
+            if not per_book:
                 continue
+            chosen = next((b for b in BOOK_PREFERENCE if b in per_book), None)
+            if chosen:
+                total, spreads, upd = per_book[chosen]
+                book = chosen
+            else:
+                # No preferred book on the board: consensus across whatever is there.
+                total = median([v[0] for v in per_book.values()])
+                spreads = {home: median([v[1][home] for v in per_book.values()]),
+                           away: median([v[1][away] for v in per_book.values()])}
+                upd = max((v[2] for v in per_book.values()), default="")
+                book = f"consensus/{len(per_book)}"
+            self.books_used[book] = self.books_used.get(book, 0) + 1
+            if upd:
+                self.newest_update = max(self.newest_update, upd)
             for team, opp in ((home, away), (away, home)):
                 # Canonicalize through norm_team so a FanDuel "JAC" slate matches an
                 # Odds-board "JAX" (and any future alias) — never key on raw abbrs.
@@ -121,6 +157,8 @@ class OddsClient:
                     spread=spreads[team],
                     implied_total=round(float(total) / 2 - spreads[team] / 2, 2),
                     kickoff_iso=g.get("commence_time", ""),
+                    book=book,
+                    last_update=upd,
                 )
         if slate_teams:
             want = {norm_team(t) for t in slate_teams}

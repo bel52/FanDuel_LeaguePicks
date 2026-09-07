@@ -23,6 +23,26 @@ TEAM_ALIASES = {"JAX": "JAC", "WSH": "WAS", "LA": "LAR", "SD": "LAC", "OAK": "LV
                 "STL": "LAR", "ARZ": "ARI", "BLT": "BAL", "CLV": "CLE", "HST": "HOU"}
 
 
+# Hand-maintained FanDuel-name -> FantasyPros-name overrides, for players the
+# automatic tiers cannot reach (legal name vs. known-as, mid-career name changes,
+# a surname FP spells differently). Confirmed once, then permanent. See
+# data/aliases.json; the file is optional and an unreadable file is never fatal.
+def load_aliases(path) -> dict:
+    """Read a name-alias file. Returns {normalized_fd_name: normalized_fp_name}."""
+    import json
+    from pathlib import Path
+    try:
+        raw = json.loads(Path(path).read_text())
+    except Exception:
+        return {}
+    entries = raw.get("players", raw) if isinstance(raw, dict) else {}
+    out = {}
+    for fd_name, fp_name in (entries or {}).items():
+        if isinstance(fp_name, str) and fd_name and fp_name:
+            out[norm_name(fd_name)] = norm_name(fp_name)
+    return out
+
+
 def norm_team(t: str) -> str:
     t = (t or "").strip().upper()
     return TEAM_ALIASES.get(t, t)
@@ -63,6 +83,7 @@ class MatchReport:
     total: int = 0
     by_method: dict = field(default_factory=dict)
     unmatched: list = field(default_factory=list)          # (name, team, pos, salary)
+    alias_hits: list = field(default_factory=list)         # (fd_name, fp_name)
     team_disagreements: list = field(default_factory=list)  # (name, fd_team, fp_team)
     ambiguous: list = field(default_factory=list)
 
@@ -70,7 +91,7 @@ class MatchReport:
     def rate(self) -> float:
         return self.matched / self.total if self.total else 0.0
 
-    def summary(self, top_n: int = 12) -> str:
+    def summary(self, top_n: int = 12, report_salary: int = 5000) -> str:
         lines = [f"Match: {self.matched}/{self.total} = {self.rate:.1%}",
                  f"  methods: {self.by_method}"]
         if self.team_disagreements:
@@ -78,17 +99,32 @@ class MatchReport:
             lines.append(f"  team disagreements (matched anyway): {len(self.team_disagreements)} — {ex}")
         if self.ambiguous:
             lines.append(f"  AMBIGUOUS (unresolved): {self.ambiguous[:6]}")
+        if self.alias_hits:
+            lines.append(f"  alias file resolved {len(self.alias_hits)}: " +
+                         ", ".join(f"{a}->{b}" for a, b in self.alias_hits[:6]))
         if self.unmatched:
-            top = sorted(self.unmatched, key=lambda u: -u[3])[:top_n]
-            lines.append("  unmatched (by salary):")
-            lines += [f"    ${s:5d} {p:3s} {t:3s} {n}" for n, t, p, s in top]
+            # Every unmatched player at or above report_salary is listed, not just a
+            # top-N slice. The old top-8 view hid unmatched starters behind a wall of
+            # $6,000 third-string QBs and reported "60% matched" with no way to see
+            # which real players were missing.
+            relevant = sorted([u for u in self.unmatched if u[3] >= report_salary],
+                              key=lambda u: -u[3])
+            rest = len(self.unmatched) - len(relevant)
+            lines.append(f"  unmatched at >= ${report_salary} ({len(relevant)} of "
+                         f"{len(self.unmatched)}; {rest} cheaper omitted):")
+            lines += [f"    ${s:5d} {p:3s} {t:3s} {n}" for n, t, p, s in relevant]
+            if not relevant:
+                top = sorted(self.unmatched, key=lambda u: -u[3])[:top_n]
+                lines += [f"    ${s:5d} {p:3s} {t:3s} {n}" for n, t, p, s in top]
         return "\n".join(lines)
 
 
 class ProjectionIndex:
     """Index of FantasyPros projections supporting name-first lookup."""
 
-    def __init__(self, projections: list):
+    def __init__(self, projections: list, aliases: dict | None = None):
+        self.aliases = dict(aliases or {})
+        self.alias_hits: list = []
         self.by_name: dict[str, list] = {}
         self.by_short: dict[str, list] = {}
         for p in projections:
@@ -115,6 +151,14 @@ class ProjectionIndex:
 
     def lookup(self, name: str, team: str, position: str):
         """Return (projection|None, method, ambiguous)."""
+        alias = self.aliases.get(norm_name(name))
+        if alias:
+            cands = self.by_name.get(alias)
+            if cands:
+                pick, amb = self._pick(cands, team, position)
+                if pick is not None:
+                    self.alias_hits.append((name, pick.name))
+                    return pick, "alias", amb
         cands = self.by_name.get(norm_name(name))
         if cands:
             pick, amb = self._pick(cands, team, position)
@@ -144,9 +188,10 @@ class ProjectionIndex:
         return None, "none", False
 
 
-def match_slate(slate_players: list, projections: list) -> tuple[dict, MatchReport]:
+def match_slate(slate_players: list, projections: list,
+                aliases: dict | None = None) -> tuple[dict, MatchReport]:
     """Map fd_id -> FPProjection. Returns (mapping, report)."""
-    idx = ProjectionIndex(projections)
+    idx = ProjectionIndex(projections, aliases=aliases)
     rep = MatchReport(total=len(slate_players))
     mapping: dict = {}
     for sp in slate_players:
@@ -161,4 +206,5 @@ def match_slate(slate_players: list, projections: list) -> tuple[dict, MatchRepo
             rep.team_disagreements.append((sp.name, sp.team, proj.team))
         if amb:
             rep.ambiguous.append(f"{sp.name} ({sp.team} {sp.position})")
+    rep.alias_hits = list(idx.alias_hits)
     return mapping, rep

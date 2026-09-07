@@ -9,7 +9,7 @@ single-game showdown, and public contests.
 ## Status — honest
 
 The data layer, modeling core, and Sunday operating loop are complete and tested
-(104 offline tests, including an end-to-end build test that asserts the upload CSV,
+(197 offline tests, including an end-to-end build test that asserts the upload CSV,
 entry log, and pushover card actually exist). **Edge is not yet demonstrated.** The system reports a positive
 objective delta over a max-projection baseline, but that number is produced by the
 same simulator that selects the lineup. Until it is validated against out-of-sample
@@ -50,7 +50,19 @@ Trust that number, not the selection estimate.
 4. **Objectives are denominated in dollars** and derived from the contest's real prize
    structure. *(v5 stacked hand-tuned multipliers.)*
 5. **Injuries produce an action** — keep, flag, or remove — never a silent projection
-   haircut. Doubtful is treated as remove.
+   haircut. Doubtful is treated as remove. *Refined for league play (2026-09-07):*
+   under Total Points a Questionable player's honest expected contribution is
+   `P(plays) x projection`, so `--avail-adjust` (default on for `friends_league`)
+   discounts it. The haircut is never silent — `p_active` is stored on the player, the
+   undiscounted number stays in `proj_blend`, every adjusted row is printed, and the
+   lineup card marks it. Non-league profiles are unchanged.
+10. **Markets set the distribution, consensus sets the level.** Player props supply
+   relative player-to-player signal; each position's props points are then scaled by
+   the median FantasyPros/props ratio for that position on that slate. A prop line
+   sits near the *median* outcome while FanDuel points need the *mean*, and that skew
+   is not identifiable from one threshold — so it is cancelled by anchoring rather
+   than papered over with a fabricated constant. Anchoring also keeps
+   `distributions.json`, fit against FP-scaled projections, valid.
 6. **Win probability is averaged over a field ensemble.** A single opponent draw moved
    the estimate 14.5% → 21.7% across seeds; that instability is now integrated out and
    the residual spread is displayed.
@@ -70,7 +82,8 @@ Trust that number, not the selection estimate.
 | `fantasypros` | FantasyPros public API v2 client |
 | `scoring` | FanDuel points from FP stat lines (half-PPR, bonuses, DST PA ladder) |
 | `matching` | name-first player matching; team is a disambiguator only |
-| `vegas` | The Odds API → implied **team** totals |
+| `vegas` | The Odds API → implied **team** totals (per-book pairing, FanDuel first) |
+| `props` | The Odds API → market-implied per-player stat lines (league play) |
 | `distributions` | empirical outcome ratios, calibrated on 2025 residuals |
 | `calibrate` | projection-accuracy harness + distribution rebuild |
 | `blend` | projection assembly |
@@ -86,11 +99,59 @@ Trust that number, not the selection estimate.
 | `results` | result log, season standings, in-season accuracy tracking |
 | `cli` | `build` / `swap` / `capture` / `standings` |
 
+## League play: player props
+
+Under Total Points the season objective is (near enough) the sum of projections, so
+projection accuracy is the only lever that matters — the correlated simulator and the
+opponent field affect the weekly-prize sliver alone. Betting markets are the sharpest
+public per-player signal available, so `props` blends them in.
+
+```
+# default for the friends_league profile; ~6 credits per game
+./run.sh build --csv <fanduel.csv> --season 2026 --week 1
+./run.sh build --csv <fanduel.csv> --season 2026 --week 1 --no-props   # FP only
+```
+
+Markets consumed: `player_pass_yds`, `player_pass_tds`, `player_rush_yds`,
+`player_reception_yds`, `player_receptions`, `player_anytime_td`. Each becomes part of
+a market-implied **stat line**, which is then scored by the same `scoring.score()` used
+for FantasyPros — one scoring path, identical units, same bonus model, same auditable
+breakdown. Categories no props board prices (interceptions, fumbles, return TDs,
+two-point conversions) come from the player's FP line; leaving them at zero would
+inflate every QB by about a point.
+
+Pass TDs are the one market priced at a single threshold, so lambda is solved from a
+Poisson tail. That is defensible rather than a guess because it cross-checks: on the
+live 2026 Week 1 board DraftKings priced Joe Burrow at 1.5 and FanDuel at 2.5, and both
+solve to lambda ~2.2. `tests/test_props.py` asserts that agreement.
+
+**Cost.** One credit per market per event: 6 per game, ~72 for a 12-game slate, against
+a 500/month free tier. Boards are cached on disk (`data/props/`, `--props-max-age`,
+default 6h) so a rebuild after the inactives sweep is free, and props are **off by
+default on `swap`** — three Sunday windows at full price would exceed the tier.
+
+**Safety.** Every failure degrades to FantasyPros-only, which is the pre-props
+behaviour, so this layer cannot cost a build. Per-position scale factors are printed
+with their sample size and gated: a factor outside ±25% warns, outside 0.55–1.80 is
+treated as a board or parser failure and props are discarded for that position. A
+position with too few priced players is skipped rather than scaled on noise.
+
+**Scope.** `friends_league` only. Showdown and head-to-head paths are untouched: they
+are scored on P(win), where a discounted mean is the wrong treatment, and a single game
+yields too few priced players per position to fit a scale factor.
+
 ## Known gaps
 
 - No walk-forward backtest (historical FanDuel salary archives are patchy).
 - Opponent field is a generic chalk-weighted prior; measured league ownership is
   captured but not yet driving it.
+- Two props constants remain coarse priors, labelled as such in `props.py`:
+  `ANYTIME_TD_OVERROUND` (TD boards are one-sided and cannot be devigged pairwise) and
+  `MULTI_TD_FACTOR` (E[TDs] given P(>=1 TD)). Both become empirical once logged
+  actuals accumulate; neither affects the yardage or pass-TD terms.
+- No LLM/news layer yet. The candidate job is structuring beat-writer and
+  practice-report text into `{play_prob, role_change, confidence, source}` to feed
+  `p_active` — a logged structured input, never a silent projection edit.
 - Kickers and defenses have no calibrated distributions — both use a generic spread.
 - FanDuel upload CSV headers are unverified; the export warns until `--template`
   supplies a real entries file.
