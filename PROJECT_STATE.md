@@ -43,7 +43,23 @@ models affect only the weekly-prize sliver (~11%). The sophisticated machinery e
 its keep in **showdown and H2H**, where P(win) is the entire objective. Projection
 *quality*, not optimization cleverness, is the lever for league play.
 
-Code: ~6,800 lines, **231 tests**, all passing.
+Code: ~6,900 lines, **235 tests**, all passing.
+
+**Doc audit (2026-09-07, end of session).** Four pieces of drift found and fixed, all
+introduced by this session's own additions:
+* The props design rule was appended as `10.` between rules 5 and 6. Markdown renumbers
+  ordered lists on render, so every code comment citing "design rule 2" or "design
+  rule 5" would have pointed at the wrong rule. Moved to the end; a test now asserts
+  the numbering is contiguous and in order.
+* Known gaps still described bulk upload as awaiting a template. It is closed as
+  not-possible.
+* `export.py` still told the user at runtime to download a template that does not
+  exist, contradicting the web UI on the same screen.
+* Known gaps did not record the open learning loop (biased actuals sample, unconsumed
+  fitted weight, distributions fitted on FP rather than blend residuals, no holdout
+  discipline). Those are now in the repo rather than only in a chat log, with a test
+  guarding their presence.
+Also added: a data-files table distinguishing tracked calibration from runtime state.
 
 **Persistence layer (2026-09-07).** The session's audit found the system was recording
 more than it could learn from. Three inputs were not being persisted at all, and an

@@ -1,13 +1,19 @@
 """Lineup export — FanDuel upload CSV and a human-readable card.
 
-FanDuel's authorized workflow: download the contest entries template, fill the player-ID
-columns, upload. That keeps everything inside FanDuel's own tooling (no credentialed
-automation, no ToS risk) while removing the manual click-through of nine players.
+The intended workflow was FanDuel's own: download the contest entries template, fill the
+player-ID columns, upload — all inside FanDuel's tooling, no credentialed automation and
+no ToS risk.
 
-The template's exact column headers vary by slate type and can change between seasons.
-Rather than hardcode them, `export_upload_csv` will mirror the headers of a real template
-if you pass one (--template), and otherwise emit the documented default layout with a
-warning. Same lesson as the salary CSV: verify against a real file before trusting it.
+That workflow does not exist. Verified on fanduel.com 2026-09-07: "Export this Lineup"
+copies a lineup from one of your entries to another INSIDE the site. There is no CSV
+download anywhere in the flow and no blank entries template, so the column layout below
+can never be validated against a real file — and the emitted row carries no entry_id or
+contest_id regardless. Hand entry from the lineup card is the permanent workflow, not a
+temporary state.
+
+The CSV is still written, because it is a useful machine-readable record of what was
+recommended, and `--template` still mirrors a real file's headers if one ever becomes
+available. It is just not an upload. The card is the deliverable.
 """
 from __future__ import annotations
 import csv
@@ -122,8 +128,10 @@ def export_upload_csv(players: list, out_path: str | Path,
         tmpl_name = "built-in default (UNVERIFIED)"
         warnings.append(
             "No FanDuel template supplied — column headers are the documented default "
-            "and have NOT been verified against a live entries file. Download the "
-            "contest's entries template and pass --template before trusting this upload.")
+            "and have NOT been verified against a live entries file. FanDuel offers no "
+            "template to download (verified 2026-09-07: \"Export this Lineup\" only "
+            "copies a lineup between your own entries), so ENTER THE NINE PLAYERS BY "
+            "HAND from the lineup card. This file is a record, not an upload.")
 
     slotted = _slot_players(players, slate_type, mvp_id)
     ids = ([p.fd_id for p in slotted] if slate_type == SlateType.SINGLE_GAME

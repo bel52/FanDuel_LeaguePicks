@@ -10,6 +10,7 @@ the same player.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -967,3 +968,59 @@ def test_availability_accuracy_flags_a_prior_that_is_too_harsh(tmp_path):
     assert out["buckets"]["0.72"]["n"] == 40
     assert out["buckets"]["0.72"]["observed_play_rate"] == pytest.approx(0.9)
     assert "too harsh" in out["verdict"]
+
+
+# --------------------------------------------------------------------------
+# documentation hygiene: the docs are load-bearing here
+# --------------------------------------------------------------------------
+
+def _readme() -> str:
+    return (Path(__file__).parents[1] / "README.md").read_text()
+
+
+def test_design_rules_are_numbered_in_order():
+    """Code comments cite rules by number ("design rule 2", "design rule 5"), and
+    Markdown renumbers ordered lists on render. A rule inserted out of order therefore
+    silently repoints every one of those citations at the wrong rule — which is what
+    happened when the props rule was appended as `10.` between 5 and 6.
+    """
+    nums = [int(m) for m in re.findall(r"^(\d+)\. \*\*", _readme(), re.M)]
+    assert nums == sorted(nums), f"design rules out of order: {nums}"
+    assert nums == list(range(1, len(nums) + 1)), f"gaps in design rules: {nums}"
+
+
+def test_readme_does_not_describe_bulk_upload_as_pending():
+    """It is closed as not-possible. Describing it as awaiting a template sends the
+    reader looking for a file FanDuel does not offer."""
+    r = _readme()
+    assert "closed as not-possible" in r
+    assert "the export warns until `--template`" not in r
+
+
+def test_export_warning_tells_the_user_to_hand_enter(tmp_path):
+    """The runtime warning used to instruct the user to download a template that does
+    not exist, contradicting the web UI on the same screen. Asserted against the
+    emitted text rather than the source, since the source string is line-wrapped."""
+    from dfs.export import export_upload_csv
+    from dfs.slate import SlateType
+    rows = [("QB", "Q1"), ("RB", "R1"), ("RB", "R2"), ("RB", "R3"),
+            ("WR", "W1"), ("WR", "W2"), ("WR", "W3"), ("TE", "T1"), ("D", "D1")]
+    players = [SlatePlayer(fd_id=f"e{i}", name=n, position=pos, team="CIN",
+                           opponent="TB", salary=5000, game="TB@CIN")
+               for i, (pos, n) in enumerate(rows)]
+    for pl in players:
+        pl.projection = 10.0
+    ex = export_upload_csv(players, tmp_path / "u.csv", slate_type=SlateType.FULL)
+    text = ex.summary()
+    assert "BY HAND" in text
+    assert "no template to download" in text
+    assert "pass --template before trusting" not in text
+
+
+def test_known_gaps_record_the_open_learning_loop():
+    """The scalability findings must live in the repo, not only in a chat log: the
+    biased actuals sample, the unconsumed fitted weight, and the distribution basis."""
+    r = _readme()
+    for phrase in ("biased, not merely small", "still a hardcoded constant",
+                   "fitted on 2025 FantasyPros residuals", "holdout discipline"):
+        assert phrase in r, f"missing from Known gaps: {phrase}"

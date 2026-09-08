@@ -9,7 +9,7 @@ single-game showdown, and public contests.
 ## Status — honest
 
 The data layer, modeling core, and Sunday operating loop are complete and tested
-(231 offline tests, including an end-to-end build test that asserts the upload CSV,
+(235 offline tests, including an end-to-end build test that asserts the upload CSV,
 entry log, and pushover card actually exist). **Edge is not yet demonstrated.** The system reports a positive
 objective delta over a max-projection baseline, but that number is produced by the
 same simulator that selects the lineup. Until it is validated against out-of-sample
@@ -56,13 +56,6 @@ Trust that number, not the selection estimate.
    discounts it. The haircut is never silent — `p_active` is stored on the player, the
    undiscounted number stays in `proj_blend`, every adjusted row is printed, and the
    lineup card marks it. Non-league profiles are unchanged.
-10. **Markets set the distribution, consensus sets the level.** Player props supply
-   relative player-to-player signal; each position's props points are then scaled by
-   the median FantasyPros/props ratio for that position on that slate. A prop line
-   sits near the *median* outcome while FanDuel points need the *mean*, and that skew
-   is not identifiable from one threshold — so it is cancelled by anchoring rather
-   than papered over with a fabricated constant. Anchoring also keeps
-   `distributions.json`, fit against FP-scaled projections, valid.
 6. **Win probability is averaged over a field ensemble.** A single opponent draw moved
    the estimate 14.5% → 21.7% across seeds; that instability is now integrated out and
    the residual spread is displayed.
@@ -71,6 +64,14 @@ Trust that number, not the selection estimate.
    high, so the reported number comes from independent simulations.
 9. **Fail loud.** Schema drift, low match rates, missing Vegas lines, and uncalibrated
    distributions all produce visible warnings or stop the build.
+
+10. **Markets set the distribution, consensus sets the level.** Player props supply
+   relative player-to-player signal; each position's props points are then scaled by
+   the median FantasyPros/props ratio for that position on that slate. A prop line
+   sits near the *median* outcome while FanDuel points need the *mean*, and that skew
+   is not identifiable from one threshold — so it is cancelled by anchoring rather
+   than papered over with a fabricated constant. Anchoring also keeps
+   `distributions.json`, fit against FP-scaled projections, valid.
 
 ## Modules
 
@@ -84,7 +85,7 @@ Trust that number, not the selection estimate.
 | `matching` | name-first player matching; team is a disambiguator only |
 | `vegas` | The Odds API → implied **team** totals (per-book pairing, FanDuel first) |
 | `props` | The Odds API → market-implied per-player stat lines (league play) |
-| `distributions` | empirical outcome ratios, calibrated on 2025 residuals |
+| `distributions` | empirical outcome ratios, calibrated on 2025 FP residuals |
 | `calibrate` | projection-accuracy harness + distribution rebuild |
 | `blend` | projection assembly |
 | `injuries` | three-layer injury pipeline + Sunday inactives sweep |
@@ -94,9 +95,9 @@ Trust that number, not the selection estimate.
 | `objectives` | per-profile dollar-denominated objective weights |
 | `field` | opponent field ensemble, baselines, candidate ranking |
 | `lateswap` | lock-aware re-optimization of unlocked slots |
-| `export` | FanDuel upload CSV + lineup cards |
+| `export` | lineup cards (+ an upload CSV FanDuel has no way to consume) |
 | `contest_parse` | pasted contest results → lineups + measured league ownership |
-| `results` | result log, season standings, in-season accuracy tracking |
+| `results` | result log, standings, projection-component and availability calibration |
 | `cli` | `build` / `swap` / `capture` / `standings` |
 
 ## League play: player props
@@ -196,7 +197,30 @@ yields too few priced players per position to fit a scale factor.
 
 ## Known gaps
 
-- No walk-forward backtest (historical FanDuel salary archives are patchy).
+- No walk-forward backtest (historical FanDuel salary archives are patchy), which is
+  why the in-season component log exists — it is the only available route to a
+  measured edge.
+- **The actuals sample is biased, not merely small.** Actuals come from the contest
+  results page, which contains only players the twelve entrants rostered — roughly
+  50–70 distinct players a week out of ~371 projected, and skewed toward high
+  projections by construction. Fitting a blend weight on a projection-selected
+  subsample gives a biased estimate. Fix (queued for weeks 2–3): pull weekly actuals
+  for the whole pool from `nflreadpy` (already a dependency for kickoffs) and score
+  them through `scoring.py`, which also makes the `played` flag definitive via snap
+  counts and supersedes the `fanduel_csv`-sourced rows.
+- **`PROPS_WEIGHT` is still a hardcoded constant.** `component_accuracy` reports a
+  fitted weight but nothing consumes it, and there is no threshold at which it would
+  ever be adopted — so "reported only" becomes "never used" unless a versioned weights
+  file (same shape as `distributions.json`) is wired in. Queued for week 6+, gated on
+  sample size.
+- **`distributions.json` is fitted on 2025 FantasyPros residuals, but projections are
+  now blends.** Scale anchoring keeps it approximately valid — that is precisely why
+  the props component is anchored to the FP level rather than used raw — but the pools
+  should be re-fitted on blend residuals as weeks accumulate, with versioning and
+  rollback (this file has been clobbered three times historically).
+- **No holdout discipline for fitted parameters yet.** Anything fitted in-season needs
+  expanding-window or leave-one-week-out evaluation before it is trusted, or it will
+  reproduce exactly the optimism the INDEPENDENT EVALUATION block exists to catch.
 - Opponent field is a generic chalk-weighted prior; measured league ownership is
   captured but not yet driving it.
 - Two props constants remain coarse priors, labelled as such in `props.py`:
@@ -207,13 +231,30 @@ yields too few priced players per position to fit a scale factor.
   practice-report text into `{play_prob, role_change, confidence, source}` to feed
   `p_active` — a logged structured input, never a silent projection edit.
 - Kickers and defenses have no calibrated distributions — both use a generic spread.
-- FanDuel upload CSV headers are unverified; the export warns until `--template`
-  supplies a real entries file.
+- FanDuel bulk upload is **closed as not-possible**, not pending (verified on
+  fanduel.com 2026-09-07): "Export this Lineup" copies a lineup between your own
+  entries inside the site, and there is no CSV download and no blank entries template
+  anywhere in the flow. So the built-in column layout can never be validated against a
+  real file, and the exported row would carry no entry_id/contest_id even if the
+  headers were right. Hand entry from the lineup card is the permanent workflow.
+  `--template` still works if a real entries file ever becomes available.
 - FanDuel single-game format (confirmed, 2025 rules onward): 6 slots — 1 MVP + 5 FLEX;
   the MVP costs AND scores 1.5×. `ContestSpec.mvp_salary_mult` toggles the salary rule
   in one place if FanDuel ever changes it.
 
 ## Data files
+
+| Path | What it is | Tracked? |
+|------|-----------|----------|
+| `data/distributions.json` | active outcome calibration (2025 residuals) | yes |
+| `data/aliases.json` | hand-confirmed FanDuel→FantasyPros name overrides | yes |
+| `data/props/` | Odds API prop-board cache, `_fetched_at`-stamped | **no** (gitignored) |
+| `data/snapshots/` | at-lock FantasyPros and prop-board payloads, gzipped | no |
+| `data/results.db` | entries, `player_results` components, `props_lines` | no |
+
+Everything under `data/` except the two JSON files above is runtime state. The cache is
+gitignored because a tracked cache is rewritten by every clone and pull; freshness comes
+from a stamp inside each board file rather than its mtime for the same reason.
 
 `data/distributions.json` is the active calibration and is **not** shipped in deploy
 tarballs, so a deploy cannot silently replace it with the older proxy version.
