@@ -136,6 +136,34 @@ class ResultLog:
                         "opp_implied_total"):
                 if col not in pcols:
                     c.execute(f"ALTER TABLE player_results ADD COLUMN {col} REAL")
+            # Availability outcome, added 2026-09-07. `p_active` is the PREDICTION;
+            # without the OUTCOME the flat 0.72 questionable prior -- currently the
+            # single largest lever in the system, worth five points on one slot -- can
+            # never become empirical. `actual` cannot substitute: it is NULL for a
+            # scratch, NULL for a player nobody rostered, and 0.0 for a player who
+            # suited up and did nothing. Those are three different facts.
+            if "played" not in pcols:
+                c.execute("ALTER TABLE player_results ADD COLUMN played INTEGER")
+            if "status_at_lock" not in pcols:
+                c.execute("ALTER TABLE player_results ADD COLUMN status_at_lock TEXT")
+            c.execute("""CREATE TABLE IF NOT EXISTS props_lines (
+                season INTEGER NOT NULL,
+                week INTEGER NOT NULL,
+                fd_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                position TEXT,
+                team TEXT,
+                stats_json TEXT NOT NULL,
+                market_stats_json TEXT,
+                markets TEXT,
+                books TEXT,
+                board_ts TEXT,
+                points_raw REAL,
+                points_anchored REAL,
+                scale REAL,
+                logged_ts TEXT,
+                PRIMARY KEY (season, week, fd_id)
+            )""")
 
     def confirm_entry(self, season: int, week: int, contest: str) -> dict | None:
         """Promote a build RECOMMENDATION to the confirmed active entry, after Brett
@@ -234,22 +262,112 @@ class ResultLog:
                     continue
                 c.execute("""INSERT INTO player_results
                     (season,week,fd_id,name,position,team,salary,projection,
-                     proj_fp,proj_props,proj_blend,p_active,opp_implied_total,in_lineup)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+                     proj_fp,proj_props,proj_blend,p_active,opp_implied_total,
+                     status_at_lock,in_lineup)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
                     ON CONFLICT(season,week,fd_id) DO UPDATE SET
                       name=excluded.name, position=excluded.position,
                       team=excluded.team, salary=excluded.salary,
                       projection=excluded.projection, proj_fp=excluded.proj_fp,
                       proj_props=excluded.proj_props, proj_blend=excluded.proj_blend,
                       p_active=excluded.p_active,
-                      opp_implied_total=excluded.opp_implied_total""",
+                      opp_implied_total=excluded.opp_implied_total,
+                      status_at_lock=excluded.status_at_lock""",
                     (season, week, p.fd_id, p.name, p.position, p.team, p.salary,
                      p.projection, getattr(p, "proj_fp", None),
                      getattr(p, "proj_props", None), getattr(p, "proj_blend", None),
                      getattr(p, "p_active", None),
-                     getattr(p, "opp_implied_total", None)))
+                     getattr(p, "opp_implied_total", None),
+                     ((getattr(p, "injury_indicator", "") or "") + " "
+                      + (getattr(p, "injury_details", "") or "")).strip() or None))
                 n += 1
         return n
+
+    def log_props_lines(self, season: int, week: int, lines: dict) -> int:
+        """Persist the market-implied STAT LINE per player, not just its points total.
+
+        Points are a lossy summary. `MULTI_TD_FACTOR` (E[TDs] given P(>=1 TD)) and
+        `ANYTIME_TD_OVERROUND` (the one-sided TD board's hold) are only fittable by
+        comparing an expected quantity to the actual quantity -- expected TDs against
+        TDs scored, expected receptions against receptions caught. From a points
+        total those are unrecoverable, so both constants would stay coarse priors
+        forever. This table is what makes them measurable later.
+        """
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        n = 0
+        with self._c() as c:
+            for fd_id, d in lines.items():
+                c.execute("""INSERT OR REPLACE INTO props_lines
+                    (season,week,fd_id,name,position,team,stats_json,
+                     market_stats_json,markets,books,board_ts,points_raw,
+                     points_anchored,scale,logged_ts)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (season, week, fd_id, d.get("name", ""), d.get("position"),
+                     d.get("team"), json.dumps(d.get("stats") or {}),
+                     json.dumps(d.get("market_stats") or {}),
+                     ",".join(d.get("markets") or []),
+                     ",".join(d.get("books") or []), d.get("board_ts", ""),
+                     d.get("points_raw"), d.get("points_anchored"),
+                     d.get("scale"), now))
+                n += 1
+        return n
+
+    def log_played(self, season: int, week: int, played: dict[str, bool]) -> int:
+        """Record who actually suited up. `played` is {normalized name: bool}.
+
+        Only rows this season's builds already projected are touched, so a name
+        collision cannot invent a player.
+        """
+        from .matching import norm_name
+        n = 0
+        with self._c() as c:
+            rows = c.execute("""SELECT fd_id, name FROM player_results
+                                WHERE season=? AND week=?""", (season, week)).fetchall()
+            for r in rows:
+                v = played.get(norm_name(r["name"]))
+                if v is None:
+                    continue
+                c.execute("""UPDATE player_results SET played=?
+                             WHERE season=? AND week=? AND fd_id=?""",
+                          (1 if v else 0, season, week, r["fd_id"]))
+                n += 1
+        return n
+
+    def availability_accuracy(self, season: int, min_week: int = 1,
+                              min_n: int = 25) -> dict:
+        """Did p_active predict who played? Buckets predictions against outcomes.
+
+        This is the read that eventually replaces the flat questionable prior with a
+        measured one. A well-calibrated bucket has an observed play rate close to its
+        predicted probability; a 0.72 bucket that plays 90% of the time is costing
+        real points every week it stands.
+        """
+        with self._c() as c:
+            rows = c.execute("""SELECT p_active, played, status_at_lock
+                                FROM player_results
+                                WHERE season=? AND week>=? AND played IS NOT NULL
+                                  AND p_active IS NOT NULL""",
+                             (season, min_week)).fetchall()
+        if len(rows) < min_n:
+            return {"n": len(rows),
+                    "verdict": f"need {min_n}+ observations, have {len(rows)}"}
+        buckets: dict[str, list] = {}
+        for r in rows:
+            pa = float(r["p_active"])
+            key = "1.00" if pa >= 0.999 else f"{round(pa, 2):.2f}"
+            buckets.setdefault(key, []).append(int(r["played"]))
+        out: dict = {"n": len(rows), "buckets": {}}
+        for k in sorted(buckets, reverse=True):
+            v = buckets[k]
+            out["buckets"][k] = {"n": len(v),
+                                 "observed_play_rate": round(sum(v) / len(v), 3)}
+        q = out["buckets"].get("0.72")
+        if q and q["n"] >= 15:
+            obs = q["observed_play_rate"]
+            out["verdict"] = (
+                f"questionable prior 0.72 vs observed {obs:.2f} over {q['n']} "
+                f"players — {'prior is too harsh' if obs > 0.80 else 'prior is too generous' if obs < 0.64 else 'prior looks reasonable'}")
+        return out
 
     def log_actuals_by_name(self, season: int, week: int,
                             by_name: dict[str, float]) -> int:

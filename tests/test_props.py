@@ -815,3 +815,155 @@ def test_require_fresh_csv_refuses(tmp_path, capsys):
 def test_missing_csv_does_not_crash_the_swap(tmp_path):
     from dfs.cli import _csv_freshness_gate
     assert _csv_freshness_gate(str(tmp_path / "nope.csv"), _sched(1.5), 3.0) is True
+
+
+# --------------------------------------------------------------------------
+# persistence: the week has to be recoverable or it is unlearnable
+# --------------------------------------------------------------------------
+
+def test_props_snapshot_freezes_the_raw_boards(tmp_path):
+    """The Odds API has no free historical props endpoint and the disk cache expires,
+    so an unsnapshotted week can never have its market projection re-derived."""
+    from dfs.snapshots import read_snapshot, write_props_snapshot
+    path = write_props_snapshot(tmp_path, 2026, 1, "2026-w01", {"ev1": board()})
+    assert path is not None and path.name == "props-2026-w01-2026-w01.json.gz"
+    snap = read_snapshot(path)
+    assert snap["kind"] == "props_at_lock"
+    assert snap["n_events"] == 1
+    assert snap["raw"]["ev1"]["home_team"] == "Cincinnati Bengals"
+    # A later re-derivation must be able to tell a constant change from a market move.
+    assert len(snap["props_source_sha256"]) == 64
+    assert len(snap["scorer_source_sha256"]) == 64
+
+
+def test_props_snapshot_never_fails_a_build(tmp_path):
+    from dfs.snapshots import write_props_snapshot
+    assert write_props_snapshot(tmp_path, 2026, 1, "s", {"e": {1, 2}}) is None
+
+
+def test_props_snapshot_rerun_is_deterministic(tmp_path):
+    """A Wednesday rebuild must overwrite, not litter."""
+    from dfs.snapshots import write_props_snapshot
+    a = write_props_snapshot(tmp_path, 2026, 1, "s", {"e": board()})
+    b = write_props_snapshot(tmp_path, 2026, 1, "s", {"e": board()})
+    assert a == b
+    assert len(list(tmp_path.glob("props-*.json.gz"))) == 1
+
+
+def test_props_report_carries_the_stat_lines():
+    pp = parsed()
+    rows = [("WR", "CIN", "Ja'Marr Chase", 8900), ("WR", "CIN", "Tee Higgins", 6400),
+            ("WR", "TB", "Emeka Egbuka", 6400), ("WR", "TB", "Chris Godwin", 5500),
+            ("WR", "TB", "Jalen McMillan", 5000)]
+    slate = _slate(rows)
+    fp = {p.fd_id: _FP(points=v) for p, v in zip(slate.players,
+                                                 [17.0, 11.5, 10.2, 8.0, 6.5])}
+    pts, rep = props_points(slate.players, pp, fp)
+    assert set(rep.lines) == set(pts)
+    line = rep.lines["x-0"]
+    assert line["name"] == "Ja'Marr Chase"
+    assert "rec_yds" in line["market_stats"]
+    assert line["points_anchored"] == pts["x-0"]
+    assert line["points_raw"] > 0 and line["scale"] > 0
+    assert "fanduel" in line["books"]
+
+
+def test_rejected_position_leaves_no_stat_lines():
+    """If the scale gate discards a position, nothing was used — so nothing should be
+    persisted as though it had been."""
+    pp = parsed()
+    slate = _slate([("WR", "CIN", "Ja'Marr Chase", 8900),
+                    ("WR", "CIN", "Tee Higgins", 6400),
+                    ("WR", "TB", "Emeka Egbuka", 6400),
+                    ("WR", "TB", "Chris Godwin", 5500)])
+    fp = {p.fd_id: _FP(points=200.0) for p in slate.players}
+    pts, rep = props_points(slate.players, pp, fp)
+    assert pts == {} and rep.lines == {}
+
+
+def test_props_lines_persist_the_stat_line_not_just_points(tmp_path):
+    """MULTI_TD_FACTOR and ANYTIME_TD_OVERROUND are only fittable from expected
+    quantities vs actual quantities; a points total cannot recover them."""
+    import json as _j
+
+    from dfs.results import ResultLog
+    rl = ResultLog(tmp_path / "r.db")
+    lines = {"x-0": {"name": "Ja'Marr Chase", "position": "WR", "team": "CIN",
+                     "stats": {"rec_yds": 85.5, "rec_rec": 7.1, "rec_tds": 0.59},
+                     "market_stats": {"rec_yds": 85.5, "anytime_td_prob": 0.497},
+                     "markets": ["rec_yds", "rec_rec", "anytime_td"],
+                     "books": ["draftkings", "fanduel"],
+                     "board_ts": "2026-09-07T20:02:07Z",
+                     "points_raw": 16.1, "points_anchored": 18.6, "scale": 1.1}}
+    assert rl.log_props_lines(2026, 1, lines) == 1
+    with rl._c() as c:
+        r = c.execute("SELECT * FROM props_lines").fetchone()
+    assert _j.loads(r["stats_json"])["rec_tds"] == 0.59
+    assert _j.loads(r["market_stats_json"])["anytime_td_prob"] == 0.497
+    assert r["markets"] == "rec_yds,rec_rec,anytime_td"
+    assert r["points_raw"] == 16.1 and r["points_anchored"] == 18.6
+    # re-runnable
+    assert rl.log_props_lines(2026, 1, lines) == 1
+    with rl._c() as c:
+        assert c.execute("SELECT COUNT(*) FROM props_lines").fetchone()[0] == 1
+
+
+def test_played_flag_is_distinct_from_a_zero_score(tmp_path):
+    """A scratch, a player nobody rostered, and a player who suited up and scored
+    nothing are three different facts. `actual` collapses them; `played` does not."""
+    from dfs.results import ResultLog
+    rl = ResultLog(tmp_path / "r.db")
+    rl.log_projection_components(2026, 1, _logged_players().players)
+    n = rl.log_played(2026, 1, {"jamarr chase": False, "joe burrow": True,
+                                "never projected": False})
+    assert n == 2
+    with rl._c() as c:
+        rows = {r["name"]: r for r in c.execute(
+            "SELECT name, played, actual FROM player_results")}
+    assert rows["Ja'Marr Chase"]["played"] == 0
+    assert rows["Joe Burrow"]["played"] == 1
+    assert rows["Tee Higgins"]["played"] is None       # unknown stays unknown
+    assert all(r["actual"] is None for r in rows.values())
+
+
+def test_status_at_lock_is_recorded_with_the_components(tmp_path):
+    from dfs.results import ResultLog
+    rl = ResultLog(tmp_path / "r.db")
+    slate = _logged_players()
+    slate.players[1].injury_indicator = "Q"
+    slate.players[1].injury_details = "Knee"
+    rl.log_projection_components(2026, 1, slate.players)
+    with rl._c() as c:
+        r = c.execute("""SELECT status_at_lock FROM player_results
+                         WHERE name="Ja'Marr Chase" """).fetchone()
+    assert r["status_at_lock"] == "Q Knee"
+
+
+def test_availability_accuracy_withholds_a_verdict_on_a_thin_sample(tmp_path):
+    from dfs.results import ResultLog
+    rl = ResultLog(tmp_path / "r.db")
+    rl.log_projection_components(2026, 1, _logged_players().players)
+    rl.log_played(2026, 1, {"jamarr chase": True})
+    out = rl.availability_accuracy(2026)
+    assert "need 25+" in out["verdict"]
+
+
+def test_availability_accuracy_flags_a_prior_that_is_too_harsh(tmp_path):
+    """The payoff read: if 0.72-bucket players actually play 90% of the time, the
+    prior is costing points every week it stands."""
+    from dfs.results import ResultLog
+    rl = ResultLog(tmp_path / "r.db")
+    players = []
+    for i in range(40):
+        pl = SlatePlayer(fd_id=f"q{i}", name=f"Quest {i}", position="WR", team="CIN",
+                         opponent="TB", salary=6000, game="TB@CIN")
+        pl.proj_fp = pl.proj_blend = 12.0
+        pl.p_active = 0.72
+        pl.projection = round(12.0 * 0.72, 2)
+        players.append(pl)
+    rl.log_projection_components(2026, 1, players)
+    rl.log_played(2026, 1, {f"quest {i}": i % 10 != 0 for i in range(40)})
+    out = rl.availability_accuracy(2026)
+    assert out["buckets"]["0.72"]["n"] == 40
+    assert out["buckets"]["0.72"]["observed_play_rate"] == pytest.approx(0.9)
+    assert "too harsh" in out["verdict"]

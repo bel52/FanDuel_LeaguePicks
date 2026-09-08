@@ -13,6 +13,7 @@ import json
 import os
 import sys
 from pathlib import Path
+import re
 import time
 from datetime import datetime, timezone
 
@@ -32,7 +33,7 @@ from .injuries import (records_from_fantasypros, records_from_slate, merge,
                        sweep as injury_sweep, annotate_availability)
 from .props import PropsClient, PropsError, props_points, CREDITS_PER_EVENT
 from .blend import apply_props, apply_availability
-from .matching import load_aliases
+from .matching import load_aliases, norm_name
 from .export import export_upload_csv, lineup_card, pushover_body
 from .results import ResultLog
 from .kickoffs import KickoffSchedule
@@ -79,6 +80,15 @@ def _props_layer(slate, a, dist, label: str = "build"):
         changed = apply_props(slate, pts, dist,
                              weights=_props_weights(a.props_weight))
         print(f"  blended into {len(changed)} projections")
+        if pc.boards and not getattr(a, "no_snapshot", False):
+            from .snapshots import write_props_snapshot
+            snap = write_props_snapshot(getattr(a, "snapshot_dir", "data/snapshots"),
+                                        a.season, a.week, a.slate_id or "",
+                                        pc.boards,
+                                        extra={"scale": prep.scale,
+                                               "covered": prep.covered})
+            if snap:
+                print(f"  at-lock props snapshot -> {snap}")
         return prep
     except PropsError as e:
         print(f"  props SKIPPED: {e}")
@@ -171,6 +181,45 @@ def _csv_freshness_gate(csv_path: str, sched, require_hours: float | None) -> bo
               f"{age_h:.1f}h old. Re-download it rather than swapping blind.")
         return False
     return True
+
+
+def _record_played(a, irep, slate) -> None:
+    """Write the played/scratched flag from a post-lock FanDuel player list.
+
+    The CSV that arrives after inactives post is the only free unambiguous
+    availability record: FanDuel marks scratched players `O`, `ingest_fanduel` drops
+    them and names them in `dropped_injury`, and everyone still on the list is active.
+
+    The contest results page cannot supply this. A scratched player somebody rostered
+    shows 0.00 there, which is indistinguishable from a player who suited up and did
+    nothing -- and those are different facts. Getting the flag right is what turns the
+    flat 0.72 questionable prior into a measured number.
+
+    Known limitation: a late scratch carrying no `O` flag at pull time is recorded as
+    played, which inflates the observed play rate slightly. `source` is stamped as
+    `fanduel_csv` so the nflverse ingest (which sees actual snap counts) can supersede
+    these rows rather than double-counting them.
+
+    Skipped unless the CSV is inside the inactives window -- a Wednesday list says
+    nothing about who plays on Sunday, and a flag written from it is worse than none.
+    """
+    if not getattr(a, "log_db", None):
+        return
+    dropped = [re.sub(r"\([^)]*\)\s*$", "", n).strip()
+               for n in (getattr(irep, "dropped_injury", None) or [])]
+    if not dropped:
+        print("  availability outcomes: CSV lists no scratched players — "
+              "either pre-inactives or a clean slate; nothing recorded")
+        return
+    played = {norm_name(n): False for n in dropped if n}
+    for pl in slate.players:
+        played.setdefault(norm_name(pl.name), True)
+    try:
+        n = ResultLog(a.log_db).log_played(a.season, a.week, played)
+        print(f"  availability outcomes recorded: {len(dropped)} scratched, "
+              f"{n} matched to projected players (feeds the p_active prior)")
+    except Exception as e:                                        # noqa: BLE001
+        print(f"  WARNING: could not record availability outcomes ({e})")
 
 
 def _dist():
@@ -586,6 +635,10 @@ def cmd_build(a) -> int:
         # log_entry's in_lineup=1 wins for the nine entered players. ~370 rows a week
         # instead of nine; this is the sample that later decides the blend weight.
         n_comp = rl_out.log_projection_components(a.season, a.week, slate.players)
+        if prep is not None and prep.lines:
+            n_lines = rl_out.log_props_lines(a.season, a.week, prep.lines)
+            print(f"\nMarket stat lines persisted: {n_lines} players — the points "
+                  "total alone could never re-fit the TD constants")
         n_mkt = sum(1 for pl in slate.players if pl.proj_props is not None)
         print(f"\nProjection components logged: {n_comp} players "
               f"({n_mkt} with a market component) — feeds `standings` "
@@ -737,6 +790,7 @@ def cmd_swap(a) -> int:
     print("\n" + sched.summary())
     if not _csv_freshness_gate(a.csv, sched, getattr(a, "require_fresh_csv", None)):
         return 2
+    _record_played(a, irep, slate)
 
     spec = ContestSpec(name=a.contest, profile=Profile(a.profile),
                        slate_type=slate.slate_type, field_size=a.field,
@@ -951,7 +1005,6 @@ def cmd_swap_accept(a) -> int:
 def cmd_capture(a) -> int:
     import json as _json
     from .contest_parse import parse_contest
-    from .matching import norm_name
     capture = parse_contest(a.path, a.season, a.week, a.contest)
     print(capture.summary())
     rl = ResultLog(a.log_db)
@@ -1124,6 +1177,31 @@ def cmd_standings(a) -> int:
         for pos, v in acc.items():
             print(f"  {pos:4s} n={v['n']:4d} MAE={v['mae']:5.2f} bias={v['bias']:+5.2f} "
                   f"corr={v['corr']}")
+
+    # The two learning reads. Both are deliberately read-only: they say what the data
+    # supports, and changing PROPS_WEIGHT or the questionable prior stays a human
+    # decision until there is enough of a sample to justify it.
+    ca = rl.component_accuracy(a.season)
+    print("\nCOMPONENT ACCURACY (market vs consensus, same players):")
+    print(f"  {ca.get('verdict', 'no verdict yet')}")
+    for k in ("proj_fp", "proj_props", "proj_blend"):
+        if k in ca:
+            v = ca[k]
+            print(f"    {k:11s} n={v['n']:4d} MAE {v['mae']:5.2f} "
+                  f"bias {v['bias']:+5.2f} corr {v['corr']:.3f}")
+    if "suggested_props_weight" in ca:
+        print(f"    least-squares props weight: {ca['suggested_props_weight']:.2f} "
+              "— compare against PROPS_WEIGHT in props.py; not auto-applied")
+
+    av = rl.availability_accuracy(a.season)
+    print("\nAVAILABILITY CALIBRATION (did p_active predict who played?):")
+    if av.get("verdict"):
+        print(f"  {av['verdict']}")
+    for k, v in (av.get("buckets") or {}).items():
+        print(f"    p_active {k}  n={v['n']:4d}  actually played "
+              f"{v['observed_play_rate']:.2f}")
+    if not av.get("buckets"):
+        print(f"  {av.get('verdict', 'nothing recorded yet')}")
     return 0
 
 

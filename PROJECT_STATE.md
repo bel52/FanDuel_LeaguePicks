@@ -43,7 +43,24 @@ models affect only the weekly-prize sliver (~11%). The sophisticated machinery e
 its keep in **showdown and H2H**, where P(win) is the entire objective. Projection
 *quality*, not optimization cleverness, is the lever for league play.
 
-Code: ~6,500 lines, **221 tests**, all passing.
+Code: ~6,800 lines, **231 tests**, all passing.
+
+**Persistence layer (2026-09-07).** The session's audit found the system was recording
+more than it could learn from. Three inputs were not being persisted at all, and an
+unrecorded week is permanently unlearnable:
+
+1. **Prop boards** — cache had a 6h TTL and was overwritten; The Odds API has no free
+   historical props endpoint. Now snapshotted at lock beside the FP payload, stamped
+   with `props.py` and `scoring.py` source hashes.
+2. **Market stat lines** — only the points total was stored, from which the two coarse
+   TD constants can never be fitted. Now persisted per player-week in `props_lines`.
+3. **Availability outcome** — `p_active` was the prediction with no recorded outcome,
+   so the flat 0.72 questionable prior (the largest single lever in the system) could
+   never become empirical. `played` + `status_at_lock` now written from the post-lock
+   FanDuel `O` flag during `swap`.
+
+`standings` surfaces `component_accuracy` and `availability_accuracy`. Both read-only:
+no fitted parameter is auto-applied.
 
 **Lineup-quality round (2026-09-07, after the first live props build).** Four items,
 league-scoped:

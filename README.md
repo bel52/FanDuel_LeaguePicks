@@ -9,7 +9,7 @@ single-game showdown, and public contests.
 ## Status — honest
 
 The data layer, modeling core, and Sunday operating loop are complete and tested
-(221 offline tests, including an end-to-end build test that asserts the upload CSV,
+(231 offline tests, including an end-to-end build test that asserts the upload CSV,
 entry log, and pushover card actually exist). **Edge is not yet demonstrated.** The system reports a positive
 objective delta over a max-projection baseline, but that number is produced by the
 same simulator that selects the lineup. Until it is validated against out-of-sample
@@ -164,6 +164,31 @@ before they can reach a lineup. So a CSV re-downloaded after the inactives post 
 inactives source, and a Wednesday CSV is not. `swap` therefore prints the CSV's age
 against the next unlocked kickoff and, with `--require-fresh-csv HOURS` (set to 3 in
 `bin/sunday-swap.sh`), refuses rather than swapping on a lineup it cannot verify.
+
+**Persistence (the learning loop's prerequisite).** Three things are written down every
+build because an unrecorded week is permanently unlearnable, and there are 21 of them:
+
+* **`props-<season>-w<NN>-<slate>.json.gz`** — the raw prop boards, frozen at lock
+  beside the FantasyPros snapshot, stamped with SHA-256 of both `scoring.py` and
+  `props.py` so a later re-derivation can tell a constant change from a market move.
+  The disk cache expires in six hours and The Odds API has no free historical props
+  endpoint, so this file is the only way a past week's market projection can ever be
+  re-derived.
+* **`props_lines`** — the market-implied *stat line* per player-week, not just its
+  points total. `MULTI_TD_FACTOR` and `ANYTIME_TD_OVERROUND` are fittable only by
+  comparing an expected quantity to the actual one (expected TDs against TDs scored);
+  from a points total they are unrecoverable, so both would stay coarse priors forever.
+* **`player_results.played` / `.status_at_lock`** — who actually suited up, taken from
+  the post-lock FanDuel player list (`O` flag) during `swap`. `actual` cannot stand in:
+  it is NULL for a scratch, NULL for a player nobody rostered, and 0.0 for a player who
+  played and did nothing — three different facts. This is what turns the flat 0.72
+  questionable prior into a measured number.
+
+`standings` prints both learning reads — `component_accuracy` (market vs consensus on
+the same players, plus a least-squares props weight) and `availability_accuracy`
+(predicted `p_active` against observed play rate, bucketed). Both are **read-only by
+design**: they report what the data supports, and changing `PROPS_WEIGHT` or the
+questionable prior stays a human decision until the sample justifies it.
 
 **Scope.** `friends_league` only. Showdown and head-to-head paths are untouched: they
 are scored on P(win), where a discounted mean is the wrong treatment, and a single game

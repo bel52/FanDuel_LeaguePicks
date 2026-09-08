@@ -326,6 +326,9 @@ class PropsClient:
         self.credits_spent = 0
         self.cache_hits = 0
         self.stale_cache = 0
+        # Raw boards, kept in memory for the at-lock snapshot. The disk cache expires
+        # and is overwritten; the snapshot is the permanent record.
+        self.boards: dict[str, dict] = {}
         self.last_quota: dict[str, str] = {}
         self.errors: list[str] = []
 
@@ -430,6 +433,7 @@ class PropsClient:
                 continue
             try:
                 board = self.event_board(ev["id"])
+                self.boards[ev["id"]] = board
                 parsed = parse_event_board(board)
             except PropsError as e:
                 self.errors.append(f"{want[keyset]}: {e}")
@@ -478,6 +482,11 @@ class PropsReport:
     rejected: list = field(default_factory=list)     # positions discarded by the gate
     warnings: list = field(default_factory=list)
     errors: list = field(default_factory=list)
+    # fd_id -> (PlayerProps, merged stat line, raw points, anchored points). Persisted
+    # per player-week so the derivation can be re-fitted later: MULTI_TD_FACTOR and
+    # ANYTIME_TD_OVERROUND are only recoverable from the underlying quantities
+    # (expected TDs vs actual TDs), never from a points total.
+    lines: dict = field(default_factory=dict)
     credits_spent: int = 0
     cache_hits: int = 0
     stale_cache: int = 0
@@ -560,6 +569,13 @@ def props_points(slate_players: list, props: dict[str, PlayerProps],
         if pts <= 0:
             continue
         raw[sp.fd_id] = round(pts, 2)
+        rep.lines[sp.fd_id] = {
+            "name": sp.name, "position": sp.position, "team": sp.team,
+            "stats": _merged_stats(pp, fp_stats, sp.position),
+            "market_stats": dict(pp.stats),
+            "markets": sorted(pp.markets), "books": sorted(pp.books),
+            "board_ts": pp.last_update, "points_raw": round(pts, 3),
+        }
         fp_pts = float(getattr(fp, "points", 0.0) or 0.0)
         if fp_pts > 3.0 and pts > 3.0:
             ratios.setdefault(sp.position, []).append(fp_pts / pts)
@@ -605,8 +621,12 @@ def props_points(slate_players: list, props: dict[str, PlayerProps],
     for fid, pts in raw.items():
         pos = pos_by_id.get(fid)
         if pos not in scale:
+            rep.lines.pop(fid, None)          # position rejected: nothing was used
             continue
         out[fid] = round(pts * scale[pos], 2)
+        if fid in rep.lines:
+            rep.lines[fid]["scale"] = round(scale[pos], 4)
+            rep.lines[fid]["points_anchored"] = out[fid]
     rep.covered = len(out)
 
     ages = [p.last_update for p in props.values() if p.last_update]
