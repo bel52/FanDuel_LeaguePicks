@@ -91,12 +91,31 @@ def apply_projections(slate: PlayerSlate, fp_projections: list[FPProjection],
     # under $6,500), while treating a $6,000 third-string QB as critical. Anything in
     # the top quartile of its own position's salary distribution is roster-relevant.
     from collections import defaultdict
+    # POOL COMPOSITION. FanDuel prices every player it does not expect to take a
+    # snap at the position minimum. On a full Week-1 slate that is HALF the
+    # published pool (346 of 677 -- 142 of 283 WRs, 59 of 86 QBs), and
+    # FantasyPros projects none of them. Both gates below used to divide by this
+    # raw pool, so both measured FanDuel's roster-dump policy instead of
+    # projection health: the naive top quartile landed $800 above the WR floor
+    # (making a 1.3-FPPG WR4 "roster-relevant"), and the aggregate match rate was
+    # capped near 65% no matter how well the matcher performed. The floor share
+    # is not stable -- it shrinks after cutdowns, moves on byes, and inverts on
+    # showdown slates -- so any threshold tuned against it is tuned against
+    # noise. Exclude the floor cohort ONCE and gate both tiers on what remains.
     by_pos: dict[str, list[int]] = defaultdict(list)
     for sp in slate.players:
         by_pos[sp.position].append(sp.salary)
+    pos_floor: dict[str, int] = {p: min(s) for p, s in by_pos.items() if s}
+
+    def _floor_filler(sp) -> bool:
+        return sp.salary <= pos_floor.get(sp.position, 0)
+
     pos_cut: dict[str, int] = {}
     for pos, sals in by_pos.items():
-        s = sorted(sals, reverse=True)
+        pool = [x for x in sals if x > pos_floor.get(pos, 0)]
+        if len(pool) < 8:      # showdown / tiny slates: too little spread to
+            pool = sals        # exclude anything; fall back to the full column
+        s = sorted(pool, reverse=True)
         pos_cut[pos] = s[max(0, int(len(s) * 0.25) - 1)] if s else 0
 
     def _relevant(pos: str, salary: int) -> bool:
@@ -114,10 +133,30 @@ def apply_projections(slate: PlayerSlate, fp_projections: list[FPProjection],
     # report.unmatched rows are (name, team, position, salary)
     critical = ([u for u in report.unmatched if _relevant(u[2], u[3])]
                 + [z for z in nonpos if _relevant(z[2], z[3])])
-    if report.rate < min_match_rate or critical:
+    # TIER 2 canary: coverage of the ROSTERABLE pool (everything above the
+    # position floor). Composition-independent, so min_match_rate carries the
+    # same meaning every week and on every slate type. A usable projection means
+    # matched AND scoring > 0, so true-zero depth players count as uncovered
+    # here exactly as they do in the critical gate.
+    rosterable = [sp for sp in slate.players if not _floor_filler(sp)]
+    covered = [sp for sp in rosterable
+               if mapping.get(sp.fd_id) is not None and mapping[sp.fd_id].points > 0]
+    pool_rate = (len(covered) / len(rosterable)) if rosterable else 1.0
+    _cov: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    for sp in rosterable:
+        _cov[sp.position][1] += 1
+    for sp in covered:
+        _cov[sp.position][0] += 1
+    print(f"  rosterable pool (above position floor): {len(covered)}/{len(rosterable)}"
+          f" = {pool_rate:.0%} covered; "
+          f"{len(slate.players) - len(rosterable)} floor-priced excluded")
+    print("    " + "  ".join(f"{p} {c[0]}/{c[1]}" for p, c in sorted(_cov.items())))
+
+    if pool_rate < min_match_rate or critical:
         cuts = ", ".join(f"{p} >= ${c}" for p, c in sorted(pos_cut.items()))
         raise SlateError(
-            f"Projection match {report.rate:.0%} (min {min_match_rate:.0%}); "
+            f"Rosterable-pool coverage {pool_rate:.0%} "
+            f"({len(covered)}/{len(rosterable)}, min {min_match_rate:.0%}); "
             f"{len(critical)} roster-relevant player(s) unmatched or zero-projected.\n"
             f"  relevance gate (top quartile by position): {cuts}\n"
             + "".join(f"    ${s:5d} {p:3s} {t:4s} {n}\n"
