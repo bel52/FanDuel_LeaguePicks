@@ -30,7 +30,9 @@ from .field import (build_prior_field, build_field_ensemble, rank_candidates,
 from .objectives import Leaderboard, SeasonContext, weights_for
 from .slate import SlateStore, SlateError
 from .injuries import (records_from_fantasypros, records_from_slate, merge,
-                       sweep as injury_sweep, annotate_availability)
+                       sweep as injury_sweep, annotate_availability, SEVERITY,
+                       Action as InjuryAction)
+from .sleeper import SleeperClient, SleeperError, records_from_sleeper
 from .props import PropsClient, PropsError, props_points, CREDITS_PER_EVENT
 from .blend import apply_props, apply_availability
 from .matching import load_aliases, norm_name
@@ -372,11 +374,12 @@ def cmd_build(a) -> int:
     if not a.no_injuries:
         try:
             fp_inj = records_from_fantasypros(FantasyProsClient().injuries(a.season))
-            _print_injury_feed_age(fp_inj)
+            _print_injury_feed_age(fp_inj, layer3=a.official_inactives)
         except FantasyProsError as e:
             fp_inj = {}
             print(f"\n  injury feed unavailable: {e}")
         inj = merge(records_from_slate(slate), fp_inj)
+        inj = _official_inactives_layer(slate, inj, a)
         sw = injury_sweep(slate, inj)
         print("\n" + sw.summary())
         if sw.flagged and a.strict_injuries:
@@ -746,11 +749,12 @@ def cmd_swap(a) -> int:
     try:
         fp_inj = records_from_fantasypros(FantasyProsClient().injuries(a.season))
         # Sunday: demand much fresher data than a midweek build does.
-        _print_injury_feed_age(fp_inj, hours_to_lock=6.0)
+        _print_injury_feed_age(fp_inj, hours_to_lock=6.0, layer3=a.official_inactives)
     except FantasyProsError:
         fp_inj = {}
     inj = merge(records_from_slate(slate), fp_inj)
     lineup_set = set(current_ids)
+    inj = _official_inactives_layer(slate, inj, a, lineup_ids=lineup_set)
     sw = injury_sweep(slate, inj, lineup_ids=lineup_set)
     print("\n" + sw.summary())
     annotate_availability(slate, inj)
@@ -881,21 +885,22 @@ def _parse_feed_ts(raw) -> "datetime | None":
     return None
 
 
-def _print_injury_feed_age(recs: dict, hours_to_lock: float | None = None) -> None:
-    """Show how old the freshest injury record is. There is NO official inactives
-    source wired in (see injuries.py) — FantasyPros is the freshest layer we have, so
-    its age is the only honest measure of how protected the lineup is near kickoff."""
+def _print_injury_feed_age(recs: dict, hours_to_lock: float | None = None,
+                           layer3: str = "off") -> None:
+    """Show how old the freshest FantasyPros injury record is. FantasyPros is the
+    freshest layer that GATES by default; the Sleeper designations layer prints its
+    own age when it runs (see _official_inactives_layer)."""
     ts = [r.fetched_ts for r in recs.values() if getattr(r, "fetched_ts", None)]
     if not ts:
         print("  injury feed: no timestamps in payload — treat status as UNVERIFIED")
-        _print_inactives_warning()
+        _print_inactives_warning(layer3)
         return
     newest = max(ts)
     dt = _parse_feed_ts(newest)
     if dt is None:
         print(f"  injury feed: newest record {newest} — UNPARSEABLE timestamp, treat "
               "freshness as unknown")
-        _print_inactives_warning()
+        _print_inactives_warning(layer3)
         return
     age_h = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
     # Threshold tightens as kickoff approaches: 24h is meaningless on Sunday morning,
@@ -905,16 +910,87 @@ def _print_injury_feed_age(recs: dict, hours_to_lock: float | None = None) -> No
     note = (f"  ** STALE (> {limit:.0f}h) — do not rely on it **"
             if age_h > limit else "")
     print(f"  injury feed: newest record {age_h:.1f}h old{note}")
-    _print_inactives_warning()
+    _print_inactives_warning(layer3)
 
 
-def _print_inactives_warning() -> None:
+def _print_inactives_warning(layer3: str = "off") -> None:
     """Printed on EVERY build and swap, regardless of feed health. Surprise inactives
     frequently carry no prior Questionable tag, so 'check the badges' is not adequate
-    guidance — all nine entered players need eyes on them before lock."""
-    print("  NOTE: no official inactives source is wired in. Before lock, verify ALL "
-          "NINE entered players against the official inactives list — not just the "
-          "flagged ones; a surprise inactive often had no prior designation.")
+    guidance — all nine entered players need eyes on them before lock. The first
+    clause states honestly what the official-designations layer is doing."""
+    lead = {
+        "off": "no official inactives source is active.",
+        "log": "official designations (Sleeper) run in LOG mode — reported below, "
+               "gating nothing.",
+        "gate": "official designations (Sleeper) GATE the pool; it is a mirror that "
+                "can lag the NFL's list by minutes.",
+    }.get(layer3, "official designations layer in an unknown mode.")
+    print(f"  NOTE: {lead} Before lock, verify ALL NINE entered players against the "
+          "official inactives list — not just the flagged ones; a surprise inactive "
+          "often had no prior designation.")
+
+
+def _official_inactives_layer(slate, inj: dict, a, lineup_ids: set | None = None) -> dict:
+    """Layer 3: Sleeper's mirror of official designations. Compares against the
+    CSV+FantasyPros view already in `inj`, scoped to players in the slate, prints
+    every disagreement, and returns `inj` unchanged in LOG mode or pessimistically
+    merged with the Sleeper records in GATE mode. Never raises: an unreachable feed is
+    reported and the build continues on layers 1-2 exactly as before."""
+    mode = getattr(a, "official_inactives", "log") or "log"
+    if mode == "off":
+        return inj
+    try:
+        client = SleeperClient(cache_dir=getattr(a, "official_cache_dir", None)
+                               or "data/cache",
+                               max_age_hours=getattr(a, "official_max_age", 1.0))
+        payload, age_h, from_cache = client.players()
+        off = records_from_sleeper(payload)
+    except SleeperError as e:
+        print(f"\n  official designations (sleeper): UNAVAILABLE — {e}; continuing on "
+              "CSV + FantasyPros only")
+        return inj
+    src = f"cache {age_h:.1f}h old" if from_cache else "fresh fetch"
+    pool = {norm_name(p.name): p for p in slate.players}
+    would_remove, escalate, deescalate, agree = [], [], [], 0
+    for k, p in pool.items():
+        o = off.get(k)
+        if o is None:
+            continue
+        c = inj.get(k)
+        c_sev = SEVERITY[c.status] if c is not None else 0
+        o_sev = SEVERITY[o.status]
+        if o_sev > c_sev:
+            if o.action is InjuryAction.REMOVE and (c is None or c.action is not InjuryAction.REMOVE):
+                would_remove.append((p, o, c))
+            else:
+                escalate.append((p, o, c))
+        elif o_sev < c_sev:
+            deescalate.append((p, o, c))
+        else:
+            agree += 1
+    in_lineup = lambda p: bool(lineup_ids) and p.fd_id in lineup_ids
+    print(f"\n  official designations (sleeper, {src}): {len(off)} designated players; "
+          f"{agree} agree with CSV+FP, {len(would_remove)} would REMOVE, "
+          f"{len(escalate)} escalate, {len(deescalate)} de-escalate  [mode: {mode.upper()}]")
+    def _line(tag, p, o, c):
+        cur = c.status.value.upper() if c is not None else "clear"
+        star = "  ** IN LINEUP **" if in_lineup(p) else ""
+        print(f"    {tag:9s} {p.position:3s} {p.team:4s} {p.name:24s} "
+              f"{cur:12s} -> {o.status.value.upper():12s} {o.detail[:40]}{star}")
+    for p, o, c in sorted(would_remove, key=lambda z: -z[0].salary):
+        _line("REMOVE", p, o, c)
+    for p, o, c in sorted(escalate, key=lambda z: -z[0].salary)[:12]:
+        _line("escalate", p, o, c)
+    for p, o, c in sorted(deescalate, key=lambda z: -z[0].salary)[:8]:
+        _line("de-esc", p, o, c)
+    if mode == "gate":
+        if would_remove or escalate:
+            print("    -> merged into the sweep (pessimistic: a worse Sleeper status wins)")
+        return merge(inj, off)
+    if would_remove:
+        print("    -> LOG mode: the REMOVE rows above were NOT applied. Check them by "
+              "hand; promote with --official-inactives gate when the source proves out.")
+    return inj
 
 
 def _proposal_path(season: int, week: int, contest: str) -> str:
@@ -1274,6 +1350,12 @@ def main(argv=None) -> int:
                    help="one-off contests: total prize pool (h2h/showdown/gpp)")
     b.add_argument("--no-injuries", action="store_true",
                    help="skip the inactives sweep (testing only)")
+    b.add_argument("--official-inactives", choices=("log", "gate", "off"), default="log",
+                   help="Sleeper mirror of official Q/D/O designations: log = report "
+                        "only (default), gate = remove players it marks Out, off = skip")
+    b.add_argument("--official-max-age", type=float, default=1.0, metavar="HOURS",
+                   help="reuse the cached Sleeper players map if younger than this")
+    b.add_argument("--official-cache-dir", default=None)
     b.add_argument("--strict-injuries", action="store_true",
                    help="refuse to build while questionable players remain in the pool")
     b.add_argument("--export", default=None, help="write a FanDuel upload CSV here")
@@ -1355,6 +1437,11 @@ def main(argv=None) -> int:
     sw.add_argument("--no-avail-adjust", dest="avail_adjust", action="store_false")
     sw.add_argument("--aliases", default=None)
     sw.add_argument("--report-salary", type=int, default=5000)
+    sw.add_argument("--official-inactives", choices=("log", "gate", "off"), default="log",
+                    help="Sleeper mirror of official Q/D/O designations: log = report "
+                         "only (default), gate = remove players it marks Out, off = skip")
+    sw.add_argument("--official-max-age", type=float, default=1.0, metavar="HOURS")
+    sw.add_argument("--official-cache-dir", default=None)
     sw.add_argument("--require-fresh-csv", type=float, default=None,
                     metavar="HOURS",
                     help="refuse to swap if the salary CSV is older than this. Set it "

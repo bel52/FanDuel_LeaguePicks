@@ -2242,15 +2242,186 @@ def test_template_multiple_entries_selectable(tmp_path):
     assert d["entry_id"] == "E2" and d["contest_id"] == "C2"
 
 
-def test_injuries_module_does_not_claim_an_official_inactives_layer():
-    """REVIEW #2: the module documented a layer-3 'Sunday inactives sweep — official
-    actives lists' that does not exist. Documentation that overstates protection is
-    worse than none: it invites assuming a zero-point risk is handled."""
+def test_injuries_module_states_layer3_mode_honestly():
+    """REVIEW #2 (2026-08): the module documented a layer-3 official inactives sweep
+    that did not exist. 2026-09-19: the layer now exists (sleeper.py) but is LOG-only
+    by default. Documentation that overstates protection is worse than none, so the
+    docstring must say the layer gates nothing until promoted, and must still tell the
+    operator to verify all nine players by hand."""
     import dfs.injuries as inj
     doc = inj.__doc__ or ""
-    assert "NOT IMPLEMENTED" in doc
+    assert "NOT IMPLEMENTED" not in doc          # it is implemented now
+    assert "LOG mode" in doc and "GATES NOTHING" in doc
+    assert "ALL NINE" in doc
     assert "by hand" in doc or "verify" in doc.lower()
-    assert hasattr(inj, "sweep")
+    assert hasattr(inj, "sweep") and hasattr(inj, "SEVERITY")
+
+
+def _sleeper_payload():
+    return {
+        "1": {"full_name": "Zay Flowers", "team": "BAL", "position": "WR",
+              "injury_status": "Out", "injury_body_part": "Hamstring",
+              "news_updated": 1758300000000, "status": "Active"},
+        "2": {"full_name": "Joe Burrow", "team": "CIN", "position": "QB",
+              "injury_status": "Questionable", "injury_body_part": "Back",
+              "status": "Active"},
+        "3": {"full_name": "Brock Bowers", "team": "LV", "position": "TE",
+              "injury_status": "IR", "status": "Injured Reserve"},
+        "4": {"full_name": "Cut Guy", "team": None, "position": "RB",
+              "injury_status": "Out"},                     # no team -> skipped
+        "5": {"full_name": "Retired Vet", "team": "DAL", "position": "WR",
+              "injury_status": None, "status": "Inactive"},  # roster status only -> skipped
+        "BAL": {"full_name": "Baltimore Ravens", "team": "BAL", "position": "DEF",
+                "injury_status": "Out"},                   # DEF -> skipped
+        "6": {"first_name": "Did", "last_name": "NotReport", "team": "NYJ",
+              "position": "RB", "injury_status": "DNR"},
+        "7": {"full_name": "Suspended Man", "team": "PHI", "position": "WR",
+              "injury_status": "Sus"},
+    }
+
+
+def test_sleeper_records_map_official_designations():
+    from dfs.sleeper import records_from_sleeper
+    from dfs.injuries import Status, Action
+    recs = records_from_sleeper(_sleeper_payload())
+    assert recs[_norm("Zay Flowers")].status is Status.OUT
+    assert recs[_norm("Zay Flowers")].action is Action.REMOVE
+    assert recs[_norm("Zay Flowers")].source == "sleeper"
+    assert "Hamstring" in recs[_norm("Zay Flowers")].detail
+    # news_updated is epoch ms -> ISO
+    assert recs[_norm("Zay Flowers")].fetched_ts.startswith("2025-09-19T")
+    assert recs[_norm("Joe Burrow")].status is Status.QUESTIONABLE
+    assert recs[_norm("Brock Bowers")].status is Status.IR
+    assert recs[_norm("Did NotReport")].status is Status.OUT
+    assert recs[_norm("Suspended Man")].status is Status.IR
+    # skipped cohorts
+    assert _norm("Cut Guy") not in recs
+    assert _norm("Retired Vet") not in recs
+    assert _norm("Baltimore Ravens") not in recs
+    assert len(recs) == 5
+
+
+def test_sleeper_roster_status_inactive_is_not_a_scratch():
+    """Sleeper's roster `status` = "Inactive" means off-roster, not a game-day
+    inactive. Reading it as OUT would remove healthy players. Only injury_status
+    counts."""
+    from dfs.sleeper import records_from_sleeper
+    recs = records_from_sleeper({"9": {"full_name": "On Roster", "team": "KC",
+                                       "position": "WR", "injury_status": None,
+                                       "status": "Inactive"}})
+    assert recs == {}
+
+
+def _mini_slate(*names_pos_team_sal):
+    from dfs.slate import PlayerSlate, SlatePlayer, SlateType
+    sl = PlayerSlate(slate_id="t", slate_type=SlateType.FULL, season=2026, week=2)
+    for i, (n, pos, team, sal) in enumerate(names_pos_team_sal):
+        sl.players.append(SlatePlayer(fd_id=f"t-{i}", name=n, position=pos, team=team,
+                                      opponent="X", salary=sal, game="X@Y"))
+    return sl
+
+
+def test_official_layer_log_mode_reports_but_does_not_gate(monkeypatch, capsys):
+    """LOG mode is the rollout default: Sleeper's REMOVE rows are printed, never
+    applied. The merged record dict handed to the sweep must be unchanged."""
+    import argparse
+    import dfs.cli as cli
+    from dfs.sleeper import SleeperClient
+    from dfs.injuries import Status
+    sl = _mini_slate(("Zay Flowers", "WR", "BAL", 7000), ("Joe Burrow", "QB", "CIN", 8200),
+                     ("Clean Guy", "RB", "DAL", 5000))
+    monkeypatch.setattr(SleeperClient, "players",
+                        lambda self: (_sleeper_payload(), 0.2, True))
+    inj_before = {}                              # CSV+FP know nothing yet
+    a = argparse.Namespace(official_inactives="log", official_max_age=1.0,
+                           official_cache_dir=None)
+    out = cli._official_inactives_layer(sl, dict(inj_before), a, lineup_ids={"t-0"})
+    assert out == {}                            # nothing merged in LOG mode
+    text = capsys.readouterr().out
+    assert "mode: LOG" in text
+    assert "REMOVE" in text and "Zay Flowers" in text
+    assert "IN LINEUP" in text                  # t-0 is Flowers, flagged as in lineup
+    assert "NOT applied" in text
+    assert "Clean Guy" not in text              # no Sleeper record -> not mentioned
+
+
+def test_official_layer_gate_mode_merges_pessimistically(monkeypatch, capsys):
+    import argparse
+    import dfs.cli as cli
+    from dfs.sleeper import SleeperClient
+    from dfs.injuries import Status, InjuryRecord, sweep
+    sl = _mini_slate(("Zay Flowers", "WR", "BAL", 7000), ("Joe Burrow", "QB", "CIN", 8200))
+    monkeypatch.setattr(SleeperClient, "players",
+                        lambda self: (_sleeper_payload(), 0.0, False))
+    # FantasyPros already had Burrow as PROBABLE (full Friday); Sleeper says Q.
+    # Pessimistic merge must keep the WORSE (Q). Flowers unknown to FP -> Sleeper OUT lands.
+    inj = {_norm("Joe Burrow"): InjuryRecord(name="Joe Burrow", team="CIN",
+                                             status=Status.PROBABLE, source="fantasypros")}
+    a = argparse.Namespace(official_inactives="gate", official_max_age=1.0,
+                           official_cache_dir=None)
+    out = cli._official_inactives_layer(sl, inj, a)
+    assert out[_norm("Zay Flowers")].status is Status.OUT
+    assert out[_norm("Joe Burrow")].status is Status.QUESTIONABLE
+    res = sweep(sl, out)
+    assert [p.name for p, _ in res.removed] == ["Zay Flowers"]
+    assert "mode: GATE" in capsys.readouterr().out
+
+
+def test_official_layer_unreachable_feed_is_reported_not_fatal(monkeypatch, capsys):
+    import argparse
+    import dfs.cli as cli
+    from dfs.sleeper import SleeperClient, SleeperError
+    sl = _mini_slate(("Anyone", "WR", "BAL", 7000))
+    def boom(self):
+        raise SleeperError("simulated outage")
+    monkeypatch.setattr(SleeperClient, "players", boom)
+    a = argparse.Namespace(official_inactives="gate", official_max_age=1.0,
+                           official_cache_dir=None)
+    inj = {"k": "sentinel"}
+    assert cli._official_inactives_layer(sl, inj, a) is inj
+    assert "UNAVAILABLE" in capsys.readouterr().out
+
+
+def test_official_layer_off_mode_skips_fetch(monkeypatch):
+    import argparse
+    import dfs.cli as cli
+    from dfs.sleeper import SleeperClient
+    called = []
+    monkeypatch.setattr(SleeperClient, "players", lambda self: called.append(1) or ({}, 0, True))
+    a = argparse.Namespace(official_inactives="off")
+    inj = {}
+    assert cli._official_inactives_layer(_mini_slate(), inj, a) is inj
+    assert called == []
+
+
+def test_inactives_warning_states_layer3_mode(capsys):
+    import dfs.cli as cli
+    cli._print_inactives_warning("log")
+    t = capsys.readouterr().out
+    assert "LOG mode" in t and "gating nothing" in t and "ALL NINE" in t
+    cli._print_inactives_warning("gate")
+    t = capsys.readouterr().out
+    assert "GATE" in t and "lag" in t and "ALL NINE" in t
+    cli._print_inactives_warning("off")
+    assert "no official inactives source is active" in capsys.readouterr().out
+
+
+def test_sleeper_client_cache_roundtrip(tmp_path, monkeypatch):
+    """A cached map younger than max_age is served without a network call."""
+    from dfs.sleeper import SleeperClient
+    c = SleeperClient(cache_dir=tmp_path, max_age_hours=1.0)
+    c._write_cache(_sleeper_payload())
+    def no_net(*a, **k):
+        raise AssertionError("network should not be touched")
+    monkeypatch.setattr("urllib.request.urlopen", no_net)
+    payload, age_h, from_cache = c.players()
+    assert from_cache and age_h < 0.01
+    assert payload["1"]["full_name"] == "Zay Flowers"
+    # expired cache -> would go to network (and hit our sentinel)
+    c2 = SleeperClient(cache_dir=tmp_path, max_age_hours=0.0)
+    import pytest
+    with pytest.raises(AssertionError):
+        c2.players()
 
 
 def test_injury_feed_timestamp_parses_fantasypros_format():

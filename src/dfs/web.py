@@ -285,10 +285,15 @@ async def api_swap(csv: UploadFile | None = File(None),
         from .nflcal import current_week
         wi = current_week()
         season, week = season or wi.season, week or wi.week
-    if csv is not None:
+    # An untouched <input type=file> still posts a part — empty filename, zero bytes.
+    # It reached the parser as a 0-byte upload on 2026-09-13 and failed as "schema
+    # drift" with zero columns found. Treat it as "no file" so the stored-CSV fallback
+    # below (the documented "only if changed" behaviour) actually happens.
+    body = (await csv.read()) if (csv is not None and csv.filename) else b""
+    if body:
         UPLOADS.mkdir(parents=True, exist_ok=True)
         dest = UPLOADS / f"swap-{season}-w{week:02d}-{uuid.uuid4().hex[:6]}.csv"
-        dest.write_bytes(await csv.read())
+        dest.write_bytes(body)
         path = str(dest)
     elif slate_csv:
         # Only stored uploads are acceptable — a raw form path would let any caller

@@ -11,12 +11,15 @@ Three layers, increasing in freshness:
      ingest: O/IR/NA/SUSP rows are dropped and reported.
   2. FantasyPros injuries endpoint   — practice participation and game status, updated
      through the week. Q/D/O with practice trend.
-  3. Official inactives (~90 min before kickoff) — NOT IMPLEMENTED. There is no
-     official actives/inactives source wired in. Layer 2 is the freshest data the
-     system has, and it is only as current as FantasyPros' own updates. The Sunday
-     swap check therefore CANNOT guarantee an inactive player is removed — verify
-     flagged players against the official inactives list by hand before lock. The
-     build prints the injury-feed age so staleness is visible rather than assumed.
+  3. Official game-status designations via Sleeper (sleeper.py) — mirrors the NFL's
+     Q/D/O/IR list through game day, including the ~90-minutes-before-kickoff
+     inactive declarations. Runs in LOG mode by default: it prints what it would add
+     or change and GATES NOTHING until `--official-inactives gate` is passed after a
+     Sunday of side-by-side output. Even in gate mode it is a mirror that can lag the
+     NFL's list by minutes, so the Sunday swap check still cannot guarantee an
+     inactive player is removed — verify ALL NINE entered players against the
+     official inactives list by hand before lock. The build prints the age of every
+     feed so staleness is visible rather than assumed.
 
 Statuses are mapped to an ACTION, never to a silent projection haircut. v5 quietly
 multiplied projections by fudge factors for injury status; that hid the decision. Here
@@ -219,16 +222,20 @@ def records_from_slate(slate) -> dict[str, InjuryRecord]:
     return out
 
 
+# Ordering used by merge() and by the official-designations comparison in cli.py.
+# Higher is worse. UNKNOWN sits with PROBABLE: an unrecognised word is not evidence.
+SEVERITY = {Status.ACTIVE: 0, Status.PROBABLE: 1, Status.UNKNOWN: 1,
+            Status.QUESTIONABLE: 2, Status.DOUBTFUL: 3, Status.OUT: 4, Status.IR: 5}
+
+
 def merge(*sources: dict[str, InjuryRecord]) -> dict[str, InjuryRecord]:
     """Later sources win, but a worse status never gets overwritten by a better one
     from a staler feed — the pessimistic read is the safe one before lock."""
-    severity = {Status.ACTIVE: 0, Status.PROBABLE: 1, Status.UNKNOWN: 1,
-                Status.QUESTIONABLE: 2, Status.DOUBTFUL: 3, Status.OUT: 4, Status.IR: 5}
     merged: dict[str, InjuryRecord] = {}
     for src in sources:
         for k, rec in src.items():
             cur = merged.get(k)
-            if cur is None or severity[rec.status] >= severity[cur.status]:
+            if cur is None or SEVERITY[rec.status] >= SEVERITY[cur.status]:
                 merged[k] = rec
     return merged
 
