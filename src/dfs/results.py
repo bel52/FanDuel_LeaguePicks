@@ -101,6 +101,14 @@ class Standing:
         return self.total_points / self.weeks if self.weeks else 0.0
 
 
+# A contest-page actual is recorded as such and becomes `actual` only when nflverse
+# has not graded the player. The page is hand-transcribed; nflverse is validated.
+_PAGE_ACTUAL_SQL = """UPDATE player_results SET actual_fd=?,
+      actual=CASE WHEN actual_src='nflverse' THEN actual ELSE ? END,
+      actual_src=CASE WHEN actual_src='nflverse' THEN actual_src ELSE 'fd_page' END
+    WHERE season=? AND week=? AND fd_id=?"""
+
+
 class ResultLog:
     def __init__(self, db_path: str | Path):
         self.path = str(db_path)
@@ -146,6 +154,19 @@ class ResultLog:
                 c.execute("ALTER TABLE player_results ADD COLUMN played INTEGER")
             if "status_at_lock" not in pcols:
                 c.execute("ALTER TABLE player_results ADD COLUMN status_at_lock TEXT")
+            # Actual provenance, added 2026-09-26. `actual` is what every read uses;
+            # it prefers nflverse (whole pool, scorer validated against FanDuel) and
+            # falls back to the contest page. Both raw values are kept so a
+            # disagreement is visible — Week 2's two mismatches were transcription
+            # errors in a hand-built capture file.
+            if "actual_fd" not in pcols:
+                c.execute("ALTER TABLE player_results ADD COLUMN actual_fd REAL")
+                c.execute("ALTER TABLE player_results ADD COLUMN actual_nfl REAL")
+                c.execute("ALTER TABLE player_results ADD COLUMN actual_src TEXT")
+                c.execute("ALTER TABLE player_results ADD COLUMN played_src TEXT")
+                # every actual written before today came from the contest page
+                c.execute("""UPDATE player_results SET actual_fd=actual,
+                             actual_src='fd_page' WHERE actual IS NOT NULL""")
             c.execute("""CREATE TABLE IF NOT EXISTS props_lines (
                 season INTEGER NOT NULL,
                 week INTEGER NOT NULL,
@@ -240,12 +261,20 @@ class ResultLog:
                  season, week, contest, season, week, contest,
                  season, week, contest, season, week, contest))
             for p in players:
-                c.execute("""INSERT OR REPLACE INTO player_results
-                    (season,week,fd_id,name,position,team,salary,projection,actual,in_lineup)
-                    VALUES (?,?,?,?,?,?,?,?,
-                        (SELECT actual FROM player_results WHERE season=? AND week=? AND fd_id=?),1)""",
+                # UPSERT, never REPLACE: SQLite's REPLACE deletes the row and
+                # re-inserts only the listed columns, which silently erased the
+                # projection components (proj_fp/props/blend, p_active) that
+                # log_projection_components had just written for exactly the
+                # players we rostered — the most important rows in the sample.
+                c.execute("""INSERT INTO player_results
+                    (season,week,fd_id,name,position,team,salary,projection,in_lineup)
+                    VALUES (?,?,?,?,?,?,?,?,1)
+                    ON CONFLICT(season,week,fd_id) DO UPDATE SET
+                      name=excluded.name, position=excluded.position,
+                      team=excluded.team, salary=excluded.salary,
+                      projection=excluded.projection, in_lineup=1""",
                     (season, week, p.fd_id, p.name, p.position, p.team, p.salary,
-                     p.projection, season, week, p.fd_id))
+                     p.projection))
 
     def log_projection_components(self, season: int, week: int, players: list) -> int:
         """Record every projected player's components, not just the nine entered.
@@ -388,11 +417,81 @@ class ResultLog:
                 v = by_name.get(norm_name(r["name"]))
                 if v is None:
                     continue
-                c.execute("""UPDATE player_results SET actual=?
-                             WHERE season=? AND week=? AND fd_id=?""",
-                          (v, season, week, r["fd_id"]))
+                c.execute(_PAGE_ACTUAL_SQL, (v, v, season, week, r["fd_id"]))
                 n += 1
         return n
+
+    def log_nflverse_outcomes(self, season: int, week: int, resolved: list) -> tuple:
+        """Write nflverse points (+ played, when snaps are published). Returns
+        (actuals written, played flags written)."""
+        n_act = n_played = 0
+        with self._c() as c:
+            for r in resolved:
+                if r.points is not None:
+                    c.execute("""UPDATE player_results SET actual_nfl=?, actual=?,
+                                 actual_src='nflverse'
+                                 WHERE season=? AND week=? AND fd_id=?""",
+                              (r.points, r.points, season, week, r.fd_id))
+                    n_act += 1
+                if r.played is not None:
+                    c.execute("""UPDATE player_results SET played=?, played_src='snaps'
+                                 WHERE season=? AND week=? AND fd_id=?""",
+                              (r.played, season, week, r.fd_id))
+                    n_played += 1
+        return n_act, n_played
+
+    def actual_conflicts(self, season: int, week: int, tol: float = 0.05) -> list:
+        with self._c() as c:
+            rows = c.execute("""SELECT name, actual_fd, actual_nfl FROM player_results
+                                WHERE season=? AND week=? AND actual_fd IS NOT NULL
+                                  AND actual_nfl IS NOT NULL
+                                  AND ABS(actual_fd - actual_nfl) > ?
+                                ORDER BY name""", (season, week, tol)).fetchall()
+        return [{"name": r["name"], "fd": r["actual_fd"], "nfl": r["actual_nfl"]}
+                for r in rows]
+
+    def grade_shadow_entries(self, season: int, week: int) -> list:
+        """Score every shadow arm whose nine players all have actuals. The A/B between
+        entry arm and shadow arm teaches nothing if nobody grades the shadow — Weeks 1
+        and 2 of 2026 both sat 'pending' until graded by hand."""
+        graded = []
+        with self._c() as c:
+            rows = c.execute("""SELECT contest, lineup_json FROM entries
+                                WHERE season=? AND week=? AND contest LIKE '%[shadow:%'""",
+                             (season, week)).fetchall()
+            for r in rows:
+                lineup = json.loads(r["lineup_json"] or "[]")
+                total, ok = 0.0, bool(lineup)
+                for pl in lineup:
+                    a = c.execute("""SELECT actual FROM player_results
+                                     WHERE season=? AND week=? AND fd_id=?""",
+                                  (season, week, pl["fd_id"])).fetchone()
+                    if a is None or a["actual"] is None:
+                        ok = False
+                        break
+                    total += a["actual"] * (1.5 if pl.get("mvp") else 1.0)
+                if not ok:
+                    continue
+                total = round(total, 2)
+                c.execute("""UPDATE entries SET actual_score=?
+                             WHERE season=? AND week=? AND contest=?""",
+                          (total, season, week, r["contest"]))
+                graded.append({"contest": r["contest"], "score": total})
+        return graded
+
+    def arm_scoreboard(self, season: int, contest: str = "Leather League") -> list:
+        """(week, entered score, shadow score) for weeks where both are graded."""
+        with self._c() as c:
+            rows = c.execute("""SELECT e.week, e.actual_score AS entered,
+                                       s.actual_score AS shadow, s.contest AS arm
+                                FROM entries e JOIN entries s
+                                  ON s.season=e.season AND s.week=e.week
+                                 AND s.contest LIKE e.contest || ' [shadow:%'
+                                WHERE e.season=? AND e.contest=?
+                                  AND e.actual_score IS NOT NULL
+                                  AND s.actual_score IS NOT NULL
+                                ORDER BY e.week""", (season, contest)).fetchall()
+        return [dict(r) for r in rows]
 
     def component_accuracy(self, season: int, min_week: int = 1,
                            min_n: int = 20) -> dict:
@@ -510,9 +609,7 @@ class ResultLog:
         n = 0
         with self._c() as c:
             for fd_id, pts in actuals.items():
-                cur = c.execute("""UPDATE player_results SET actual=?
-                                   WHERE season=? AND week=? AND fd_id=?""",
-                                (pts, season, week, fd_id))
+                cur = c.execute(_PAGE_ACTUAL_SQL, (pts, pts, season, week, fd_id))
                 n += cur.rowcount
         return n
 

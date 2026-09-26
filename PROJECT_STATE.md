@@ -257,6 +257,18 @@ Build → Sunday swap → Capture results → Season.
   (`MIN_SWAP_GAIN_PTS`); a ruled-out player always forces a swap but replaces ONLY his
   slot unless reshuffling clears the same bar. Week 1 2026: +2.5 swap rewrote three
   slots, cost 10.7 actual pts. The swap output leads with a one-line DECISION.
+- **Whole-pool actuals come from nflverse** (`actuals.py`), graded automatically on
+  every build (prior weeks) and capture (all weeks, backfill-safe). Scorer validated
+  2026-09-26: 50/52 Week-2 contest-page values exact incl. all six DSTs; the two
+  misses were hand-transcribed capture cells where nflverse was right. DST sacks/INTs
+  come from the OPPONENT's offense (defender credits sum short on split sacks).
+  Players join through gsis_id, never name-to-name; an unmatched pool player stays
+  NULL (never a false 0). `actual` prefers nflverse; `actual_fd` keeps the page value;
+  disagreements print. `played` comes from snap counts. Shadow arms grade themselves.
+- **`log_entry` used INSERT OR REPLACE**, which in SQLite deletes and re-inserts only
+  the listed columns — it erased proj_fp/props/blend and p_active for the 18 players
+  in the two logged arms every build, i.e. component accuracy excluded exactly the
+  lineups we fielded. Now an UPSERT; regression-tested.
 - **The web swap enforces a <3h player list.** The CLI flag existed; the web never
   passed it, so a forgotten upload silently reused Saturday's CSV.
 

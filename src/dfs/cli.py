@@ -672,6 +672,8 @@ def cmd_build(a) -> int:
               f"--contest \"{spec.name}\"")
         print("  Until confirmed, the Sunday swap check will refuse to run (it must "
               "not optimize from a lineup that was never fielded).")
+        _grade_from_nflverse(rl_out, a.season, list(range(1, a.week)), spec.name,
+                             "PRIOR WEEKS GRADED (nflverse, whole pool):")
     if a.pushover_out:
         metrics = (f"{spec.name} w{a.week} [{entry_arm}]: proj {entry_cand.proj_sum:.1f}, "
                    f"E[pts] {entry_eval.exp_points:.1f}, P(win) {entry_eval.p_win:.0%}")
@@ -1089,7 +1091,44 @@ def cmd_swap_accept(a) -> int:
     return 0
 
 
+def _grade_from_nflverse(rl, season: int, weeks: list, contest: str,
+                         header: str) -> None:
+    """Whole-pool actuals + played + shadow grading. Never fails the caller: a feed
+    outage prints one line and the next build or capture retries."""
+    weeks = [w for w in weeks if w >= 1]
+    if not weeks:
+        return
+    try:
+        from .actuals import ingest
+        reps = ingest(rl, season, weeks)
+    except Exception as e:
+        print(f"\n{header}\n  skipped ({type(e).__name__}: {e})")
+        return
+    print(f"\n{header}")
+    for r in reps:
+        print(r.line())
+        for d in r.details():
+            print(d)
+    sb = rl.arm_scoreboard(season, contest)
+    if sb:
+        te = sum(r["entered"] for r in sb)
+        ts = sum(r["shadow"] for r in sb)
+        print(f"  entry arm vs shadow arm, graded weeks {','.join(str(r['week']) for r in sb)}: "
+              f"{te:.2f} vs {ts:.2f} ({te - ts:+.2f}) — "
+              f"{'too few weeks to mean anything' if len(sb) < 8 else 'see standings'}")
+
+
 def cmd_capture(a) -> int:
+    rc = _cmd_capture_core(a)
+    # Runs whatever the grading gate decided: whole-pool outcomes do not depend on
+    # whether Brett's own entry could be graded, and they backfill earlier weeks.
+    _grade_from_nflverse(ResultLog(a.log_db), a.season, list(range(1, a.week + 1)),
+                         a.contest, "WHOLE-POOL ACTUALS (nflverse — every projected "
+                         "player, not just rostered ones):")
+    return rc
+
+
+def _cmd_capture_core(a) -> int:
     import json as _json
     from .contest_parse import parse_contest
     capture = parse_contest(a.path, a.season, a.week, a.contest)
@@ -1240,6 +1279,21 @@ def cmd_capture(a) -> int:
     return 0
 
 
+def cmd_actuals(a) -> int:
+    """Grade projected players from nflverse. Backfill-safe; re-run any time."""
+    rl = ResultLog(a.log_db)
+    if a.week:
+        weeks = [a.week]
+    else:
+        with rl._c() as c:
+            weeks = [r[0] for r in c.execute(
+                "SELECT DISTINCT week FROM player_results WHERE season=? ORDER BY week",
+                (a.season,)).fetchall()]
+    _grade_from_nflverse(rl, a.season, weeks, a.contest,
+                         f"WHOLE-POOL ACTUALS — {a.season} weeks {weeks}")
+    return 0
+
+
 def cmd_standings(a) -> int:
     rl = ResultLog(a.log_db)
     st = rl.standings(a.season, contest_like=a.contest)
@@ -1289,6 +1343,17 @@ def cmd_standings(a) -> int:
               f"{v['observed_play_rate']:.2f}")
     if not av.get("buckets"):
         print(f"  {av.get('verdict', 'nothing recorded yet')}")
+
+    sb = rl.arm_scoreboard(a.season, a.contest if "%" not in a.contest else "Leather League")
+    if sb:
+        print("\nENTRY ARM vs SHADOW ARM (graded weeks):")
+        for r in sb:
+            print(f"    week {r['week']:2d}  entered {r['entered']:7.2f}  "
+                  f"{r['arm'].split('[')[-1].rstrip(']'):12s} {r['shadow']:7.2f}  "
+                  f"({r['entered'] - r['shadow']:+.2f})")
+        te, ts = sum(r["entered"] for r in sb), sum(r["shadow"] for r in sb)
+        print(f"    total    entered {te:7.2f}  shadow       {ts:7.2f}  ({te - ts:+.2f})"
+              f"{'  — fewer than 8 weeks: noise, not evidence' if len(sb) < 8 else ''}")
     return 0
 
 
@@ -1401,6 +1466,15 @@ def main(argv=None) -> int:
                      help="your FanDuel handle on the results page")
     cap.add_argument("--log-db", default="data/results.db")
     cap.set_defaults(func=cmd_capture)
+
+    act = sub.add_parser("actuals", help="grade every projected player from nflverse "
+                         "(runs automatically on build and capture)")
+    act.add_argument("--season", type=int, required=True)
+    act.add_argument("--week", type=int, default=None,
+                     help="one week; default = every week with logged projections")
+    act.add_argument("--contest", default="Leather League")
+    act.add_argument("--log-db", default="data/results.db")
+    act.set_defaults(func=cmd_actuals)
 
     st = sub.add_parser("standings", help="season standings + objective weights from the log")
     st.add_argument("--season", type=int, required=True)
