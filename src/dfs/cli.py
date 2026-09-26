@@ -53,6 +53,26 @@ def _aliases(path: str | None) -> dict:
     return al
 
 
+def _teammate_layer(slate, fp, inj, a) -> list:
+    """Vacated production from absent players -> teammates' FantasyPros component.
+    Measured rates, conservative application; see teammates.py. Printed in full."""
+    if getattr(a, "no_teammates", False) or not inj:
+        return []
+    # Fail-safe: this layer refines projections; it must never be the reason a
+    # build or a Sunday swap check fails. Any error -> report and carry on without it.
+    try:
+        from .teammates import adjust_for_absences, report
+        from .injuries import play_probability
+        adjs = adjust_for_absences(slate, fp, inj, play_probability)
+    except Exception as e:
+        print(f"\n  teammate effects skipped ({type(e).__name__}: {e}) — "
+              "projections unchanged")
+        return []
+    for line in report(adjs):
+        print(line)
+    return adjs
+
+
 def _props_layer(slate, a, dist, label: str = "build"):
     """Fetch, score and blend market-implied projections. Never fatal.
 
@@ -388,6 +408,7 @@ def cmd_build(a) -> int:
             raise SlateError("questionable players in pool and --strict-injuries set; "
                              "resolve before building")
         annotate_availability(slate, inj)
+        _teammate_layer(slate, fp, inj, a)
     else:
         inj = {}
 
@@ -770,6 +791,7 @@ def cmd_swap(a) -> int:
     print(f"Projections refreshed: {mrep.matched}/{mrep.total}")
     if mrep.unmatched:
         print(mrep.summary(report_salary=getattr(a, "report_salary", 5000)))
+    _teammate_layer(slate, fp, inj, a)
 
     # The swap must re-optimize against the SAME projection definition the entry was
     # built from, or it will propose churn that is really just a change of method.
@@ -1426,6 +1448,8 @@ def main(argv=None) -> int:
                    help="one-off contests: total prize pool (h2h/showdown/gpp)")
     b.add_argument("--no-injuries", action="store_true",
                    help="skip the inactives sweep (testing only)")
+    b.add_argument("--no-teammates", action="store_true",
+                   help="skip teammate effects (vacated production from absent players)")
     b.add_argument("--official-inactives", choices=("log", "gate", "off"), default="log",
                    help="Sleeper mirror of official Q/D/O designations: log = report "
                         "only (default), gate = remove players it marks Out, off = skip")
@@ -1529,6 +1553,8 @@ def main(argv=None) -> int:
                     help="Sleeper mirror of official Q/D/O designations: log = report "
                          "only (default), gate = remove players it marks Out, off = skip")
     sw.add_argument("--official-max-age", type=float, default=1.0, metavar="HOURS")
+    sw.add_argument("--no-teammates", action="store_true",
+                    help="skip teammate effects (vacated production from absent players)")
     sw.add_argument("--official-cache-dir", default=None)
     sw.add_argument("--require-fresh-csv", type=float, default=None,
                     metavar="HOURS",

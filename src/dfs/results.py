@@ -159,6 +159,8 @@ class ResultLog:
             # falls back to the contest page. Both raw values are kept so a
             # disagreement is visible — Week 2's two mismatches were transcription
             # errors in a hand-built capture file.
+            if "teammate_adj" not in pcols:
+                c.execute("ALTER TABLE player_results ADD COLUMN teammate_adj REAL")
             if "actual_fd" not in pcols:
                 c.execute("ALTER TABLE player_results ADD COLUMN actual_fd REAL")
                 c.execute("ALTER TABLE player_results ADD COLUMN actual_nfl REAL")
@@ -292,8 +294,8 @@ class ResultLog:
                 c.execute("""INSERT INTO player_results
                     (season,week,fd_id,name,position,team,salary,projection,
                      proj_fp,proj_props,proj_blend,p_active,opp_implied_total,
-                     status_at_lock,in_lineup)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+                     status_at_lock,teammate_adj,in_lineup)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
                     ON CONFLICT(season,week,fd_id) DO UPDATE SET
                       name=excluded.name, position=excluded.position,
                       team=excluded.team, salary=excluded.salary,
@@ -301,14 +303,16 @@ class ResultLog:
                       proj_props=excluded.proj_props, proj_blend=excluded.proj_blend,
                       p_active=excluded.p_active,
                       opp_implied_total=excluded.opp_implied_total,
-                      status_at_lock=excluded.status_at_lock""",
+                      status_at_lock=excluded.status_at_lock,
+                      teammate_adj=excluded.teammate_adj""",
                     (season, week, p.fd_id, p.name, p.position, p.team, p.salary,
                      p.projection, getattr(p, "proj_fp", None),
                      getattr(p, "proj_props", None), getattr(p, "proj_blend", None),
                      getattr(p, "p_active", None),
                      getattr(p, "opp_implied_total", None),
                      ((getattr(p, "injury_indicator", "") or "") + " "
-                      + (getattr(p, "injury_details", "") or "")).strip() or None))
+                      + (getattr(p, "injury_details", "") or "")).strip() or None,
+                     getattr(p, "teammate_adj", None)))
                 n += 1
         return n
 

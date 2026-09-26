@@ -269,6 +269,14 @@ Build → Sunday swap → Capture results → Season.
   the listed columns — it erased proj_fp/props/blend and p_active for the 18 players
   in the two logged arms every build, i.e. component accuracy excluded exactly the
   lineups we fielded. Now an UPSERT; regression-tested.
+- **Teammate effects are measured, not assumed** (`teammates.py`, nflverse 2023-25):
+  teammates absorb 61% of a sitting receiver's receiving points (271 games, CI
+  45-77%) and 58% of a sitting back's rushing points (103 games, CI 40-76%);
+  same-position teammates take ~2.5x per unit of volume (2,096 recipient-games).
+  Applied at the LOW bounds (45%/40%), to the FantasyPros component only (markets
+  already reprice), vacated = the absent player's own FP projection x P(sits) so it
+  self-disables when consensus has caught up; capped +5 / +35%; logged per player in
+  `player_results.teammate_adj` for later accuracy measurement. `--no-teammates` off.
 - **The web swap enforces a <3h player list.** The CLI flag existed; the web never
   passed it, so a forgotten upload silently reused Saturday's CSV.
 
