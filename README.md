@@ -9,7 +9,7 @@ single-game showdown, and public contests.
 ## Status — honest
 
 The data layer, modeling core, and Sunday operating loop are complete and tested
-(235 offline tests, including an end-to-end build test that asserts the upload CSV,
+(270 offline tests, including an end-to-end build test that asserts the upload CSV,
 entry log, and pushover card actually exist). **Edge is not yet demonstrated.** The system reports a positive
 objective delta over a max-projection baseline, but that number is produced by the
 same simulator that selects the lineup. Until it is validated against out-of-sample
@@ -20,6 +20,12 @@ fresh simulations and fresh opponent fields — and reports the selection optimi
 Trust that number, not the selection estimate.
 
 ## Quick start
+
+**Normal operation is the web UI at `https://dfs.leathfam.com`** (behind Cloudflare
+Access): Saturday build → enter by hand on FanDuel → "I entered this lineup"; Sunday
+11:30 and ~3:00 ET fresh player list → Run Swap Check → do what its first line says
+(`DECISION: NO CHANGE` or `DECISION: MAKE THIS SWAP ON FANDUEL`); Monday capture. The
+CLI below is what the UI runs.
 
     pip install -r requirements.txt
     cp .env.example .env        # add FANTASYPROS_API_KEY and ODDS_API_KEY
@@ -37,6 +43,10 @@ Trust that number, not the selection estimate.
     # Monday: ingest the contest results page (Cmd-A / Cmd-C into a text file)
     ./run.sh capture <pasted_page.txt> --season 2026 --week 1
     ./run.sh standings --season 2026 --me brettleath
+
+    # Whole-pool actuals from nflverse — runs automatically inside build (prior weeks)
+    # and capture (all weeks); this is only for a manual backfill
+    ./run.sh actuals --season 2026
 
 ## Design rules (each learned from a specific v5 failure)
 
@@ -89,6 +99,9 @@ Trust that number, not the selection estimate.
 | `calibrate` | projection-accuracy harness + distribution rebuild |
 | `blend` | projection assembly |
 | `injuries` | three-layer injury pipeline + Sunday inactives sweep |
+| `sleeper` | layer 3: official NFL game-status designations via Sleeper (LOG mode) |
+| `teammates` | vacated production from absent players → teammates (measured rates) |
+| `actuals` | nflverse whole-pool actuals, snap-count `played`, shadow-arm grading |
 | `kickoffs` | nflverse kickoff times and per-game lock state |
 | `optimize` | MIP candidate pools with diversity, stack, and showdown rules |
 | `simulate` | correlated Monte Carlo (Gaussian copula over empirical ratios) |
@@ -98,7 +111,7 @@ Trust that number, not the selection estimate.
 | `export` | lineup cards (+ an upload CSV FanDuel has no way to consume) |
 | `contest_parse` | pasted contest results → lineups + measured league ownership |
 | `results` | result log, standings, projection-component and availability calibration |
-| `cli` | `build` / `swap` / `capture` / `standings` |
+| `cli` | `build` / `swap` / `capture` / `standings` / `actuals` |
 
 ## League play: player props
 
@@ -150,9 +163,8 @@ the D never gets a tilt, skill players never see an opponent total.
 
 **Measuring it.** `log_projection_components` writes `proj_fp`, `proj_props`,
 `proj_blend` and `p_active` for the whole priced pool every build (~370 rows a week, not
-the nine entered), and `capture` attaches actuals for every player on the contest results
-page (~60–100 distinct, matched by name; players never projected are skipped rather than
-invented). `component_accuracy` then grades the components against each other on the same
+the nine entered), and **every projected player is graded from nflverse** — see
+*Whole-pool actuals* below. `component_accuracy` then grades the components against each other on the same
 players and reports a least-squares props weight. That number is **reported, never
 applied** — `PROPS_WEIGHT` stays a human decision, because a weight fitted on four weeks
 of one season is not evidence. No walk-forward backtest is possible (the salary archives
@@ -165,6 +177,42 @@ before they can reach a lineup. So a CSV re-downloaded after the inactives post 
 inactives source, and a Wednesday CSV is not. `swap` therefore prints the CSV's age
 against the next unlocked kickoff and, with `--require-fresh-csv HOURS` (set to 3 in
 `bin/sunday-swap.sh`), refuses rather than swapping on a lineup it cannot verify.
+
+**Sunday swap decision.** The swap output leads with one line a human acts on —
+`DECISION: NO CHANGE` or `DECISION: MAKE THIS SWAP ON FANDUEL` — so no rule has to be
+remembered on game day. A speculative swap must gain at least `MIN_SWAP_GAIN_PTS` = 6
+projected points (per-player projection error is ~6–7 pts MAE; Week 1 2026's +2.5 swap
+rewrote three slots and cost 10.7 actual points). A player ruled out always forces a
+swap, but only his slot changes unless reshuffling the healthy players clears the same
+bar. The web swap passes `--require-fresh-csv 3`, so a forgotten upload is refused with
+instructions instead of silently re-using Saturday's player list.
+
+**Whole-pool actuals (`actuals.py`).** Contest-page actuals cover only the ~50–60
+players somebody rostered — a projection-selected sample. Every projected player
+(~390 a week) is now graded from nflverse: players join through nflverse's own id
+(`gsis_id`), never name-to-name; a roster player with no stat row genuinely scored 0; an
+unmatched pool player stays NULL and is reported (never a false zero); only final games
+are graded. DST sacks and interceptions come from the opponent's offense (defender
+credits sum short on split sacks), and blocked kicks count 2. Validated 2026-09-26:
+the scorer reproduced the Week-2 contest page to the hundredth for 50 of 52 players
+including every defense; the two misses were hand-transcribed capture cells, where
+nflverse was right. `actual` prefers nflverse and `actual_fd` keeps the page value;
+disagreements are printed, which surfaces capture errors. Shadow arms grade themselves
+and `standings` prints entered-vs-shadow by week. Runs automatically on build (prior
+weeks) and capture (all weeks); a feed outage prints one line and retries next run.
+
+**Teammate effects (`teammates.py`).** When a player is out or may be, part of his
+production flows to teammates, and FantasyPros consensus is slow to move them. The
+rates are measured on nflverse 2023–25: teammates absorb 61% of a sitting receiver's
+receiving points (271 games, 95% CI 45–77%) and 58% of a sitting back's rushing points
+(103 games, CI 40–76%), split by projected volume with same-position teammates taking
+~2.5× per unit (2,096 recipient-games). Applied conservatively: the low CI bounds
+(45% / 40%), to the FantasyPros component only (markets already reprice teammates),
+with "vacated" = the absent player's own FP projection × P(he sits) so it switches off
+when consensus has caught up; capped at +5 pts / +35% (so it alone can never clear the
+swap threshold); logged per player in `player_results.teammate_adj`; fail-safe (any
+error leaves projections unchanged); `--no-teammates` disables it. A QB out is a
+team-level effect already carried by the Vegas implied total, so it is excluded.
 
 **Persistence (the learning loop's prerequisite).** Three things are written down every
 build because an unrecorded week is permanently unlearnable, and there are 21 of them:
@@ -179,8 +227,10 @@ build because an unrecorded week is permanently unlearnable, and there are 21 of
   points total. `MULTI_TD_FACTOR` and `ANYTIME_TD_OVERROUND` are fittable only by
   comparing an expected quantity to the actual one (expected TDs against TDs scored);
   from a points total they are unrecoverable, so both would stay coarse priors forever.
-* **`player_results.played` / `.status_at_lock`** — who actually suited up, taken from
-  the post-lock FanDuel player list (`O` flag) during `swap`. `actual` cannot stand in:
+* **`player_results.played` / `.status_at_lock`** — who actually suited up: from nflverse
+  snap counts once a game's snaps publish (`played_src='snaps'`), which overrides the
+  post-lock FanDuel player list (`O` flag) recorded during `swap` — that flag cannot see
+  a late scratch. `actual` cannot stand in:
   it is NULL for a scratch, NULL for a player nobody rostered, and 0.0 for a player who
   played and did nothing — three different facts. This is what turns the flat 0.72
   questionable prior into a measured number.
@@ -200,14 +250,19 @@ yields too few priced players per position to fit a scale factor.
 - No walk-forward backtest (historical FanDuel salary archives are patchy), which is
   why the in-season component log exists — it is the only available route to a
   measured edge.
-- **The actuals sample is biased, not merely small.** Actuals come from the contest
-  results page, which contains only players the twelve entrants rostered — roughly
-  50–70 distinct players a week out of ~371 projected, and skewed toward high
-  projections by construction. Fitting a blend weight on a projection-selected
-  subsample gives a biased estimate. Fix (queued for weeks 2–3): pull weekly actuals
-  for the whole pool from `nflreadpy` (already a dependency for kickoffs) and score
-  them through `scoring.py`, which also makes the `played` flag definitive via snap
-  counts and supersedes the `fanduel_csv`-sourced rows.
+- **FantasyPros DOUBTFUL overrules official designations.** The pessimistic `merge()`
+  always keeps the worse status, so an official Questionable can never de-escalate a
+  FantasyPros DOUBTFUL (which removes the player from the pool). Week 3 2026 removed
+  Mike Evans at 87% to play, Keon Coleman at 70% and Tyjae Spears at 62%; Ladd
+  McConkey (removed as DOUBTFUL, Week 2) played. A merge policy that lets official
+  status and explicit probability de-escalate is the next fix, using observed outcomes.
+- **Odds API free tier runs dry late in the month.** Week 3 2026 priced props for only
+  42 of 359 players after credits ran out (the log now says "out of credits", not
+  "rotate key"). Harmless while FP and market MAE are statistically tied; a paid tier or
+  a credit budget is an open decision.
+- **Teammate-effect accuracy is unmeasured.** The rates are historical; whether the
+  adjustment improves this season's projections is readable from `teammate_adj` against
+  nflverse actuals after ~3 weeks.
 - **`PROPS_WEIGHT` is still a hardcoded constant.** `component_accuracy` reports a
   fitted weight but nothing consumes it, and there is no threshold at which it would
   ever be adopted — so "reported only" becomes "never used" unless a versioned weights
@@ -221,8 +276,8 @@ yields too few priced players per position to fit a scale factor.
 - **No holdout discipline for fitted parameters yet.** Anything fitted in-season needs
   expanding-window or leave-one-week-out evaluation before it is trusted, or it will
   reproduce exactly the optimism the INDEPENDENT EVALUATION block exists to catch.
-- Opponent field is a generic chalk-weighted prior; measured league ownership is
-  captured but not yet driving it.
+- The opponent field is conditioned on measured league ownership (n/(n+4) shrinkage
+  toward measured DRAFTED%); per-opponent tendency modeling is not built.
 - Two props constants remain coarse priors, labelled as such in `props.py`:
   `ANYTIME_TD_OVERROUND` (TD boards are one-sided and cannot be devigged pairwise) and
   `MULTI_TD_FACTOR` (E[TDs] given P(>=1 TD)). Both become empirical once logged
@@ -250,7 +305,7 @@ yields too few priced players per position to fit a scale factor.
 | `data/aliases.json` | hand-confirmed FanDuel→FantasyPros name overrides | yes |
 | `data/props/` | Odds API prop-board cache, `_fetched_at`-stamped | **no** (gitignored) |
 | `data/snapshots/` | at-lock FantasyPros and prop-board payloads, gzipped | no |
-| `data/results.db` | entries, `player_results` components, `props_lines` | no |
+| `data/results.db` | entries, `player_results` (components, actuals + provenance, `played`, `teammate_adj`), `props_lines` | no |
 
 Everything under `data/` except the two JSON files above is runtime state. The cache is
 gitignored because a tracked cache is rewritten by every clone and pull; freshness comes

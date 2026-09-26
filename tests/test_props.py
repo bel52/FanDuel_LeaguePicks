@@ -1019,8 +1019,12 @@ def test_export_warning_tells_the_user_to_hand_enter(tmp_path):
 
 def test_known_gaps_record_the_open_learning_loop():
     """The scalability findings must live in the repo, not only in a chat log: the
-    biased actuals sample, the unconsumed fitted weight, and the distribution basis."""
+    unconsumed fitted weight, the distribution basis, holdout discipline — and, since
+    2026-09-26, the resolution of the biased-actuals gap (whole-pool nflverse grading)
+    plus the gaps that replaced it."""
     r = _readme()
-    for phrase in ("biased, not merely small", "still a hardcoded constant",
-                   "fitted on 2025 FantasyPros residuals", "holdout discipline"):
-        assert phrase in r, f"missing from Known gaps: {phrase}"
+    for phrase in ("still a hardcoded constant", "fitted on 2025 FantasyPros residuals",
+                   "holdout discipline", "Whole-pool actuals",
+                   "FantasyPros DOUBTFUL overrules", "Teammate-effect accuracy is unmeasured"):
+        assert phrase in r, f"missing from README: {phrase}"
+    assert "biased, not merely small" not in r, "resolved gap still listed as open"

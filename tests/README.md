@@ -1,4 +1,4 @@
-Offline test suite — no API keys or network required. 21 tests covering contest spec,
-CSV ingest (incl. schema-drift fail-loud), persistence, empirical distributions,
-FanDuel scoring, roster/diversity/stack constraints, simulator determinism,
-correlation structure, joint-vs-marginal lineup ceiling, and payout-EV reconciliation.
+Offline test suite — no API keys or network required (`conftest.py` makes nflverse
+look offline; tests that exercise the nflverse grader inject their own frames).
+Run: `python3 -m pytest tests/ -q`. One swap-accept test is time-dependent and fails
+when run long after its fixture date; it is a known, unrelated failure.
