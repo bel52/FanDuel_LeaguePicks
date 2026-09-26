@@ -200,3 +200,46 @@ def test_migration_marks_existing_actuals_as_page_sourced(tmp_path):
     with rl._c() as c:
         r = c.execute("SELECT actual, actual_fd, actual_src FROM player_results").fetchone()
     assert (r["actual"], r["actual_fd"], r["actual_src"]) == (12.5, 12.5, "fd_page")
+
+
+def test_actuals_command_without_week_grades_every_logged_week(tmp_path, monkeypatch):
+    """Production 2026-09-26: main() auto-filled the calendar week, so the backfill
+    graded only week 3. No --week must mean every week with logged projections."""
+    from dfs import cli
+    rl = _seed(tmp_path)
+    with rl._c() as c:
+        c.execute("""INSERT INTO player_results (season,week,fd_id,name,position,team)
+                     VALUES (2026,1,'z','Z Z','WR','CAR')""")
+    seen = {}
+    monkeypatch.setattr(cli, "_grade_from_nflverse",
+                        lambda rl, season, weeks, contest, header: seen.setdefault("w", weeks))
+    assert cli.main(["actuals", "--season", "2026", "--log-db", str(tmp_path / "r.db")]) == 0
+    assert seen["w"] == [1, 2]
+
+
+def test_dst_counts_blocked_kicks():
+    """Chicago W1 2026: FanDuel 6.0, scorer 4.0 — the gap was one blocked PAT."""
+    chi = {"fumble_recovery_opp": 2, "def_pat_blocks": 1}
+    car = {"sacks_suffered": 2, "passing_interceptions": 1}
+    assert dst_points(chi, car, points_allowed=37) == 6.0
+
+
+def test_nickname_resolves_by_unique_surname_only():
+    class L(FakeLoader):
+        def rosters(self, s):
+            df = super().rosters(s)
+            extra = pd.DataFrame([{"week": 2, "game_type": "REG", "gsis_id": "G9",
+                                   "team": "CAR", "position": "WR",
+                                   "full_name": "Marquise Brown", "football_name": "Marquise",
+                                   "first_name": "Marquise", "last_name": "Brown",
+                                   "pfr_id": "P9"}])
+            return pd.concat([df, extra], ignore_index=True)
+    wo = load_week(2026, 2, L())
+    pool = [{"fd_id": "h", "name": "Hollywood Brown", "position": "WR", "team": "CAR",
+             "salary": 5100}]
+    res, unmatched = resolve(pool, wo)
+    assert not unmatched and res[0].fd_id == "h" and res[0].points == 0.0
+    # ambiguous surname at the position -> left ungraded, never guessed
+    wo.last_index[("brown", "CAR", "WR")].add("G10")
+    res, unmatched = resolve(pool, wo)
+    assert not res and unmatched

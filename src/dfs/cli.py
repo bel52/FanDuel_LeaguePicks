@@ -1282,8 +1282,8 @@ def _cmd_capture_core(a) -> int:
 def cmd_actuals(a) -> int:
     """Grade projected players from nflverse. Backfill-safe; re-run any time."""
     rl = ResultLog(a.log_db)
-    if a.week:
-        weeks = [a.week]
+    if a.only_week:
+        weeks = [a.only_week]
     else:
         with rl._c() as c:
             weeks = [r[0] for r in c.execute(
@@ -1470,7 +1470,10 @@ def main(argv=None) -> int:
     act = sub.add_parser("actuals", help="grade every projected player from nflverse "
                          "(runs automatically on build and capture)")
     act.add_argument("--season", type=int, required=True)
-    act.add_argument("--week", type=int, default=None,
+    # dest is NOT "week": main() auto-fills any `week` attribute from the live
+    # calendar, which turned "no week given = every week" into "current week only"
+    # on the first production run (2026-09-26).
+    act.add_argument("--week", dest="only_week", type=int, default=None,
                      help="one week; default = every week with logged projections")
     act.add_argument("--contest", default="Leather League")
     act.add_argument("--log-db", default="data/results.db")

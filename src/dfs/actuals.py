@@ -44,6 +44,11 @@ SKILL = ("QB", "RB", "WR", "TE")
 from .scoring import (DST_PA_LADDER, DST_SACK, DST_INT, DST_FUM_REC, DST_TD,
                       DST_SAFETY)
 
+# FanDuel awards 2 per blocked punt / FG / PAT. FantasyPros projects no blocks, so
+# scoring.py never needed this; realised scoring does. Chicago W1 2026: one blocked
+# PAT was the entire 2-point gap between this module and the contest page.
+DST_BLOCK = 2.0
+
 
 def _n(v) -> float:
     try:
@@ -90,6 +95,8 @@ def dst_points(team_row: dict, opp_row: dict, points_allowed: float) -> float:
            + _n(team_row.get("fumble_recovery_opp")) * DST_FUM_REC
            + (_n(team_row.get("def_tds")) + _n(team_row.get("special_teams_tds"))) * DST_TD
            + _n(team_row.get("def_safeties")) * DST_SAFETY
+           + (_n(team_row.get("def_punt_blocks")) + _n(team_row.get("def_fg_blocks"))
+              + _n(team_row.get("def_pat_blocks"))) * DST_BLOCK
            + _ladder(points_allowed))
     return round(pts, 2)
 
@@ -104,6 +111,7 @@ class WeekOutcomes:
     name_index: dict = field(default_factory=dict)     # (norm_name, team) -> {gsis}
     name_only: dict = field(default_factory=dict)      # norm_name -> {(gsis, team)}
     short_index: dict = field(default_factory=dict)    # (short_key, team, pos) -> {gsis}
+    last_index: dict = field(default_factory=dict)     # (last, team, pos) -> {gsis}
     gsis_team: dict = field(default_factory=dict)      # gsis_id -> team
     dst: dict = field(default_factory=dict)            # team -> FD points
     played: dict = field(default_factory=dict)         # gsis_id -> bool
@@ -180,6 +188,9 @@ def load_week(season: int, week: int, loader=None) -> WeekOutcomes:
                 out.name_index.setdefault((k, team), set()).add(gsis)
                 out.name_only.setdefault(k, set()).add((gsis, team))
                 out.short_index.setdefault((short_key(v), team, pos), set()).add(gsis)
+        last = norm_name(str(r.get("last_name") or ""))
+        if last:
+            out.last_index.setdefault((last, team, pos), set()).add(gsis)
         if isinstance(r.get("pfr_id"), str) and r.get("pfr_id"):
             pfr_to_gsis[r["pfr_id"]] = gsis
 
@@ -252,6 +263,12 @@ def resolve(pool_rows: list[dict], wo: WeekOutcomes) -> tuple[list[Resolution], 
             else:
                 ids = wo.short_index.get((short_key(r["name"]), team, pos), set())
                 how = "short-key" if len(ids) == 1 else ""
+                if len(ids) != 1:
+                    # nickname vs legal name ("Hollywood" Brown = Marquise Brown): the
+                    # surname is unique at that position on that team's roster
+                    parts = k.split()
+                    ids = wo.last_index.get((parts[-1] if parts else "", team, pos), set())
+                    how = "surname" if len(ids) == 1 else ""
         if len(ids) != 1:
             unmatched.append({"name": r["name"], "team": team, "position": pos,
                               "salary": res.salary})
