@@ -314,6 +314,11 @@ async def api_swap(csv: UploadFile | None = File(None),
             "--contest", contest, "--profile", profile,
             "--critical-salary", "7000",
             "--log-db", str(log_db),
+            # Sunday scratches only reach us through a freshly downloaded player
+            # list. The flag existed but the web path never passed it, so a forgotten
+            # upload silently re-used Saturday's CSV (Week 1 2026: 25.7h old, still
+            # produced a proposal). The system enforces it; the human doesn't have to.
+            "--require-fresh-csv", "3",
             "--proposal-out", str(lineups_dir / Path(
                 _proposal_path(season, week, contest)).name),
             "--export", str(lineups_dir / f"swap-{season}-w{week:02d}.csv")]

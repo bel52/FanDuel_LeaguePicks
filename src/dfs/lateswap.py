@@ -27,6 +27,14 @@ from .simulate import SlateSimulator
 from .field import build_prior_field, rank_candidates, FieldModel
 from .slate import PlayerSlate, SlateError
 
+# Minimum projected-point gain before a SPECULATIVE Sunday swap is proposed.
+# Week 1 2026: a +2.5-pt swap rewrote three slots and cost 10.7 actual points and
+# four places. Projection noise per player is ~6-7 pts MAE, so a gain smaller than
+# that is indistinguishable from noise and every hand-edit on FanDuel carries entry
+# risk. A player ruled OUT is not speculative — his slot is a guaranteed zero — so
+# forced swaps bypass the threshold (but see the minimal-replacement rule below).
+MIN_SWAP_GAIN_PTS = 6.0
+
 
 @dataclass
 class SwapProposal:
@@ -39,16 +47,29 @@ class SwapProposal:
     reason: str
     proposed_mvp: str | None = None   # showdown: MVP of the proposed lineup
     criterion: str = "$/wk objective" # what old/new numbers ARE (model $ vs proj pts)
+    forced: bool = False              # a lineup player was ruled out
+    ruled_out: tuple = ()             # names of the ruled-out lineup players
 
     @property
     def improves(self) -> bool:
         return self.new_dollars > self.old_dollars + 1e-9
 
+    def decision(self) -> str:
+        """One line a human acts on. No thresholds to remember, no judgment call."""
+        if not self.swaps:
+            return "DECISION: NO CHANGE — keep your lineup exactly as entered."
+        if self.forced:
+            who = ", ".join(self.ruled_out) or "a player in your lineup"
+            return (f"DECISION: MAKE THIS SWAP ON FANDUEL — {who} ruled out "
+                    f"(an inactive scores zero).")
+        return "DECISION: MAKE THIS SWAP ON FANDUEL — it clears the swap threshold."
+
     def summary(self, byid: dict) -> str:
         if not self.swaps:
-            return (f"NO SWAP — current lineup is still optimal for the unlocked slots "
-                    f"({self.old_dollars:.2f} {self.criterion}). {self.reason}")
-        lines = [f"SWAP PROPOSAL: {self.old_dollars:.2f} -> {self.new_dollars:.2f} "
+            return (f"{self.decision()}\n"
+                    f"  ({self.old_dollars:.2f} {self.criterion}) {self.reason}")
+        lines = [self.decision(),
+                 f"SWAP PROPOSAL: {self.old_dollars:.2f} -> {self.new_dollars:.2f} "
                  f"({self.new_dollars - self.old_dollars:+.2f} {self.criterion})"]
         for out_p, in_p in self.swaps:
             lines.append(f"  OUT {out_p.position:3s} {out_p.name:24s} "
@@ -63,7 +84,8 @@ class SwapProposal:
 
 def propose_swap_maxproj(slate: PlayerSlate, current_ids: tuple, spec: ContestSpec,
                          schedule: KickoffSchedule, now: datetime | None = None,
-                         reason: str = "scheduled late-swap check") -> SwapProposal:
+                         reason: str = "scheduled late-swap check",
+                         min_gain: float = MIN_SWAP_GAIN_PTS) -> SwapProposal:
     """Late swap for a MAX-PROJECTION entry: re-solve max projection under lock
     constraints, and propose a change only if projection strictly improves (or a
     lineup player was removed). The simulator has NO say here — an entry chosen for
@@ -97,16 +119,29 @@ def propose_swap_maxproj(slate: PlayerSlate, current_ids: tuple, spec: ContestSp
                             cur_proj, cur_proj,
                             "no valid alternative under lock constraints",
                             criterion="projected pts")
+    def _proj(ids):
+        return round(sum(byid[i].projection for i in ids), 2)
 
     forced = bool(swept)
+    if forced:
+        # Replace ONLY the ruled-out player(s) unless reshuffling the healthy players
+        # too clears the same threshold as any speculative swap. Week 1 2026: one
+        # re-solve rewrote three healthy slots for a sliver of projection.
+        minimal = solve(startable, spec, LEGALITY_ONLY, set(present), [], 0)
+        if minimal is not None and _proj(best.player_ids) < _proj(minimal.player_ids) + min_gain:
+            best = minimal
     if set(best.player_ids) == set(present) and not forced:
         return SwapProposal(current_ids, current_ids, locked_ids, [],
                             cur_proj, cur_proj, reason, criterion="projected pts",
                             proposed_mvp=best.mvp_id)
-    new_proj = round(sum(byid[i].projection for i in best.player_ids), 2)
-    if not forced and new_proj <= cur_proj + 1e-9:
+    new_proj = _proj(best.player_ids)
+    if not forced and new_proj < cur_proj + min_gain:
+        gain = new_proj - cur_proj
+        why = (f"best alternative is {gain:+.1f} projected pts — under the "
+               f"{min_gain:.0f}-pt swap threshold, so not worth changing; {reason}"
+               if gain > 1e-9 else reason)
         return SwapProposal(current_ids, current_ids, locked_ids, [],
-                            cur_proj, cur_proj, reason, criterion="projected pts")
+                            cur_proj, cur_proj, why, criterion="projected pts")
 
     out_ids = set(current_ids) - set(best.player_ids)
     in_ids = set(best.player_ids) - set(current_ids)
@@ -119,7 +154,8 @@ def propose_swap_maxproj(slate: PlayerSlate, current_ids: tuple, spec: ContestSp
                      sorted((byid[i] for i in in_ids), key=lambda p: p.position)))
     return SwapProposal(current_ids, best.player_ids, locked_ids, swaps,
                         cur_proj, new_proj, reason, criterion="projected pts",
-                        proposed_mvp=best.mvp_id)
+                        proposed_mvp=best.mvp_id, forced=forced,
+                        ruled_out=tuple(_ghost(i).name for i in swept))
 
 
 def propose_swap(slate: PlayerSlate, current_ids: tuple, spec: ContestSpec,
@@ -186,7 +222,9 @@ def propose_swap(slate: PlayerSlate, current_ids: tuple, spec: ContestSpec,
     # any valid lineup beats one with a guaranteed zero, so a swept slot forces a swap
     same_lineup = (set(best.candidate.player_ids) == set(current_ids)
                    and best.candidate.mvp_id == cur_mvp)
-    if same_lineup or (not swept and best.dollars <= cur.dollars):
+    # same threshold as the max-proj arm, expressed in this arm's units
+    min_dollars = MIN_SWAP_GAIN_PTS * float(getattr(weights, "w_points", 0.0) or 0.0)
+    if same_lineup or (not swept and best.dollars < cur.dollars + max(min_dollars, 1e-9)):
         return SwapProposal(current_ids, current_ids, locked_ids, [],
                             cur.dollars, cur.dollars, reason, proposed_mvp=cur_mvp)
 
@@ -201,4 +239,5 @@ def propose_swap(slate: PlayerSlate, current_ids: tuple, spec: ContestSpec,
                      sorted((byid[i] for i in in_ids), key=lambda p: p.position)))
     return SwapProposal(current_ids, best.candidate.player_ids, locked_ids, swaps,
                         cur.dollars, best.dollars, reason,
-                        proposed_mvp=best.candidate.mvp_id)
+                        proposed_mvp=best.candidate.mvp_id, forced=bool(swept),
+                        ruled_out=tuple(_ghost(i).name for i in swept))

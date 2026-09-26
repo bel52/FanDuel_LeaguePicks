@@ -43,6 +43,27 @@ TEAM_ABBR = {
 BOOK_PREFERENCE = ["fanduel", "draftkings", "betmgm", "caesars"]
 
 
+def odds_401_message(err, last_quota: dict | None = None) -> str:
+    """The Odds API answers 401 for BOTH a bad key and an exhausted monthly quota.
+    Week 3 2026: six props boards failed as "auth failed — rotate key" with 2 credits
+    left — the key was fine, the credits were gone. Tell the two apart so the log
+    points at the real problem."""
+    body = ""
+    try:
+        body = (err.read() or b"").decode("utf-8", "replace").lower()[:400]
+    except Exception:
+        pass
+    low_credits = False
+    try:
+        low_credits = int(str((last_quota or {}).get("remaining", "")).split(".")[0]) <= 10
+    except ValueError:
+        pass
+    if any(w in body for w in ("quota", "usage", "credit")) or low_credits:
+        return ("Odds API out of credits — monthly quota used up. The key is fine; "
+                "credits reset with the billing cycle (or upgrade the plan)")
+    return "Odds API rejected the key (401) — check or rotate ODDS_API_KEY"
+
+
 class VegasError(Exception):
     pass
 
@@ -86,7 +107,7 @@ class OddsClient:
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
             if e.code == 401:
-                raise VegasError("Odds API auth failed — rotate key (backlog P0 #5)") from e
+                raise VegasError(odds_401_message(e, self.last_quota)) from e
             raise VegasError(f"Odds API HTTP {e.code}") from e
         except VegasError:
             raise

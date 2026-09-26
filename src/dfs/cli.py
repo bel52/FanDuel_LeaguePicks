@@ -179,8 +179,10 @@ def _csv_freshness_gate(csv_path: str, sched, require_hours: float | None) -> bo
         print(f"  ** This CSV is {age_h:.1f}h old, so it CANNOT contain today's "
               "scratches. Re-download the contest player list and re-run.")
     if stale:
-        print(f"  REFUSING: --require-fresh-csv {require_hours}h and this CSV is "
-              f"{age_h:.1f}h old. Re-download it rather than swapping blind.")
+        print(f"  REFUSING: the FanDuel player list is {age_h:.1f}h old (limit "
+              f"{require_hours:g}h), so it can't show today's scratches.\n"
+              "  DO THIS: FanDuel contest lobby -> Download players list, attach it "
+              "in the Slate CSV box, and click Run Swap Check again.")
         return False
     return True
 
@@ -818,6 +820,15 @@ def cmd_swap(a) -> int:
         prop = propose_swap(slate, current_ids, spec, sched, sim, fieldm, weights,
                             reason=reason, mvp_id=current_mvp)
     byid = {p.fd_id: p for p in slate.players}
+    if prop.forced:
+        # a ruled-out player is gone from the slate, so the engine only knows his
+        # FanDuel id — name him from the logged lineup so the decision is readable
+        logged_names = {p["fd_id"]: p.get("name") or p["fd_id"] for p in logged_lineup}
+        prop.ruled_out = tuple(logged_names.get(i, i) for i in current_ids
+                               if i not in byid)
+        for out_p, _ in prop.swaps:
+            if out_p.fd_id not in byid and out_p.fd_id in logged_names:
+                out_p.name = f"{logged_names[out_p.fd_id]} (ruled out)"
     print("\n" + "=" * 72)
     print(prop.summary(byid))
     if not prop.improves:

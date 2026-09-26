@@ -1011,8 +1011,10 @@ def test_fp_injury_schema_parsed():
              "practice_3": "DNP", "probability_of_playing": 20}]
     recs = records_from_fantasypros(rows)
     assert recs[_norm("Alec Pierce")].status is Status.IR
-    # practice participation must separate two identically-tagged Questionables
-    assert recs[_norm("Q Full")].status is Status.PROBABLE
+    # probability no longer changes status (2026-09-26): it feeds p_active instead
+    assert recs[_norm("Q Full")].status is Status.QUESTIONABLE
+    from dfs.injuries import play_probability as _pp
+    assert abs(_pp(recs[_norm("Q Full")]) - 0.80) < 1e-9
     assert recs[_norm("Q Nopractice")].status is Status.DOUBTFUL
     assert recs[_norm("Q Nopractice")].action is Action.REMOVE
     assert "practice DNP/DNP/DNP" in recs[_norm("Q Nopractice")].detail
@@ -2795,3 +2797,139 @@ def test_capture_grades_a_confirmed_lineup_that_still_matches(tmp_path):
         row = c.execute("SELECT actual_score FROM entries "
                         "WHERE contest='LL5'").fetchone()
     assert row["actual_score"] is not None
+
+
+# ---- 2026-09-26: play probability units + Sunday swap threshold ----
+def test_fp_probability_fraction_is_read_as_fraction():
+    """LIVE BUG (Week 3 2026): FantasyPros sends probability_of_playing as a fraction
+    string. It was printed as "0.79853% to play" and then regexed by its last three
+    digits: Warren 79.9% -> 1.00, Mitchell 90.5% -> 0.54."""
+    from dfs.injuries import play_probability
+    rows = [{"name": "Jaylen Warren", "status": "Q", "team_id": "PIT",
+             "injury_type": "Shoulder", "practice_1": "LP", "practice_2": "LP",
+             "practice_3": "LP", "probability_of_playing": "0.79853"},
+            {"name": "Adonai Mitchell", "status": "Q", "team_id": "NYJ",
+             "injury_type": "Finger", "practice_2": "LP", "practice_3": "LP",
+             "probability_of_playing": 0.9054}]
+    recs = records_from_fantasypros(rows)
+    w, m = recs[_norm("Jaylen Warren")], recs[_norm("Adonai Mitchell")]
+    assert "80% to play" in w.detail and "0.79853" not in w.detail
+    assert "91% to play" in m.detail
+    assert abs(play_probability(w) - 0.80) < 1e-9
+    assert abs(play_probability(m) - 0.91) < 1e-9
+    # status is untouched by probability — same as production behaviour
+    assert w.status is Status.QUESTIONABLE and m.status is Status.QUESTIONABLE
+
+
+def test_play_probability_regex_cannot_grab_digit_tails():
+    from dfs.injuries import play_probability, InjuryRecord
+    def pp(detail):
+        return play_probability(InjuryRecord(name="X Y", team="KC",
+                                             status=Status.QUESTIONABLE, detail=detail))
+    assert abs(pp("Shoulder · practice LIMIT · 0.79853% to play") - 0.79853) < 1e-6
+    assert abs(pp("Finger · 0.9054% to play") - 0.9054) < 1e-6      # was 0.54
+    assert abs(pp("Knee · 75% to play") - 0.75) < 1e-9
+    assert abs(pp("Knee · 1% to play") - 0.01) < 1e-9
+    assert pp("Knee · 0% to play") == 0.0
+
+
+def test_fp_probability_bad_values_ignored():
+    from dfs.injuries import _prob_pct
+    assert _prob_pct(None) is None and _prob_pct("") is None
+    assert _prob_pct("n/a") is None and _prob_pct(True) is None
+    assert _prob_pct(-3) is None and _prob_pct(250) is None
+    assert _prob_pct(80) == 80.0 and _prob_pct("0.5") == 50.0
+
+
+def test_maxproj_swap_threshold_blocks_small_gains():
+    """Week 1 2026: a +2.5 swap cost 10.7 actual points. A speculative swap must
+    clear MIN_SWAP_GAIN_PTS; the verdict line says what to do in plain words."""
+    from dfs.lateswap import propose_swap_maxproj, MIN_SWAP_GAIN_PTS
+    from dfs.kickoffs import KickoffSchedule
+    assert MIN_SWAP_GAIN_PTS == 6.0
+    slate = _projected_slate()
+    mp = max_projection_lineup(slate, SPEC)
+    outsider = next(p for p in slate.players
+                    if p.fd_id not in mp.player_ids and p.position == "WR")
+    outsider.projection = 60.0
+    sched = KickoffSchedule({})
+    free = propose_swap_maxproj(slate, mp.player_ids, SPEC, sched, min_gain=0.0)
+    gain = free.new_dollars - free.old_dollars
+    assert gain > 0
+    held = propose_swap_maxproj(slate, mp.player_ids, SPEC, sched, min_gain=gain + 0.5)
+    assert not held.swaps and not held.improves
+    assert "threshold" in held.reason
+    assert held.summary({}).startswith("DECISION: NO CHANGE")
+    taken = propose_swap_maxproj(slate, mp.player_ids, SPEC, sched, min_gain=gain - 0.5)
+    assert taken.swaps and taken.improves and not taken.forced
+    assert taken.summary({p.fd_id: p for p in slate.players}).startswith(
+        "DECISION: MAKE THIS SWAP")
+
+
+def test_forced_swap_replaces_only_the_ruled_out_player():
+    """An inactive always forces a swap — but only his slot changes unless reshuffling
+    the healthy players clears the same threshold (Week 1 rewrote three slots)."""
+    from dfs.lateswap import propose_swap_maxproj
+    from dfs.kickoffs import KickoffSchedule
+    slate = _projected_slate()
+    mp = max_projection_lineup(slate, SPEC)
+    gone = mp.player_ids[0]
+    slate.players = [p for p in slate.players if p.fd_id != gone]
+    prop = propose_swap_maxproj(slate, mp.player_ids, SPEC, KickoffSchedule({}),
+                                min_gain=1e6)
+    assert prop.forced and prop.improves
+    assert len(prop.swaps) == 1 and prop.swaps[0][0].fd_id == gone
+    kept = set(mp.player_ids) - {gone}
+    assert kept <= set(prop.proposed_ids)
+    assert "ruled out" in prop.decision()
+    # with no threshold, the free re-solve is allowed to reshuffle
+    free = propose_swap_maxproj(slate, mp.player_ids, SPEC, KickoffSchedule({}),
+                                min_gain=0.0)
+    assert free.forced and free.new_dollars >= prop.new_dollars
+
+
+def test_odds_401_distinguishes_quota_from_bad_key():
+    """The Odds API returns 401 for an exhausted quota too. Week 3 2026 logged
+    'auth failed — rotate key' six times with 2 credits left."""
+    from dfs.vegas import odds_401_message
+    class E:
+        def __init__(self, body): self.body = body
+        def read(self): return self.body
+    assert "out of credits" in odds_401_message(
+        E(b'{"message":"Usage quota has been reached"}'), {"remaining": "?"})
+    assert "out of credits" in odds_401_message(E(b""), {"remaining": "2"})
+    assert "rejected the key" in odds_401_message(
+        E(b'{"message":"Invalid API key"}'), {"remaining": "?"})
+
+
+def test_web_swap_enforces_a_fresh_player_list(tmp_path, monkeypatch):
+    """Week 1 2026: the web swap ran on a 25.7h-old CSV and still proposed a swap.
+    Sunday scratches only arrive via a fresh FanDuel player list, so the web path
+    must pass the freshness gate — the human should not have to remember it."""
+    from fastapi.testclient import TestClient
+    import dfs.web as web
+    captured = {}
+    monkeypatch.setattr(web, "_start_job",
+                        lambda kind, argv: captured.setdefault(kind, argv) or "j")
+    monkeypatch.setattr(web, "UPLOADS", tmp_path / "up")
+    monkeypatch.setattr(web, "LINEUPS", tmp_path / "l")
+    monkeypatch.setattr(web, "DB", tmp_path / "p.db")
+    c = TestClient(web.app)
+    r = c.post("/api/swap",
+               files={"csv": ("w3.csv", REAL_W1.open("rb"), "text/csv")},
+               data={"season": 2026, "week": 3, "contest": "Leather League"})
+    assert r.status_code == 200
+    argv = captured["swap"]
+    assert argv[argv.index("--require-fresh-csv") + 1] == "3"
+
+
+def test_stale_csv_refusal_says_what_to_do(tmp_path, capsys):
+    import os, time
+    from dfs.cli import _csv_freshness_gate
+    from dfs.kickoffs import KickoffSchedule
+    f = tmp_path / "old.csv"; f.write_text("x")
+    old = time.time() - 16 * 3600
+    os.utime(f, (old, old))
+    assert _csv_freshness_gate(str(f), KickoffSchedule({}), 3) is False
+    out = capsys.readouterr().out
+    assert "REFUSING" in out and "Download players list" in out

@@ -245,6 +245,20 @@ Build → Sunday swap → Capture results → Season.
   `rank_candidates` now.
 - **Root can't use Brett's SSH key** — the container's checkout uses an HTTPS remote.
 - Git ownership: `git config --global --add safe.directory /srv/appdata/dfs/src-checkout`.
+- **FP `probability_of_playing` is a FRACTION string** ("0.79853"), not a percent.
+  It was printed as "0.79853% to play" and `play_probability` regexed the last three
+  digits before `%` (Warren 79.9% -> 1.00, Mitchell 90.5% -> 0.54). Every p_active
+  from an explicit probability was wrong through Week 3 2026. `_prob_pct` normalizes;
+  the regex is anchored. The probability->status rule never fired in production
+  (fraction string failed `isinstance`) and was retired rather than switched on.
+- **Odds API 401 means "out of credits" as often as "bad key."** Week 3 2026 logged
+  six "auth failed — rotate key" errors with 2 credits left. `odds_401_message` splits them.
+- **Sunday swap threshold:** speculative swaps need >= 6 projected pts
+  (`MIN_SWAP_GAIN_PTS`); a ruled-out player always forces a swap but replaces ONLY his
+  slot unless reshuffling clears the same bar. Week 1 2026: +2.5 swap rewrote three
+  slots, cost 10.7 actual pts. The swap output leads with a one-line DECISION.
+- **The web swap enforces a <3h player list.** The CLI flag existed; the web never
+  passed it, so a forgotten upload silently reused Saturday's CSV.
 
 ## 8. Remaining before Week 1 (2026-09-13)
 

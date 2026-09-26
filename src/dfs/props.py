@@ -350,7 +350,8 @@ class PropsClient:
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
             if e.code == 401:
-                raise PropsError("Odds API auth failed — rotate key") from e
+                from .vegas import odds_401_message
+                raise PropsError(odds_401_message(e, self.last_quota)) from e
             if e.code == 422:
                 raise PropsError(f"Odds API 422 (event off-board or market unsupported)") from e
             raise PropsError(f"Odds API HTTP {e.code}") from e

@@ -166,6 +166,29 @@ def _practice_trend(r: dict) -> tuple[str, int | None, int]:
     return "/".join(seq), (ranks[-1] if ranks else None), len(ranks)
 
 
+def _prob_pct(raw) -> float | None:
+    """FantasyPros `probability_of_playing` -> percent in [0, 100], or None.
+
+    The live feed sends a FRACTION as text ("0.79853" = 79.9%); the 2026-08-16 schema
+    note and every test assumed a whole percentage (80). Accept both. A value <= 1 is
+    read as a fraction — a genuine "1%" from a percentage feed would be misread as
+    100%, but the live feed is fractional, and the old reading was far worse: the
+    detail string printed "0.79853% to play" and play_probability() then regexed the
+    last three digits before the % sign (Warren 79.9% -> "853" -> 1.00; Mitchell
+    90.5% -> "054" -> 0.54). Found 2026-09-26 from the Week 3 build log."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        v = float(str(raw).strip().rstrip("%"))
+    except ValueError:
+        return None
+    if v != v or v < 0:                     # NaN / negative
+        return None
+    if v <= 1.0:
+        v *= 100.0
+    return v if v <= 100.0 else None
+
+
 def records_from_fantasypros(rows: list[dict]) -> dict[str, InjuryRecord]:
     """Normalize the FP injuries payload (verified schema, 2026-08-16).
 
@@ -184,17 +207,18 @@ def records_from_fantasypros(rows: list[dict]) -> dict[str, InjuryRecord]:
         raw = r.get("status") or r.get("status_short") or ""
         status = parse_status(str(raw))
         practice, last_rank, n_sessions = _practice_trend(r)
-        prob = r.get("probability_of_playing")
+        prob = _prob_pct(r.get("probability_of_playing"))
         if status is Status.QUESTIONABLE and last_rank == 0 and n_sessions >= 2:
             status = Status.DOUBTFUL          # Q and repeatedly did not practice
-        if isinstance(prob, (int, float)) and prob is not None:
-            if prob <= 25 and status in (Status.QUESTIONABLE, Status.PROBABLE):
-                status = Status.DOUBTFUL
-            elif prob >= 75 and status is Status.QUESTIONABLE:
-                status = Status.PROBABLE
+        # Probability no longer changes STATUS. The old rule (<=25 -> DOUBTFUL i.e.
+        # REMOVE, >=75 -> PROBABLE) never fired in production: the live value is a
+        # fractional string, so isinstance(prob, number) was always False. Turning it
+        # on now would add a removal path with zero validation, the same week we found
+        # FantasyPros' DOUBTFUL over-removes live players (McConkey W2). Probability
+        # belongs in p_active — a reported haircut — not in a keep/remove decision.
         bits = [str(r.get("injury_type") or "").strip(),
                 f"practice {practice}" if practice else "",
-                f"{prob}% to play" if prob is not None else "",
+                f"{prob:.0f}% to play" if prob is not None else "",
                 str(r.get("comment") or "").strip()[:60]]
         rec = InjuryRecord(name=name,
                            team=norm_team(r.get("team_id") or r.get("team") or ""),
@@ -308,7 +332,9 @@ P_ACTIVE_PRIOR = {
 # costs nothing to use it here too.
 P_ACTIVE_PRACTICE = {2: 0.90, 1: 0.75, 0: 0.45}
 
-_PROB_RE = re.compile(r"(\d{1,3})%\s*to play")
+# Anchored so it can never grab the tail of a longer number again. Tolerates the
+# legacy "0.79853% to play" text still sitting in older snapshots and entry rows.
+_PROB_RE = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d+)?)%\s*to play")
 
 
 def play_probability(rec: "InjuryRecord | None") -> float:
@@ -325,7 +351,11 @@ def play_probability(rec: "InjuryRecord | None") -> float:
     m = _PROB_RE.search(rec.detail or "")
     if m:
         try:
-            return max(0.0, min(1.0, int(m.group(1)) / 100.0))
+            txt = m.group(1)
+            v = float(txt)
+            if "." in txt and v < 1.0:      # legacy mislabel: a fraction, not a %
+                v *= 100.0
+            return max(0.0, min(1.0, v / 100.0))
         except ValueError:
             pass
     if rec.status is Status.QUESTIONABLE:
