@@ -9,7 +9,7 @@ single-game showdown, and public contests.
 ## Status — honest
 
 The data layer, modeling core, and Sunday operating loop are complete and tested
-(270 offline tests, including an end-to-end build test that asserts the upload CSV,
+(281 offline tests, including an end-to-end build test that asserts the upload CSV,
 entry log, and pushover card actually exist). **Edge is not yet demonstrated.** The system reports a positive
 objective delta over a max-projection baseline, but that number is produced by the
 same simulator that selects the lineup. Until it is validated against out-of-sample
@@ -250,16 +250,22 @@ yields too few priced players per position to fit a scale factor.
 - No walk-forward backtest (historical FanDuel salary archives are patchy), which is
   why the in-season component log exists — it is the only available route to a
   measured edge.
-- **FantasyPros DOUBTFUL overrules official designations.** The pessimistic `merge()`
-  always keeps the worse status, so an official Questionable can never de-escalate a
-  FantasyPros DOUBTFUL (which removes the player from the pool). Week 3 2026 removed
-  Mike Evans at 87% to play, Keon Coleman at 70% and Tyjae Spears at 62%; Ladd
-  McConkey (removed as DOUBTFUL, Week 2) played. A merge policy that lets official
-  status and explicit probability de-escalate is the next fix, using observed outcomes.
-- **Odds API free tier runs dry late in the month.** Week 3 2026 priced props for only
-  42 of 359 players after credits ran out (the log now says "out of credits", not
-  "rotate key"). Harmless while FP and market MAE are statistically tied; a paid tier or
-  a credit budget is an open decision.
+- **FantasyPros DOUBTFUL de-escalation (fixed 2026-10-03).** The pessimistic `merge()`
+  let a FantasyPros DOUBTFUL (which removes the player) override everything: Week 3 2026
+  removed Mike Evans at 87% to play, Keon Coleman at 70% and Tyjae Spears at 62%; Ladd
+  McConkey (removed as DOUBTFUL, Week 2) played. Now a FantasyPros DOUBTFUL with an
+  explicit play probability >= `DEESCALATE_MIN_PROB` (50%) is held as Questionable, and
+  an explicit official Q/P from Sleeper overrules a FantasyPros DOUBTFUL in GATE mode
+  (LOG mode reports it only). Both only ever put a player back in the pool; `p_active` prices the risk and the
+  Sunday fresh-CSV gate still catches a real scratch. Official D, OUT and IR are untouched,
+  and probability still cannot create a removal. The 50% threshold is a prior — tune it
+  from `availability_accuracy`.
+- **Odds API credit budget (guard added 2026-10-03).** Week 3 2026 priced props for only
+  42 of 359 players after the free tier ran dry. Prop fetches are now all-or-nothing
+  against the quota header on the free `/events` call: if pricing the slate would leave
+  fewer than `--props-reserve` (20) credits for Vegas lines, the run uses cached boards
+  only. Web "Test run" builds pass `--props-cache-only` and never spend credits. Whether
+  500/month is enough for a 21-week season plus showdown play is still an open decision.
 - **Teammate-effect accuracy is unmeasured.** The rates are historical; whether the
   adjustment improves this season's projections is readable from `teammate_adj` against
   nflverse actuals after ~3 weeks.

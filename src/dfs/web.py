@@ -267,7 +267,9 @@ async def api_build(csv: UploadFile | None = File(None), season: int = Form(0),
             "--export", str(lineups_dir / f"upload-{slate_id}.csv"),
             "--out", str(lineups_dir / f"{slate_id}.json")]
     if test_mode:
-        argv += ["--snapshot-dir", str(TEST / "snapshots")]
+        # A test run must not spend Odds API credits: it reuses fresh cached boards
+        # or falls back to FantasyPros-only for props.
+        argv += ["--snapshot-dir", str(TEST / "snapshots"), "--props-cache-only"]
     if prize_pool:
         argv += ["--prize-pool", prize_pool]
     if strict_injuries:

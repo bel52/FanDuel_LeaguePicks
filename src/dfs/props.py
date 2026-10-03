@@ -316,13 +316,21 @@ class PropsClient:
     """
 
     def __init__(self, api_key: Optional[str] = None, timeout: int = 25,
-                 cache_dir: str | Path | None = None, max_age_hours: float = 6.0):
+                 cache_dir: str | Path | None = None, max_age_hours: float = 6.0,
+                 cache_only: bool = False, reserve_credits: int = 0):
         self.api_key = api_key or os.getenv("ODDS_API_KEY", "")
         if not self.api_key:
             raise PropsError("ODDS_API_KEY not set")
         self.timeout = timeout
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.max_age_hours = max_age_hours
+        # cache_only: never spend credits (test runs). reserve_credits: refuse to fetch
+        # a board when doing so would leave fewer than this many credits for the
+        # Vegas team lines every build and Sunday swap still needs. Week 3 2026 ran
+        # the free tier dry mid-slate and priced props for 42 of 359 players.
+        self.cache_only = cache_only
+        self.reserve_credits = max(0, int(reserve_credits))
+        self.budget_note = ""
         self.credits_spent = 0
         self.cache_hits = 0
         self.stale_cache = 0
@@ -398,6 +406,8 @@ class PropsClient:
                     self.stale_cache += 1
             except Exception:
                 pass                      # corrupt / unstamped cache: refetch
+        if self.cache_only:
+            raise PropsError("cache-only run and no fresh cached board (no credits spent)")
         board = self._get(f"sports/{SPORT}/events/{event_id}/odds", {
             "regions": "us",
             "markets": ",".join(MARKETS),
@@ -426,7 +436,9 @@ class PropsClient:
 
         merged: dict[str, PlayerProps] = {}
         matched_games: set[str] = set()
-        for ev in self.events():
+        events = self.events()
+        self._apply_budget(events, want)
+        for ev in events:
             home = norm_team(TEAM_ABBR.get(ev.get("home_team", ""), ""))
             away = norm_team(TEAM_ABBR.get(ev.get("away_team", ""), ""))
             keyset = frozenset({away, home})
@@ -446,6 +458,49 @@ class PropsClient:
             if not any(g in e for e in self.errors):
                 self.errors.append(f"{g}: no event on the props board")
         return merged
+
+
+    def _cached_fresh(self, event_id: str) -> bool:
+        cp = self._cache_path(event_id)
+        if not cp or not cp.exists():
+            return False
+        try:
+            stamped = json.loads(cp.read_text()).get("_fetched_at")
+            fetched = datetime.fromisoformat(str(stamped).replace("Z", "+00:00"))
+            age_h = (datetime.now(timezone.utc) - fetched).total_seconds() / 3600.0
+            return 0 <= age_h <= self.max_age_hours
+        except Exception:
+            return False
+
+    def _apply_budget(self, events: list[dict], want: dict) -> None:
+        """All-or-nothing credit check before any paid call.
+
+        /events is free and carries the quota headers, so the cost of this slate is
+        known up front. If fetching every uncached board would dip below the reserve,
+        switch to cache-only for the whole run rather than pricing half the slate and
+        then failing -- a partial board scales positions on whichever games happened
+        to be fetched first, and leaves nothing for Sunday's Vegas lines."""
+        if self.cache_only:
+            self.budget_note = "cache-only run: no credits will be spent"
+            return
+        try:
+            remaining = int(str(self.last_quota.get("remaining", "")).split(".")[0])
+        except ValueError:
+            return                              # quota unknown: behave as before
+        need = 0
+        for ev in events:
+            home = norm_team(TEAM_ABBR.get(ev.get("home_team", ""), ""))
+            away = norm_team(TEAM_ABBR.get(ev.get("away_team", ""), ""))
+            if frozenset({away, home}) in want and not self._cached_fresh(ev.get("id", "")):
+                need += CREDITS_PER_EVENT
+        if need and remaining - need < self.reserve_credits:
+            self.cache_only = True
+            self.budget_note = (f"BUDGET: {remaining} credits left, this slate needs {need} "
+                                f"and {self.reserve_credits} are reserved for Vegas lines "
+                                "-> using cached boards only (FantasyPros for the rest)")
+        else:
+            self.budget_note = (f"budget ok: {remaining} credits left, this slate needs "
+                                f"{need}")
 
 
 # ---------------------------------------------------------------------------

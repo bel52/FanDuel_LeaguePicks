@@ -30,6 +30,7 @@ from .field import (build_prior_field, build_field_ensemble, rank_candidates,
 from .objectives import Leaderboard, SeasonContext, weights_for
 from .slate import SlateStore, SlateError
 from .injuries import (records_from_fantasypros, records_from_slate, merge,
+                       official_deescalate,
                        sweep as injury_sweep, annotate_availability, SEVERITY,
                        Action as InjuryAction)
 from .sleeper import SleeperClient, SleeperError, records_from_sleeper
@@ -87,8 +88,12 @@ def _props_layer(slate, a, dist, label: str = "build"):
     try:
         pc = PropsClient(cache_dir=(Path(a.props_cache_dir) if a.props_cache_dir
                                     else DATA / "props"),
-                         max_age_hours=a.props_max_age)
+                         max_age_hours=a.props_max_age,
+                         cache_only=getattr(a, "props_cache_only", False),
+                         reserve_credits=getattr(a, "props_reserve", 20))
         board = pc.slate_props({p.game for p in slate.players if p.game})
+        if pc.budget_note:
+            print(f"  {pc.budget_note}")
         pts, prep = props_points(slate.players, board, slate.fp_by_id)
         prep.credits_spent, prep.cache_hits = pc.credits_spent, pc.cache_hits
         prep.stale_cache = pc.stale_cache
@@ -1018,10 +1023,35 @@ def _official_inactives_layer(slate, inj: dict, a, lineup_ids: set | None = None
         _line("escalate", p, o, c)
     for p, o, c in sorted(deescalate, key=lambda z: -z[0].salary)[:8]:
         _line("de-esc", p, o, c)
+    # Official de-escalation is APPLIED only in GATE mode. LOG mode is report-only by
+    # decision (2026-09-19/26): Sleeper is unvalidated, and promotion waits on evidence.
+    # The FantasyPros-probability de-escalation in records_from_fantasypros covers the
+    # high-probability cases (Evans/Coleman/Spears, Week 3) without relying on Sleeper.
+    restored = []
+    for p, o, c in deescalate:
+        rep = official_deescalate(c, o)
+        if rep is not None:
+            if mode == "gate":
+                inj = {**inj, norm_name(p.name): rep}
+            restored.append((p, o, c))
+    if restored:
+        if mode == "gate":
+            print(f"    -> {len(restored)} FantasyPros DOUBTFUL overruled by an official "
+                  "designation (kept in pool, p_active discounts them):")
+        else:
+            print(f"    -> LOG mode: {len(restored)} FantasyPros DOUBTFUL WOULD be overruled "
+                  "by an official designation (NOT applied):")
+        for p, o, c in sorted(restored, key=lambda z: -z[0].salary):
+            _line("RESTORED" if mode == "gate" else "would-rst", p, o, c)
     if mode == "gate":
         if would_remove or escalate:
             print("    -> merged into the sweep (pessimistic: a worse Sleeper status wins)")
-        return merge(inj, off)
+        merged = merge(inj, off)
+        for p, _o, _c in restored:       # keep the FP probability detail on restores
+            k = norm_name(p.name)
+            if merged.get(k) is not None and SEVERITY[merged[k].status] <= SEVERITY[inj[k].status]:
+                merged[k] = inj[k]
+        return merged
     if would_remove:
         print("    -> LOG mode: the REMOVE rows above were NOT applied. Check them by "
               "hand; promote with --official-inactives gate when the source proves out.")
@@ -1419,6 +1449,10 @@ def main(argv=None) -> int:
                    help="override the per-position props blend weight (0-1)")
     b.add_argument("--props-cache-dir", default=None,
                    help="where prop boards are cached (default data/props)")
+    b.add_argument("--props-cache-only", action="store_true",
+                   help="never spend Odds API credits on props; use fresh cached boards only")
+    b.add_argument("--props-reserve", type=int, default=20, metavar="CREDITS",
+                   help="skip paid prop fetches that would leave fewer credits than this")
     b.add_argument("--props-max-age", type=float, default=6.0,
                    help="reuse a cached prop board younger than this many hours; "
                         "keeps a rebuild after the inactives sweep free")
@@ -1543,6 +1577,10 @@ def main(argv=None) -> int:
     sw.add_argument("--no-props", dest="props", action="store_false")
     sw.add_argument("--props-weight", type=float, default=None)
     sw.add_argument("--props-cache-dir", default=None)
+    sw.add_argument("--props-cache-only", action="store_true",
+                   help="never spend Odds API credits on props; use fresh cached boards only")
+    sw.add_argument("--props-reserve", type=int, default=20, metavar="CREDITS",
+                   help="skip paid prop fetches that would leave fewer credits than this")
     sw.add_argument("--props-max-age", type=float, default=6.0)
     sw.add_argument("--avail-adjust", dest="avail_adjust", action="store_true",
                     default=None)

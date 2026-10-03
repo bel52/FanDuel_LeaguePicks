@@ -1025,6 +1025,6 @@ def test_known_gaps_record_the_open_learning_loop():
     r = _readme()
     for phrase in ("still a hardcoded constant", "fitted on 2025 FantasyPros residuals",
                    "holdout discipline", "Whole-pool actuals",
-                   "FantasyPros DOUBTFUL overrules", "Teammate-effect accuracy is unmeasured"):
+                   "FantasyPros DOUBTFUL de-escalation", "Teammate-effect accuracy is unmeasured"):
         assert phrase in r, f"missing from README: {phrase}"
     assert "biased, not merely small" not in r, "resolved gap still listed as open"

@@ -1939,7 +1939,10 @@ def test_swap_accept_updates_entry_and_archives_prior(tmp_path):
     new_players = players[:-1] + [repl]
     proposal = {
         "season": 2026, "week": 1, "contest": "Leather League",
-        "created_utc": "2026-09-13T15:30:00+00:00",
+        # relative to now: swap-accept refuses proposals older than 6h, so a fixed
+        # date turned this into a time bomb that failed from 2026-09-13 21:30Z on.
+        "created_utc": __import__("datetime").datetime.now(
+            __import__("datetime").timezone.utc).isoformat(),
         "criterion": "projected pts", "old": 120.0, "new": 121.0,
         "lineup": [{"fd_id": p.fd_id, "name": p.name, "pos": p.position,
                     "team": p.team, "salary": p.salary, "projection": p.projection,

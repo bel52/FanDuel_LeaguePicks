@@ -133,7 +133,8 @@ class SweepResult:
             out.append(f"  FLAG    {p.position:3s} {p.name:24s} {r.status.value.upper():12s} "
                        f"{r.detail[:48]}")
         if self.lineup_affected:
-            out.append("  ** A player in the CURRENT lineup is affected — rebuild before lock. **")
+            out.append("  ** A player in the CURRENT lineup is flagged or removed above. Do NOT "
+                       "rebuild — follow the DECISION line. **")
         return "\n".join(out)
 
     def pushover(self) -> str:
@@ -189,6 +190,36 @@ def _prob_pct(raw) -> float | None:
     return v if v <= 100.0 else None
 
 
+# A FantasyPros DOUBTFUL (feed status or our own practice escalation) whose explicit
+# probability_of_playing is at least this many percent is held as QUESTIONABLE. 50 is
+# deliberately conservative: below it the player is rarely worth a slot after the
+# p_active discount anyway, and above it removal threw away live, high-projection
+# players. Tune from availability_accuracy once a season of outcomes exists.
+DEESCALATE_MIN_PROB = 50.0
+
+
+def official_deescalate(current: "InjuryRecord | None",
+                        official: "InjuryRecord | None") -> "InjuryRecord | None":
+    """Return a replacement record when an OFFICIAL designation is milder than a
+    FantasyPros-sourced DOUBTFUL, else None.
+
+    Only a FantasyPros DOUBTFUL is overruled -- never an official one, never OUT/IR,
+    and never on the absence of an official record (no designation is not evidence of
+    health at the time the feed was read). The FantasyPros detail is kept so an
+    explicit probability or practice trend still drives p_active."""
+    if current is None or official is None:
+        return None
+    if current.status is not Status.DOUBTFUL or current.source != "fantasypros":
+        return None
+    if official.status not in (Status.QUESTIONABLE, Status.PROBABLE):
+        return None
+    note = f"official {official.status.value.upper()} ({official.source}) over FP doubtful"
+    return InjuryRecord(name=current.name, team=current.team, status=official.status,
+                        detail=" · ".join(b for b in (current.detail, note) if b),
+                        source=f"{official.source}+fantasypros",
+                        fetched_ts=official.fetched_ts)
+
+
 def records_from_fantasypros(rows: list[dict]) -> dict[str, InjuryRecord]:
     """Normalize the FP injuries payload (verified schema, 2026-08-16).
 
@@ -210,13 +241,26 @@ def records_from_fantasypros(rows: list[dict]) -> dict[str, InjuryRecord]:
         prob = _prob_pct(r.get("probability_of_playing"))
         if status is Status.QUESTIONABLE and last_rank == 0 and n_sessions >= 2:
             status = Status.DOUBTFUL          # Q and repeatedly did not practice
+        # De-escalation (2026-10-03). A DOUBTFUL here means REMOVE, so it must not
+        # contradict FantasyPros' own play probability. Week 3 2026 removed Mike Evans
+        # at 87% to play, Keon Coleman at 70% and Tyjae Spears at 62%; McConkey
+        # (DOUBTFUL, Week 2) played. At or above DEESCALATE_MIN_PROB the player stays
+        # in the pool as QUESTIONABLE and the availability discount prices the risk
+        # (p_active = the explicit probability). This only ever LOWERS severity --
+        # probability still cannot create a removal.
+        deesc = ""
+        if (status is Status.DOUBTFUL and prob is not None
+                and prob >= DEESCALATE_MIN_PROB):
+            status = Status.QUESTIONABLE
+            deesc = f"FP doubtful, {prob:.0f}% to play -> Q"
         # Probability no longer changes STATUS. The old rule (<=25 -> DOUBTFUL i.e.
         # REMOVE, >=75 -> PROBABLE) never fired in production: the live value is a
         # fractional string, so isinstance(prob, number) was always False. Turning it
         # on now would add a removal path with zero validation, the same week we found
         # FantasyPros' DOUBTFUL over-removes live players (McConkey W2). Probability
         # belongs in p_active — a reported haircut — not in a keep/remove decision.
-        bits = [str(r.get("injury_type") or "").strip(),
+        bits = [deesc,                    # first, so the 48-char sweep line shows it
+                str(r.get("injury_type") or "").strip(),
                 f"practice {practice}" if practice else "",
                 f"{prob:.0f}% to play" if prob is not None else "",
                 str(r.get("comment") or "").strip()[:60]]
